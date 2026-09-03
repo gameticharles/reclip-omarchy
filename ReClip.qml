@@ -201,6 +201,14 @@ Item {
     root.rebuildDisplay()
   }
 
+  function selectTab(tab) {
+    root.activeTab = tab
+    root.selectedIndex = 0
+    root.filterText = ""
+    root.rebuildDisplay()
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
   function disarmPointer() { pointerGate.reset() }
 
   function selectFromPointer(index, item, mouse) {
@@ -363,6 +371,11 @@ Item {
     qrImage.source = Util.fileUrl(file)
     root.qrOpen = true
     Qt.callLater(function() { Qt.callLater(function() { qrClose.forceActiveFocus() }) })
+  }
+
+  function closeQr() {
+    root.qrOpen = false
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
   ListModel { id: displayModel }
@@ -774,7 +787,7 @@ Item {
               color: Util.alpha(Color.accent, 0.85)
               anchors.horizontalCenter: parent.horizontalCenter
               Text { text: "Close (Esc)"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true; anchors.centerIn: parent }
-              MouseArea { anchors.fill: parent; onClicked: { root.qrOpen = false; Qt.callLater(function() { keyCatcher.forceActiveFocus() }) }; cursorShape: Qt.PointingHandCursor }
+              MouseArea { anchors.fill: parent; onClicked: root.closeQr(); cursorShape: Qt.PointingHandCursor }
             }
           }
         }
@@ -802,7 +815,7 @@ Item {
               font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: root.activeTab === 0
               anchors.centerIn: parent
             }
-            MouseArea { anchors.fill: parent; onClicked: { root.activeTab = 0; root.selectedIndex = 0; root.filterText = ""; root.rebuildDisplay(); Qt.callLater(function() { keyCatcher.forceActiveFocus() }) } cursorShape: Qt.PointingHandCursor }
+            MouseArea { anchors.fill: parent; onClicked: root.selectTab(0); cursorShape: Qt.PointingHandCursor }
           }
 
           Rectangle {
@@ -814,7 +827,7 @@ Item {
               font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: root.activeTab === 1
               anchors.centerIn: parent
             }
-            MouseArea { anchors.fill: parent; onClicked: { root.activeTab = 1; root.selectedIndex = 0; root.filterText = ""; root.rebuildDisplay(); Qt.callLater(function() { keyCatcher.forceActiveFocus() }) } cursorShape: Qt.PointingHandCursor }
+            MouseArea { anchors.fill: parent; onClicked: root.selectTab(1); cursorShape: Qt.PointingHandCursor }
           }
         }
 
