@@ -585,8 +585,8 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: searchInput
-    contentWidth: panel.fittedContentWidth(Style.space(540))
-    contentHeight: panel.fittedContentHeight(Style.space(660))
+    contentWidth: panel.fittedContentWidth(Style.space(560))
+    contentHeight: panel.cappedContentHeight(panel.screenH > 0 ? Math.round(panel.screenH * 0.94) : Style.space(920))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -599,10 +599,16 @@ Panel {
       }
     }
 
-    Column {
-      id: mainColumn
-      width: parent.width
-      spacing: Style.space(10)
+    Item {
+      id: mainContainer
+      anchors.fill: parent
+
+      Column {
+        id: topSection
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        spacing: Style.space(8)
 
       // ==========================================
       // 1. HERO HEADER (Omarchy PanelHero Style)
@@ -1334,6 +1340,326 @@ Panel {
           }
         }
       }
+    }
+
+    // ==========================================
+    // REDESIGNED UNIFIED FOOTER (Consistent on ALL tabs)
+    // ==========================================
+    Rectangle {
+      id: footerBar
+      anchors.bottom: parent.bottom
+      anchors.left: parent.left
+      anchors.right: parent.right
+      height: Style.space(40)
+      radius: Style.space(8)
+      color: Util.alpha(root.fg, 0.04)
+      border.width: 1
+      border.color: Util.alpha(root.fg, 0.08)
+
+      // LEFT: Tab Status & Live Stats Pill
+      Row {
+        id: footerLeft
+        anchors.left: parent.left
+        anchors.leftMargin: Style.space(10)
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(6)
+
+        Rectangle {
+          height: Style.space(24)
+          radius: Style.space(6)
+          color: Util.alpha(Color.accent, 0.12)
+          border.width: 1
+          border.color: Util.alpha(Color.accent, 0.25)
+          width: tabStatusRow.implicitWidth + Style.space(14)
+          anchors.verticalCenter: parent.verticalCenter
+
+          Row {
+            id: tabStatusRow
+            anchors.centerIn: parent
+            spacing: Style.space(5)
+
+            Text {
+              text: root.activeTab === 0 ? "󰅍" : (root.activeTab === 1 ? "󰐃" : (root.activeTab === 2 ? "󰅩" : (root.activeTab === 3 ? "󰏘" : "󰆒")))
+              color: Color.accent
+              font.family: root.fontFamily; font.pixelSize: Style.font.caption
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Text {
+              text: {
+                if (root.activeTab === 0) {
+                  return root.activeDateFilter !== "" ? (displayModel.count + " clips (" + root.formatDateFilterLabel(root.activeDateFilter) + ")") : (root.historyCount + " clips")
+                }
+                if (root.activeTab === 1) return root.pinnedCount + " pinned"
+                if (root.activeTab === 2) return root.snippets.length + " snippets"
+                if (root.activeTab === 3) return root.activeColorHex + " active"
+                if (root.activeTab === 4) return root.pasteQueue.length + " in queue"
+                return ""
+              }
+              color: root.fg
+              font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true
+              anchors.verticalCenter: parent.verticalCenter
+            }
+          }
+        }
+      }
+
+      // CENTER: Universal Keyboard Shortcut Chips
+      Row {
+        id: footerCenter
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(6)
+        visible: footerBar.width > Style.space(480)
+
+        // 1-9 Chip (Only on History / Pinned)
+        Row {
+          visible: root.activeTab === 0 || root.activeTab === 1
+          spacing: Style.space(3)
+          anchors.verticalCenter: parent.verticalCenter
+
+          Rectangle {
+            height: Style.space(18); width: Style.space(24); radius: Style.space(4)
+            color: Util.alpha(root.fg, 0.08)
+            border.width: 1; border.color: Util.alpha(root.fg, 0.15)
+            Text { text: "1-9"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true; anchors.centerIn: parent }
+          }
+          Text { text: "Paste"; color: Util.alpha(root.fg, 0.5); font.family: root.fontFamily; font.pixelSize: Style.space(9); anchors.verticalCenter: parent.verticalCenter }
+        }
+
+        // Enter Chip
+        Row {
+          spacing: Style.space(3)
+          anchors.verticalCenter: parent.verticalCenter
+
+          Rectangle {
+            height: Style.space(18); width: Style.space(18); radius: Style.space(4)
+            color: Util.alpha(root.fg, 0.08)
+            border.width: 1; border.color: Util.alpha(root.fg, 0.15)
+            Text { text: "↵"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.centerIn: parent }
+          }
+          Text { text: root.activeTab === 3 ? "Inspect" : "Copy/Paste"; color: Util.alpha(root.fg, 0.5); font.family: root.fontFamily; font.pixelSize: Style.space(9); anchors.verticalCenter: parent.verticalCenter }
+        }
+
+        // Tab Key Chip
+        Row {
+          spacing: Style.space(3)
+          anchors.verticalCenter: parent.verticalCenter
+
+          Rectangle {
+            height: Style.space(18); width: Style.space(26); radius: Style.space(4)
+            color: Util.alpha(root.fg, 0.08)
+            border.width: 1; border.color: Util.alpha(root.fg, 0.15)
+            Text { text: "Tab"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true; anchors.centerIn: parent }
+          }
+          Text { text: "Switch"; color: Util.alpha(root.fg, 0.5); font.family: root.fontFamily; font.pixelSize: Style.space(9); anchors.verticalCenter: parent.verticalCenter }
+        }
+
+        // Esc Chip
+        Row {
+          spacing: Style.space(3)
+          anchors.verticalCenter: parent.verticalCenter
+
+          Rectangle {
+            height: Style.space(18); width: Style.space(24); radius: Style.space(4)
+            color: Util.alpha(root.fg, 0.08)
+            border.width: 1; border.color: Util.alpha(root.fg, 0.15)
+            Text { text: "Esc"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true; anchors.centerIn: parent }
+          }
+          Text { text: "Close"; color: Util.alpha(root.fg, 0.5); font.family: root.fontFamily; font.pixelSize: Style.space(9); anchors.verticalCenter: parent.verticalCenter }
+        }
+      }
+
+      // RIGHT: Dedicated Action Buttons Per Page
+      Row {
+        id: footerRight
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(10)
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(6)
+
+          // TAB 0: Clear History Button
+          Rectangle {
+            visible: root.activeTab === 0 && root.history.length > 0
+            height: Style.space(26)
+            width: clearBtnContent.implicitWidth + Style.space(16)
+            radius: Style.space(5)
+            color: Util.alpha(Color.urgent, 0.1)
+            border.width: 1; border.color: Util.alpha(Color.urgent, 0.25)
+            anchors.verticalCenter: parent.verticalCenter
+
+            Row {
+              id: clearBtnContent
+              anchors.centerIn: parent
+              spacing: Style.space(4)
+              Text { text: "󰆴"; color: Color.urgent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+              Text { text: "Clear History"; color: Color.urgent; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: root.clearConfirmOpen = true
+            }
+          }
+
+          // TAB 1: Pinned Filter Info
+          Rectangle {
+            visible: root.activeTab === 1
+            height: Style.space(26)
+            width: pinnedInfoContent.implicitWidth + Style.space(16)
+            radius: Style.space(5)
+            color: Util.alpha(Color.accent, 0.1)
+            border.width: 1; border.color: Util.alpha(Color.accent, 0.25)
+            anchors.verticalCenter: parent.verticalCenter
+
+            Row {
+              id: pinnedInfoContent
+              anchors.centerIn: parent
+              spacing: Style.space(4)
+              Text { text: "󰐃"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+              Text { text: "Pinned & Starred"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+            }
+          }
+
+          // TAB 2: New Snippet Button
+          Rectangle {
+            visible: root.activeTab === 2
+            height: Style.space(26)
+            width: newSnipContent.implicitWidth + Style.space(16)
+            radius: Style.space(5)
+            color: Color.accent
+            anchors.verticalCenter: parent.verticalCenter
+
+            Row {
+              id: newSnipContent
+              anchors.centerIn: parent
+              spacing: Style.space(4)
+              Text { text: "+"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+              Text { text: "New Snippet"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                root.snippetEditIndex = -1
+                root.snippetEditTitle = ""
+                root.snippetEditContent = ""
+                root.snippetEditLang = "javascript"
+                root.snippetEditFolder = ""
+                root.snippetEditOpen = true
+              }
+            }
+          }
+
+          // TAB 3: Copy Current HEX Button
+          Rectangle {
+            visible: root.activeTab === 3
+            height: Style.space(26)
+            width: copyHexContent.implicitWidth + Style.space(16)
+            radius: Style.space(5)
+            color: Color.accent
+            anchors.verticalCenter: parent.verticalCenter
+
+            Row {
+              id: copyHexContent
+              anchors.centerIn: parent
+              spacing: Style.space(4)
+              Text { text: "󰆏"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+              Text { text: "Copy " + root.activeColorHex; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: root.copyText(root.activeColorHex)
+            }
+          }
+
+          // TAB 4: Queue Actions (Merge & Paste All & Clear)
+          Row {
+            visible: root.activeTab === 4
+            spacing: Style.space(6)
+            anchors.verticalCenter: parent.verticalCenter
+
+            // Merge Queued clips
+            Rectangle {
+              visible: root.pasteQueue.length >= 2
+              height: Style.space(26)
+              width: mergeContent.implicitWidth + Style.space(14)
+              radius: Style.space(5)
+              color: Util.alpha(Color.accent, 0.15)
+              border.width: 1; border.color: Color.accent
+
+              Row {
+                id: mergeContent
+                anchors.centerIn: parent
+                spacing: Style.space(4)
+                Text { text: "󰅪"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "Merge (" + root.pasteQueue.length + ")"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                onClicked: root.mergeDialogOpen = true
+              }
+            }
+
+            // Paste All in Queue
+            Rectangle {
+              visible: root.pasteQueue.length > 0
+              height: Style.space(26)
+              width: pasteQueueContent.implicitWidth + Style.space(14)
+              radius: Style.space(5)
+              color: Color.accent
+
+              Row {
+                id: pasteQueueContent
+                anchors.centerIn: parent
+                spacing: Style.space(4)
+                Text { text: "󰆒"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "Paste Queue"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                onClicked: root.flushQueue()
+              }
+            }
+
+            // Clear Queue
+            Rectangle {
+              visible: root.pasteQueue.length > 0
+              height: Style.space(26)
+              width: clearQueueContent.implicitWidth + Style.space(12)
+              radius: Style.space(5)
+              color: Util.alpha(Color.urgent, 0.1)
+              border.width: 1; border.color: Util.alpha(Color.urgent, 0.25)
+
+              Row {
+                id: clearQueueContent
+                anchors.centerIn: parent
+                spacing: Style.space(3)
+                Text { text: "✕"; color: Color.urgent; font.pixelSize: Style.space(9); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "Clear"; color: Color.urgent; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.pasteQueue = []
+                  root.rebuildDisplay()
+                }
+              }
+            }
+          }
+        }
+      }
+
+    // ==========================================
+    // DYNAMIC MAIN CONTENT AREA (Fills space between topSection and footerBar)
+    // ==========================================
+    Item {
+      id: contentArea
+      anchors.top: topSection.bottom
+      anchors.topMargin: Style.space(8)
+      anchors.bottom: footerBar.top
+      anchors.bottomMargin: Style.space(8)
+      anchors.left: parent.left
+      anchors.right: parent.right
+      clip: true
 
       // =========================================================================
       // TAB 3: COLOR STUDIO (Dedicated Advanced Color Studio)
@@ -1341,8 +1667,7 @@ Panel {
       Flickable {
         id: colorStudioFlick
         visible: root.activeTab === 3
-        width: parent.width
-        height: Style.space(510)
+        anchors.fill: parent
         contentWidth: width
         contentHeight: colorStudioCol.implicitHeight + Style.space(20)
         clip: true
@@ -1623,9 +1948,9 @@ Panel {
       // 4. MAIN SCROLLABLE LIST (Tabs 0, 1, 2, 4)
       // ==========================================
       Rectangle {
+        id: listContainer
         visible: root.activeTab !== 3
-        width: parent.width
-        height: root.showCalendar ? Style.space(200) : (root.showTimeline ? Style.space(330) : (root.activeTab === 0 ? Style.space(450) : Style.space(475)))
+        anchors.fill: parent
         color: "transparent"
 
         ListView {
@@ -1951,46 +2276,8 @@ Panel {
           }
         }
       }
-
-      // ==========================================
-      // 5. FOOTER STATUS & CHEATSHEET
-      // ==========================================
-      Row {
-        width: parent.width
-        height: Style.space(24)
-        spacing: Style.space(8)
-
-        Text {
-          text: "[1-9] Quick Paste • ↵ Paste • P Pin • F Star • 󰸗 Date Filter • 🔤 Transform • Del Remove"
-          color: Util.alpha(root.fg, 0.45)
-          font.family: root.fontFamily
-          font.pixelSize: Style.space(10)
-          anchors.verticalCenter: parent.verticalCenter
-        }
-
-        Item { Layout.fillWidth: true; width: Style.space(16) }
-
-        Rectangle {
-          visible: root.activeTab === 0 && root.history.length > 0
-          width: clearText.implicitWidth + Style.space(12); height: Style.space(20)
-          radius: Style.space(4)
-          color: Util.alpha(Color.urgent, 0.1)
-          anchors.verticalCenter: parent.verticalCenter
-
-          Text {
-            id: clearText
-            text: "Clear History"
-            color: Color.urgent
-            font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true
-            anchors.centerIn: parent
-          }
-          MouseArea {
-            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-            onClicked: root.clearConfirmOpen = true
-          }
-        }
-      }
     }
+  }
 
     // ==========================================
     // MODAL: CLIP IN-PLACE EDITOR
