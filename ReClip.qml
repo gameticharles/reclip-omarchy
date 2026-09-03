@@ -14,10 +14,12 @@ Item {
   property string omarchyPath: Quickshell.env("OMARCHY_PATH")
   property var shell: null
   property var manifest: null
-  property string stateDir: Quickshell.env("HOME") + "/.local/state/reclip"
+  property string home: Quickshell.env("HOME")
+  property string stateDir: home + "/.local/state/reclip"
   property string historyPath: stateDir + "/clipboard-history.json"
   property string snippetsPath: stateDir + "/snippets.json"
-  property string captureScript: root.omarchyPath + "/shell/plugins/reclip/capture.sh"
+  property string pluginDir: (manifest && manifest.id) ? (home + "/.config/omarchy/plugins/" + manifest.id) : (home + "/.config/omarchy/plugins/reclip")
+  property string captureScript: root.pluginDir + "/capture.sh"
 
   property bool opened: false
   property int activeTab: 0
@@ -70,13 +72,18 @@ Item {
   function close() {
     root.cancelClearHistory()
     root.snippetEditOpen = false
+    root.qrOpen = false
     root.opened = false
+  }
+
+  function dismiss() {
+    root.close()
     if (root.shell && typeof root.shell.hide === "function")
       root.shell.hide((root.manifest && root.manifest.id) || "reclip")
   }
 
   function toggle() {
-    if (root.opened) root.close()
+    if (root.opened) root.dismiss()
     else root.open()
   }
 
@@ -499,7 +506,7 @@ Item {
     exclusionMode: ExclusionMode.Ignore
 
     Rectangle { anchors.fill: parent; color: root.scrim }
-    MouseArea { anchors.fill: parent; onClicked: root.close() }
+    MouseArea { anchors.fill: parent; onClicked: root.dismiss() }
 
     BorderSurface {
       id: card
@@ -525,7 +532,7 @@ Item {
 
           if (event.key === Qt.Key_Escape) {
             if (root.filterText) root.setFilter("")
-            else root.close()
+            else root.dismiss()
             event.accepted = true
           } else if (event.key === Qt.Key_Tab) {
             root.activeTab = root.activeTab === 0 ? 1 : 0
