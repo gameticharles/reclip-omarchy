@@ -409,8 +409,7 @@ Item {
     command: ["mkdir", "-p", root.stateDir]
     onExited: {
       wlInit.running = true
-      initHistory.running = true
-      initSnippets.running = true
+      currentProc.running = true
     }
   }
 
@@ -421,18 +420,6 @@ Item {
       textWatch.running = true
       imageWatch.running = true
     }
-  }
-
-  Process {
-    id: initHistory
-    command: ["test", "-f", root.historyPath]
-    onExited: { if (exitCode !== 0) { Quickshell.execDetached(["touch", root.historyPath]); Quickshell.execDetached(["sh", "-c", "echo '[]' > " + root.historyPath]) } }
-  }
-
-  Process {
-    id: initSnippets
-    command: ["test", "-f", root.snippetsPath]
-    onExited: { if (exitCode !== 0) { Quickshell.execDetached(["sh", "-c", "echo '{\"snippets\":[],\"folders\":[]}' > " + root.snippetsPath]) } }
   }
 
   Process {
