@@ -9,6 +9,7 @@ import qs.Ui
 import "lib/ClipboardHistory.js" as ClipboardHistory
 import "lib/SnippetLibrary.js" as SnippetLib
 import "lib/SyntaxHighlight.js" as Syntax
+import "lib/ColorStudio.js" as ColorStudio
 
 Panel {
   id: root
@@ -29,12 +30,22 @@ Panel {
   property string captureScript: pluginDir + "/capture.sh"
 
   property bool incognito: false
-  // Tabs: 0: History, 1: Pinned/Favs, 2: Snippets, 3: Colors, 4: Queue
+  // Tabs: 0: History, 1: Pinned/Favs, 2: Snippets, 3: Color Studio, 4: Queue
   property int activeTab: 0
   property string categoryFilter: "all"
   property string filterText: ""
   property int selectedIndex: 0
   property int historyLimit: 500
+
+  // Calendar / Timeline Filter State
+  property bool calendarOpen: false
+  property int calendarYear: new Date().getFullYear()
+  property int calendarMonth: new Date().getMonth()
+  property string activeDateFilter: "" // "", "today", "yesterday", "7d", "30d", "mtd", or "YYYY-MM-DD"
+
+  // Color Studio State
+  property string activeColorHex: "#3B82F6"
+  property var activeColorAnalysis: ColorStudio.analyzeColor(root.activeColorHex)
 
   property var history: []
   property var snippets: []
@@ -47,6 +58,7 @@ Panel {
     for (var i = 0; i < history.length; i++) if (history[i].pinned) count++
     return count
   }
+  readonly property var dateCounts: ClipboardHistory.getClipDateCounts(history)
 
   // Modals & Popups
   property bool clearConfirmOpen: false
@@ -88,6 +100,7 @@ Panel {
     root.transformOpen = false
     root.mergeDialogOpen = false
     root.qrOpen = false
+    root.calendarOpen = false
     root.rebuildDisplay()
     Qt.callLater(function() { searchInput.forceActiveFocus() })
   }
@@ -99,6 +112,7 @@ Panel {
     root.transformOpen = false
     root.mergeDialogOpen = false
     root.qrOpen = false
+    root.calendarOpen = false
     controller.hide()
   }
 
@@ -128,6 +142,9 @@ Panel {
   function loadHistory(raw) {
     root.history = ClipboardHistory.parseHistory(raw)
     root.colorPalette = ClipboardHistory.extractColors(root.history)
+    if (root.colorPalette.length > 0 && root.activeColorHex === "#3B82F6") {
+      root.selectColor(root.colorPalette[0].hex)
+    }
     if (root.opened) root.rebuildDisplay()
   }
 
@@ -142,6 +159,9 @@ Panel {
     if (!normalized) return
     root.history = ClipboardHistory.addEntry(root.history, normalized, root.historyLimit)
     root.saveHistory()
+    if (normalized.type === "text" && ClipboardHistory.isHexColor(normalized.text)) {
+      root.selectColor(normalized.text.trim())
+    }
     if (root.opened && root.activeTab === 0) root.rebuildDisplay()
   }
 
@@ -163,12 +183,63 @@ Panel {
     }, null, 2) + "\n")
   }
 
+  function selectColor(hex) {
+    var clean = ColorStudio.analyzeColor(hex)
+    if (clean) {
+      root.activeColorHex = clean.hex
+      root.activeColorAnalysis = clean
+    }
+  }
+
+  function copyText(str) {
+    if (!str) return
+    Quickshell.execDetached(["bash", "-c", "printf '%s' " + Util.shellQuote(str) + " | wl-copy"])
+  }
+
+  function prevMonth() {
+    if (root.calendarMonth === 0) {
+      root.calendarMonth = 11
+      root.calendarYear -= 1
+    } else {
+      root.calendarMonth -= 1
+    }
+  }
+
+  function nextMonth() {
+    if (root.calendarMonth === 11) {
+      root.calendarMonth = 0
+      root.calendarYear += 1
+    } else {
+      root.calendarMonth += 1
+    }
+  }
+
+  function getMonthName(m) {
+    var months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+    return months[m]
+  }
+
+  function formatDateFilterLabel(f) {
+    if (f === "today") return "Today"
+    if (f === "yesterday") return "Yesterday"
+    if (f === "7d") return "Last 7 Days"
+    if (f === "30d") return "Last 30 Days"
+    if (f === "mtd") return "This Month"
+    return f
+  }
+
+  function setDateFilter(f) {
+    root.activeDateFilter = (root.activeDateFilter === f) ? "" : f
+    root.calendarOpen = false
+    root.rebuildDisplay()
+  }
+
   function rebuildDisplay() {
     displayModel.clear()
 
     if (root.activeTab === 0 || root.activeTab === 1) {
       var cat = root.activeTab === 1 ? "pinned" : root.categoryFilter
-      var rows = ClipboardHistory.displayRows(root.history, root.filterText, cat, 100)
+      var rows = ClipboardHistory.displayRows(root.history, root.filterText, cat, root.activeDateFilter, 100)
       for (var i = 0; i < rows.length; i++) {
         var r = rows[i]
         displayModel.append({
@@ -184,6 +255,7 @@ Panel {
           path: r.path,
           mime: r.mime,
           timeAgo: r.timeAgo || "",
+          capturedDate: r.capturedDate || "",
           charCount: r.charCount || 0,
           lineCount: r.lineCount || 1,
           wordCount: r.wordCount || 0,
@@ -213,6 +285,7 @@ Panel {
           path: "",
           mime: "text/plain",
           timeAgo: "",
+          capturedDate: "",
           charCount: s.content.length,
           lineCount: s.content.split("\n").length,
           wordCount: s.content.split(/\s+/).length,
@@ -223,36 +296,6 @@ Panel {
           title: s.title,
           language: s.language,
           tags: s.tags
-        })
-      }
-    } else if (root.activeTab === 3) { // Colors
-      var cRows = root.colorPalette
-      for (var c = 0; c < cRows.length; c++) {
-        var col = cRows[c]
-        if (root.filterText && col.hex.toLowerCase().indexOf(root.filterText.toLowerCase()) < 0) continue
-        displayModel.append({
-          itemType: "color",
-          entryType: "text",
-          kind: "color",
-          colorValue: col.hex,
-          colorRgb: col.rgb,
-          codeLang: "HEX",
-          fullText: col.hex,
-          previewText: col.hex + " • " + col.rgb,
-          previewImage: "",
-          path: "",
-          mime: "text/plain",
-          timeAgo: col.timeAgo,
-          charCount: col.hex.length,
-          lineCount: 1,
-          wordCount: 1,
-          isPinned: false,
-          isFavorite: false,
-          historyIndex: -1,
-          snippetIndex: -1,
-          title: col.hex,
-          language: "CSS",
-          tags: "palette"
         })
       }
     } else if (root.activeTab === 4) { // Queue
@@ -274,6 +317,7 @@ Panel {
             path: qEntry.path || "",
             mime: qEntry.mime || "text/plain",
             timeAgo: ClipboardHistory.formatTimeAgo(qEntry.capturedAt),
+            capturedDate: String(qEntry.capturedAt || "").substring(0, 10),
             charCount: qTxt.length,
             lineCount: qTxt.split("\n").length,
             wordCount: qTxt.split(/\s+/).length,
@@ -309,7 +353,7 @@ Panel {
     if (row.entryType === "image" && row.path) {
       Quickshell.execDetached(["bash", "-c", "wl-copy --type " + Util.shellQuote(row.mime || "image/png") + " < " + Util.shellQuote(row.path)])
     } else if (row.fullText) {
-      Quickshell.execDetached(["bash", "-c", "printf '%s' " + Util.shellQuote(row.fullText) + " | wl-copy"])
+      root.copyText(row.fullText)
     }
   }
 
@@ -420,22 +464,6 @@ Panel {
     root.pasteQueue = []
     root.mergeDialogOpen = false
     root.activeTab = 0
-    root.rebuildDisplay()
-  }
-
-  function saveAsSnippet(row) {
-    if (!row || !row.fullText) return
-    var title = row.previewText.slice(0, 30)
-    var lang = row.codeLang ? row.codeLang.toLowerCase() : "text"
-    root.snippets = SnippetLib.addSnippet(root.snippets, {
-      title: title,
-      content: row.fullText,
-      language: lang,
-      folder: "Saved",
-      favorite: false
-    })
-    root.saveSnippets()
-    root.activeTab = 2
     root.rebuildDisplay()
   }
 
@@ -552,8 +580,8 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: searchInput
-    contentWidth: panel.fittedContentWidth(Style.space(520))
-    contentHeight: panel.fittedContentHeight(Style.space(640))
+    contentWidth: panel.fittedContentWidth(Style.space(540))
+    contentHeight: panel.fittedContentHeight(Style.space(660))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -619,7 +647,7 @@ Panel {
 
         Item { Layout.fillWidth: true; width: Style.space(12) }
 
-        // Trailing Controls (Screenshot, Incognito Switch, Clear)
+        // Trailing Controls (Screenshot, Incognito Switch, Close)
         Row {
           spacing: Style.space(6)
           anchors.verticalCenter: parent.verticalCenter
@@ -706,7 +734,7 @@ Panel {
               { id: 0, label: "History", icon: "󰅍", count: root.historyCount },
               { id: 1, label: "Pinned", icon: "󰐃", count: root.pinnedCount },
               { id: 2, label: "Snippets", icon: "󰅩", count: root.snippets.length },
-              { id: 3, label: "Colors", icon: "󰏘", count: root.colorPalette.length },
+              { id: 3, label: "Color Studio", icon: "󰏘", count: root.colorPalette.length },
               { id: 4, label: "Queue", icon: "󰆒", count: root.pasteQueue.length }
             ]
 
@@ -752,101 +780,316 @@ Panel {
       }
 
       // ==========================================
-      // 3. SEARCH & FILTER SECTION
+      // 3. SEARCH & CALENDAR FILTER ROW (History/Pinned Tabs)
       // ==========================================
-      Rectangle {
+      Row {
+        visible: root.activeTab === 0 || root.activeTab === 1 || root.activeTab === 2
         width: parent.width
-        height: Style.space(38)
-        radius: Style.cornerRadius
-        color: Util.alpha(root.fg, 0.05)
-        border.width: 1
-        border.color: searchInput.activeFocus ? Color.accent : Util.alpha(root.fg, 0.12)
+        spacing: Style.space(6)
 
-        Row {
-          anchors.fill: parent
-          anchors.leftMargin: Style.space(10); anchors.rightMargin: Style.space(10)
-          spacing: Style.space(8)
+        // Search Input
+        Rectangle {
+          width: root.activeTab === 0 ? parent.width - Style.space(38) : parent.width
+          height: Style.space(38)
+          radius: Style.cornerRadius
+          color: Util.alpha(root.fg, 0.05)
+          border.width: 1
+          border.color: searchInput.activeFocus ? Color.accent : Util.alpha(root.fg, 0.12)
 
-          Text {
-            text: "󰍉"
-            color: searchInput.activeFocus ? Color.accent : Util.alpha(root.fg, 0.5)
-            font.family: root.fontFamily; font.pixelSize: Style.font.body
-            anchors.verticalCenter: parent.verticalCenter
-          }
-
-          TextInput {
-            id: searchInput
-            width: parent.width - Style.space(50)
-            color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body
-            text: root.filterText
-            anchors.verticalCenter: parent.verticalCenter
-            clip: true; selectByMouse: true
-
-            onTextChanged: {
-              root.filterText = text
-              root.selectedIndex = 0
-              root.rebuildDisplay()
-            }
-
-            // Quick 1-9 paste shortcuts!
-            Keys.onPressed: function(event) {
-              if (!event.modifiers && event.key >= Qt.Key_1 && event.key <= Qt.Key_9 && root.filterText === "") {
-                var numIdx = event.key - Qt.Key_1
-                if (numIdx < displayModel.count) {
-                  root.pasteRow(displayModel.get(numIdx))
-                  event.accepted = true
-                  return
-                }
-              }
-            }
-
-            Keys.onUpPressed: {
-              if (displayModel.count > 0) {
-                root.selectedIndex = (root.selectedIndex - 1 + displayModel.count) % displayModel.count
-                list.positionViewAtIndex(root.selectedIndex, ListView.Contain)
-              }
-            }
-            Keys.onDownPressed: {
-              if (displayModel.count > 0) {
-                root.selectedIndex = (root.selectedIndex + 1) % displayModel.count
-                list.positionViewAtIndex(root.selectedIndex, ListView.Contain)
-              }
-            }
-            Keys.onReturnPressed: function(event) {
-              if (displayModel.count > 0 && root.selectedIndex >= 0 && root.selectedIndex < displayModel.count) {
-                var row = displayModel.get(root.selectedIndex)
-                if (event.modifiers & Qt.ShiftModifier) root.toggleQueue(row)
-                else root.pasteRow(row)
-              }
-            }
-            Keys.onEscapePressed: {
-              if (root.filterText !== "") root.filterText = ""
-              else root.close()
-            }
+          Row {
+            anchors.fill: parent
+            anchors.leftMargin: Style.space(10); anchors.rightMargin: Style.space(10)
+            spacing: Style.space(8)
 
             Text {
-              visible: searchInput.text === "" && !searchInput.activeFocus
-              text: root.activeTab === 0 ? "Search history, code, colors… (Press 1-9 to paste)" : (root.activeTab === 2 ? "Search snippets…" : "Filter items…")
-              color: Util.alpha(root.fg, 0.4)
+              text: "󰍉"
+              color: searchInput.activeFocus ? Color.accent : Util.alpha(root.fg, 0.5)
               font.family: root.fontFamily; font.pixelSize: Style.font.body
               anchors.verticalCenter: parent.verticalCenter
             }
+
+            TextInput {
+              id: searchInput
+              width: parent.width - Style.space(50)
+              color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body
+              text: root.filterText
+              anchors.verticalCenter: parent.verticalCenter
+              clip: true; selectByMouse: true
+
+              onTextChanged: {
+                root.filterText = text
+                root.selectedIndex = 0
+                root.rebuildDisplay()
+              }
+
+              // Quick 1-9 paste shortcuts!
+              Keys.onPressed: function(event) {
+                if (!event.modifiers && event.key >= Qt.Key_1 && event.key <= Qt.Key_9 && root.filterText === "") {
+                  var numIdx = event.key - Qt.Key_1
+                  if (numIdx < displayModel.count) {
+                    root.pasteRow(displayModel.get(numIdx))
+                    event.accepted = true
+                    return
+                  }
+                }
+              }
+
+              Keys.onUpPressed: {
+                if (displayModel.count > 0) {
+                  root.selectedIndex = (root.selectedIndex - 1 + displayModel.count) % displayModel.count
+                  list.positionViewAtIndex(root.selectedIndex, ListView.Contain)
+                }
+              }
+              Keys.onDownPressed: {
+                if (displayModel.count > 0) {
+                  root.selectedIndex = (root.selectedIndex + 1) % displayModel.count
+                  list.positionViewAtIndex(root.selectedIndex, ListView.Contain)
+                }
+              }
+              Keys.onReturnPressed: function(event) {
+                if (displayModel.count > 0 && root.selectedIndex >= 0 && root.selectedIndex < displayModel.count) {
+                  var row = displayModel.get(root.selectedIndex)
+                  if (event.modifiers & Qt.ShiftModifier) root.toggleQueue(row)
+                  else root.pasteRow(row)
+                }
+              }
+              Keys.onEscapePressed: {
+                if (root.calendarOpen) root.calendarOpen = false
+                else if (root.filterText !== "") root.filterText = ""
+                else if (root.activeDateFilter !== "") { root.activeDateFilter = ""; root.rebuildDisplay() }
+                else root.close()
+              }
+
+              Text {
+                visible: searchInput.text === "" && !searchInput.activeFocus
+                text: root.activeTab === 0 ? "Search history, code, colors… (Press 1-9 to paste)" : (root.activeTab === 2 ? "Search snippets…" : "Filter items…")
+                color: Util.alpha(root.fg, 0.4)
+                font.family: root.fontFamily; font.pixelSize: Style.font.body
+                anchors.verticalCenter: parent.verticalCenter
+              }
+            }
+
+            Text {
+              visible: searchInput.text !== ""
+              text: "✕"
+              color: Util.alpha(root.fg, 0.6)
+              font.family: root.fontFamily; font.pixelSize: Style.font.body
+              anchors.verticalCenter: parent.verticalCenter
+              MouseArea { anchors.fill: parent; onClicked: searchInput.text = ""; cursorShape: Qt.PointingHandCursor }
+            }
           }
+        }
+
+        // Calendar Filter Button (History tab only)
+        Rectangle {
+          visible: root.activeTab === 0
+          width: Style.space(32); height: Style.space(38)
+          radius: Style.cornerRadius
+          color: root.activeDateFilter !== "" ? Color.accent : (root.calendarOpen ? Util.alpha(Color.accent, 0.25) : Util.alpha(root.fg, 0.08))
+          border.width: 1
+          border.color: root.activeDateFilter !== "" ? Color.accent : Util.alpha(root.fg, 0.12)
 
           Text {
-            visible: searchInput.text !== ""
-            text: "✕"
-            color: Util.alpha(root.fg, 0.6)
-            font.family: root.fontFamily; font.pixelSize: Style.font.body
-            anchors.verticalCenter: parent.verticalCenter
-            MouseArea { anchors.fill: parent; onClicked: searchInput.text = ""; cursorShape: Qt.PointingHandCursor }
+            text: "󰸗"
+            color: root.activeDateFilter !== "" ? "#fff" : (root.calendarOpen ? Color.accent : root.fg)
+            font.family: root.fontFamily; font.pixelSize: Style.font.heading
+            anchors.centerIn: parent
+          }
+
+          MouseArea {
+            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+            onClicked: root.calendarOpen = !root.calendarOpen
+          }
+        }
+      }
+
+      // ==========================================
+      // CALENDAR PICKER DROPDOWN CARD
+      // ==========================================
+      Rectangle {
+        visible: root.calendarOpen && root.activeTab === 0
+        width: parent.width
+        height: Style.space(230)
+        radius: Style.space(8)
+        color: root.bg
+        border.width: 1; border.color: root.borderCol
+
+        Column {
+          anchors.fill: parent; anchors.margins: Style.space(10)
+          spacing: Style.space(8)
+
+          // Month / Year Navigation Header
+          Row {
+            width: parent.width
+            height: Style.space(24)
+
+            Rectangle {
+              width: Style.space(24); height: Style.space(24); radius: Style.space(4)
+              color: Util.alpha(root.fg, 0.08)
+              Text { text: "◀"; color: root.fg; font.pixelSize: Style.space(10); anchors.centerIn: parent }
+              MouseArea { anchors.fill: parent; onClicked: root.prevMonth(); cursorShape: Qt.PointingHandCursor }
+            }
+
+            Item { Layout.fillWidth: true; width: Style.space(8) }
+
+            Text {
+              text: root.getMonthName(root.calendarMonth) + " " + root.calendarYear
+              color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Item { Layout.fillWidth: true; width: Style.space(8) }
+
+            Rectangle {
+              width: Style.space(24); height: Style.space(24); radius: Style.space(4)
+              color: Util.alpha(root.fg, 0.08)
+              Text { text: "▶"; color: root.fg; font.pixelSize: Style.space(10); anchors.centerIn: parent }
+              MouseArea { anchors.fill: parent; onClicked: root.nextMonth(); cursorShape: Qt.PointingHandCursor }
+            }
+          }
+
+          // Presets Bar (All, Today, Yesterday, 7d, 30d, MTD)
+          Row {
+            spacing: Style.space(4)
+            Repeater {
+              model: [
+                { id: "all", label: "All Time" },
+                { id: "today", label: "Today" },
+                { id: "yesterday", label: "Yesterday" },
+                { id: "7d", label: "7 Days" },
+                { id: "30d", label: "30 Days" },
+                { id: "mtd", label: "This Month" }
+              ]
+              Rectangle {
+                required property var modelData
+                width: (parent.width - Style.space(20)) / 6
+                height: Style.space(22)
+                radius: Style.space(4)
+                color: root.activeDateFilter === modelData.id ? Color.accent : Util.alpha(root.fg, 0.06)
+                Text {
+                  text: parent.modelData.label
+                  color: root.activeDateFilter === parent.modelData.id ? "#fff" : root.fg
+                  font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: root.activeDateFilter === parent.modelData.id
+                  anchors.centerIn: parent
+                }
+                MouseArea {
+                  anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.setDateFilter(parent.modelData.id === "all" ? "" : parent.modelData.id)
+                }
+              }
+            }
+          }
+
+          // Day Headers S M T W T F S
+          Row {
+            width: parent.width
+            Repeater {
+              model: ["S", "M", "T", "W", "T", "F", "S"]
+              Text {
+                required property string modelData
+                width: parent.width / 7
+                text: modelData
+                color: Util.alpha(root.fg, 0.45)
+                font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+              }
+            }
+          }
+
+          // Days Grid (6 rows x 7 cols)
+          Grid {
+            columns: 7
+            width: parent.width
+            rowSpacing: Style.space(2)
+
+            Repeater {
+              model: 35
+              Rectangle {
+                required property int index
+                readonly property int firstDay: new Date(root.calendarYear, root.calendarMonth, 1).getDay()
+                readonly property int totalDays: new Date(root.calendarYear, root.calendarMonth + 1, 0).getDate()
+                readonly property int dayNum: index - firstDay + 1
+                readonly property bool isValidDay: dayNum >= 1 && dayNum <= totalDays
+                readonly property string dateStr: isValidDay ? (root.calendarYear + "-" + String(root.calendarMonth + 1).padStart(2, '0') + "-" + String(dayNum).padStart(2, '0')) : ""
+                readonly property int count: isValidDay ? (root.dateCounts[dateStr] || 0) : 0
+                readonly property bool isSelected: root.activeDateFilter === dateStr
+                readonly property bool isToday: {
+                  var now = new Date()
+                  return isValidDay && now.getFullYear() === root.calendarYear && now.getMonth() === root.calendarMonth && now.getDate() === dayNum
+                }
+
+                width: parent.width / 7
+                height: Style.space(22)
+                radius: Style.space(4)
+                color: isSelected ? Color.accent : (count > 0 ? Util.alpha(Color.accent, Math.min(0.2 + count * 0.1, 0.6)) : "transparent")
+                border.width: isToday ? 1 : 0
+                border.color: Color.accent
+
+                Text {
+                  visible: parent.isValidDay
+                  text: String(parent.dayNum)
+                  color: parent.isSelected ? "#fff" : (parent.count > 0 ? root.fg : Util.alpha(root.fg, 0.35))
+                  font.family: root.fontFamily; font.pixelSize: Style.space(10)
+                  font.bold: parent.count > 0 || parent.isToday
+                  anchors.centerIn: parent
+                }
+
+                Rectangle {
+                  visible: parent.isValidDay && parent.count > 0 && !parent.isSelected
+                  width: Style.space(3); height: Style.space(3); radius: Style.space(1.5)
+                  color: Color.accent
+                  anchors.bottom: parent.bottom; anchors.bottomMargin: 1
+                  anchors.horizontalCenter: parent.horizontalCenter
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  enabled: parent.isValidDay
+                  cursorShape: parent.isValidDay ? Qt.PointingHandCursor : Qt.ArrowCursor
+                  onClicked: {
+                    if (parent.dateStr) root.setDateFilter(parent.dateStr)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Active Date Filter Banner
+      Row {
+        visible: root.activeDateFilter !== "" && root.activeTab === 0
+        spacing: Style.space(6)
+
+        Rectangle {
+          height: Style.space(22)
+          radius: Style.space(11)
+          color: Util.alpha(Color.accent, 0.15)
+          border.width: 1; border.color: Color.accent
+          width: filterDateContent.implicitWidth + Style.space(20)
+
+          Row {
+            id: filterDateContent
+            anchors.centerIn: parent
+            spacing: Style.space(6)
+            Text {
+              text: "󰸗 " + root.formatDateFilterLabel(root.activeDateFilter)
+              color: Color.accent
+              font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
+            }
+            Text { text: "✕"; color: Color.accent; font.pixelSize: Style.space(10); font.bold: true }
+          }
+
+          MouseArea {
+            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+            onClicked: { root.activeDateFilter = ""; root.rebuildDisplay() }
           }
         }
       }
 
       // Category Chips (History tab only)
       Row {
-        visible: root.activeTab === 0
+        visible: root.activeTab === 0 && !root.calendarOpen
         width: parent.width
         spacing: Style.space(6)
 
@@ -898,94 +1141,297 @@ Panel {
         }
       }
 
-      // Snippet Action Bar (Snippets Tab)
-      Row {
-        visible: root.activeTab === 2
+      // =========================================================================
+      // TAB 3: COLOR STUDIO (Dedicated Advanced Color Studio)
+      // =========================================================================
+      Flickable {
+        id: colorStudioFlick
+        visible: root.activeTab === 3
         width: parent.width
-        spacing: Style.space(8)
+        height: Style.space(510)
+        contentWidth: width
+        contentHeight: colorStudioCol.implicitHeight + Style.space(20)
+        clip: true
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-        Rectangle {
-          width: Style.space(120); height: Style.space(28)
-          radius: Style.space(6)
-          color: Color.accent
+        Column {
+          id: colorStudioCol
+          width: parent.width
+          spacing: Style.space(12)
 
-          Row {
-            anchors.centerIn: parent; spacing: Style.space(4)
-            Text { text: "+"; color: "#fff"; font.pixelSize: Style.font.body; font.bold: true }
-            Text { text: "New Snippet"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+          // Top Inspector Hero
+          Rectangle {
+            width: parent.width
+            height: Style.space(110)
+            radius: Style.space(8)
+            color: Util.alpha(root.fg, 0.04)
+            border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+
+            Row {
+              anchors.fill: parent; anchors.margins: Style.space(10)
+              spacing: Style.space(12)
+
+              // Large Color Swatch
+              Rectangle {
+                width: Style.space(90); height: Style.space(90)
+                radius: Style.space(8)
+                color: root.activeColorHex
+                border.width: 1; border.color: Util.alpha(root.fg, 0.2)
+
+                Text {
+                  text: root.activeColorHex
+                  color: root.activeColorAnalysis && root.activeColorAnalysis.contrastBlack > 4.5 ? "#000" : "#fff"
+                  font.family: "monospace"; font.pixelSize: Style.space(10); font.bold: true
+                  anchors.bottom: parent.bottom; anchors.bottomMargin: 4
+                  anchors.horizontalCenter: parent.horizontalCenter
+                }
+              }
+
+              // Color Inputs & Quick Actions
+              Column {
+                width: parent.width - Style.space(115)
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(6)
+
+                Row {
+                  width: parent.width; spacing: Style.space(6)
+                  Rectangle {
+                    width: parent.width - Style.space(70); height: Style.space(30); radius: Style.space(4)
+                    color: Util.alpha(root.fg, 0.06); border.width: 1; border.color: Util.alpha(root.fg, 0.15)
+                    TextInput {
+                      id: colorTextInput
+                      anchors.fill: parent; anchors.margins: Style.space(4)
+                      color: root.fg; font.family: "monospace"; font.pixelSize: Style.font.body
+                      text: root.activeColorHex
+                      onAccepted: root.selectColor(text)
+                    }
+                  }
+                  Rectangle {
+                    width: Style.space(64); height: Style.space(30); radius: Style.space(4)
+                    color: Color.accent
+                    Text { text: "Inspect"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.centerIn: parent }
+                    MouseArea { anchors.fill: parent; onClicked: root.selectColor(colorTextInput.text); cursorShape: Qt.PointingHandCursor }
+                  }
+                }
+
+                // WCAG Contrast Badges
+                Row {
+                  spacing: Style.space(8)
+                  Rectangle {
+                    height: Style.space(18); radius: Style.space(3); width: whiteA11y.implicitWidth + Style.space(8)
+                    color: root.activeColorAnalysis && root.activeColorAnalysis.passAAWhite ? "#10B981" : "#EF4444"
+                    Text {
+                      id: whiteA11y
+                      text: "White: " + (root.activeColorAnalysis ? root.activeColorAnalysis.contrastWhite + ":1" : "")
+                      color: "#fff"; font.pixelSize: Style.space(9); font.bold: true; anchors.centerIn: parent
+                    }
+                  }
+                  Rectangle {
+                    height: Style.space(18); radius: Style.space(3); width: blackA11y.implicitWidth + Style.space(8)
+                    color: root.activeColorAnalysis && root.activeColorAnalysis.passAABlack ? "#10B981" : "#EF4444"
+                    Text {
+                      id: blackA11y
+                      text: "Black: " + (root.activeColorAnalysis ? root.activeColorAnalysis.contrastBlack + ":1" : "")
+                      color: "#fff"; font.pixelSize: Style.space(9); font.bold: true; anchors.centerIn: parent
+                    }
+                  }
+                }
+
+                Text {
+                  text: "Click any color code below to copy to clipboard"
+                  color: Util.alpha(root.fg, 0.45); font.family: root.fontFamily; font.pixelSize: Style.space(9)
+                }
+              }
+            }
           }
-          MouseArea {
-            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-            onClicked: {
-              root.snippetEditIndex = -1
-              root.snippetEditTitle = ""
-              root.snippetEditContent = ""
-              root.snippetEditLang = "javascript"
-              root.snippetEditFolder = ""
-              root.snippetEditOpen = true
+
+          // Format Cards Grid (HEX, RGB, HSL, CMYK)
+          Grid {
+            columns: 2
+            width: parent.width
+            spacing: Style.space(6)
+
+            Repeater {
+              model: [
+                { label: "HEX", val: root.activeColorAnalysis ? root.activeColorAnalysis.hex : "" },
+                { label: "RGB", val: root.activeColorAnalysis ? root.activeColorAnalysis.rgbStr : "" },
+                { label: "HSL", val: root.activeColorAnalysis ? root.activeColorAnalysis.hslStr : "" },
+                { label: "CMYK", val: root.activeColorAnalysis ? root.activeColorAnalysis.cmykStr : "" }
+              ]
+              Rectangle {
+                required property var modelData
+                width: (parent.width - Style.space(6)) / 2
+                height: Style.space(42)
+                radius: Style.space(6)
+                color: Util.alpha(root.fg, 0.05)
+                border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+
+                Row {
+                  anchors.fill: parent; anchors.margins: Style.space(8)
+                  spacing: Style.space(8)
+
+                  Column {
+                    anchors.verticalCenter: parent.verticalCenter
+                    Text { text: parent.parent.parent.modelData.label; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(8); font.bold: true }
+                    Text { text: parent.parent.parent.modelData.val; color: root.fg; font.family: "monospace"; font.pixelSize: Style.space(10); font.bold: true }
+                  }
+
+                  Item { Layout.fillWidth: true }
+                  Text { text: "󰆏"; color: Util.alpha(root.fg, 0.4); font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                }
+
+                MouseArea {
+                  anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.copyText(parent.modelData.val)
+                }
+              }
+            }
+          }
+
+          // Harmonies Section
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Text {
+              text: "Color Harmonies"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true
+            }
+
+            Repeater {
+              model: root.activeColorAnalysis ? root.activeColorAnalysis.harmonies : []
+              Rectangle {
+                required property var modelData
+                width: parent.width
+                height: Style.space(46)
+                radius: Style.space(6)
+                color: Util.alpha(root.fg, 0.03)
+                border.width: 1; border.color: Util.alpha(root.fg, 0.06)
+
+                Row {
+                  anchors.fill: parent; anchors.margins: Style.space(6)
+                  spacing: Style.space(8)
+
+                  Text {
+                    width: Style.space(110)
+                    text: parent.parent.modelData.name
+                    color: Util.alpha(root.fg, 0.7)
+                    font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+
+                  Row {
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Style.space(6)
+                    Repeater {
+                      model: parent.parent.parent.modelData.colors
+                      Rectangle {
+                        required property string modelData
+                        width: Style.space(56); height: Style.space(32); radius: Style.space(4)
+                        color: modelData
+                        border.width: 1; border.color: Util.alpha(root.fg, 0.2)
+
+                        Text {
+                          text: parent.modelData
+                          color: ColorStudio.getContrastRatio(parent.modelData, "#000000") > 4.5 ? "#000" : "#fff"
+                          font.family: "monospace"; font.pixelSize: Style.space(8); font.bold: true
+                          anchors.centerIn: parent
+                        }
+
+                        MouseArea {
+                          anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                          onClicked: {
+                            root.selectColor(parent.modelData)
+                            root.copyText(parent.modelData)
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // Tints & Shades Strips
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Text { text: "Tints (Lighter) & Shades (Darker)"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true }
+
+            Row {
+              width: parent.width; spacing: Style.space(2)
+              Repeater {
+                model: root.activeColorAnalysis ? root.activeColorAnalysis.tints.concat(root.activeColorAnalysis.shades) : []
+                Rectangle {
+                  required property string modelData
+                  width: (parent.width - Style.space(22)) / 12
+                  height: Style.space(28); radius: Style.space(3)
+                  color: modelData
+                  border.width: 1; border.color: Util.alpha(root.fg, 0.15)
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      root.selectColor(parent.modelData)
+                      root.copyText(parent.modelData)
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // Clipboard Extracted Palettes
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Text {
+              text: "Extracted Clipboard Palettes (" + root.colorPalette.length + " colors)"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true
+            }
+
+            Grid {
+              columns: 5
+              width: parent.width
+              spacing: Style.space(6)
+
+              Repeater {
+                model: root.colorPalette
+                Rectangle {
+                  required property var modelData
+                  width: (parent.width - Style.space(24)) / 5
+                  height: Style.space(40); radius: Style.space(4)
+                  color: modelData.hex
+                  border.width: 1; border.color: Util.alpha(root.fg, 0.25)
+
+                  Text {
+                    text: parent.modelData.hex
+                    color: ColorStudio.getContrastRatio(parent.modelData.hex, "#000000") > 4.5 ? "#000" : "#fff"
+                    font.family: "monospace"; font.pixelSize: Style.space(8); font.bold: true
+                    anchors.centerIn: parent
+                  }
+
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      root.selectColor(parent.modelData.hex)
+                      root.copyText(parent.modelData.hex)
+                    }
+                  }
+                }
+              }
             }
           }
         }
       }
 
-      // Queue Action Bar (Queue Tab)
-      Row {
-        visible: root.activeTab === 4
-        width: parent.width
-        spacing: Style.space(8)
-
-        Rectangle {
-          width: Style.space(120); height: Style.space(28)
-          radius: Style.space(6)
-          color: root.pasteQueue.length > 0 ? Color.accent : Util.alpha(root.fg, 0.1)
-
-          Row {
-            anchors.centerIn: parent; spacing: Style.space(4)
-            Text { text: "󰆒"; color: "#fff"; font.pixelSize: Style.font.caption }
-            Text { text: "Paste Next"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-          }
-          MouseArea {
-            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-            onClicked: root.flushQueue()
-          }
-        }
-
-        Rectangle {
-          visible: root.pasteQueue.length >= 2
-          width: Style.space(110); height: Style.space(28)
-          radius: Style.space(6)
-          color: Util.alpha(Color.accent, 0.2)
-          border.width: 1; border.color: Color.accent
-
-          Row {
-            anchors.centerIn: parent; spacing: Style.space(4)
-            Text { text: "󰑣"; color: Color.accent; font.pixelSize: Style.font.caption }
-            Text { text: "Merge All"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-          }
-          MouseArea {
-            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-            onClicked: root.mergeDialogOpen = true
-          }
-        }
-
-        Rectangle {
-          width: Style.space(90); height: Style.space(28)
-          radius: Style.space(6)
-          color: Util.alpha(root.fg, 0.08)
-          Text { text: "Clear Queue"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
-          MouseArea {
-            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-            onClicked: { root.pasteQueue = []; root.rebuildDisplay() }
-          }
-        }
-      }
-
       // ==========================================
-      // 4. MAIN SCROLLABLE LIST
+      // 4. MAIN SCROLLABLE LIST (Tabs 0, 1, 2, 4)
       // ==========================================
       Rectangle {
+        visible: root.activeTab !== 3
         width: parent.width
-        height: root.activeTab === 0 ? Style.space(420) : Style.space(445)
+        height: root.calendarOpen ? Style.space(220) : (root.activeTab === 0 ? Style.space(420) : Style.space(445))
         color: "transparent"
 
         ListView {
@@ -1012,6 +1458,7 @@ Panel {
             required property string path
             required property string mime
             required property string timeAgo
+            required property string capturedDate
             required property int charCount
             required property int lineCount
             required property int wordCount
@@ -1298,12 +1745,12 @@ Panel {
 
         // Empty state
         Column {
-          visible: displayModel.count === 0
+          visible: displayModel.count === 0 && root.activeTab !== 3
           anchors.centerIn: parent
           spacing: Style.space(10)
           Text { text: "󰅍"; color: Util.alpha(root.fg, 0.25); font.family: root.fontFamily; font.pixelSize: Style.space(42); anchors.horizontalCenter: parent.horizontalCenter }
           Text {
-            text: root.filterText !== "" ? "No matching clips found" : (root.activeTab === 0 ? "Clipboard history is empty" : (root.activeTab === 1 ? "No pinned items yet • Click 󰐃 on any clip" : (root.activeTab === 2 ? "No snippets created yet" : (root.activeTab === 3 ? "No color codes found in history" : "Paste queue is empty"))))
+            text: root.filterText !== "" ? "No matching clips found" : (root.activeTab === 0 ? (root.activeDateFilter !== "" ? "No clips recorded for this date" : "Clipboard history is empty") : (root.activeTab === 1 ? "No pinned items yet • Click 󰐃 on any clip" : (root.activeTab === 2 ? "No snippets created yet" : "Paste queue is empty")))
             color: Util.alpha(root.fg, 0.5)
             font.family: root.fontFamily; font.pixelSize: Style.font.body
             anchors.horizontalCenter: parent.horizontalCenter
@@ -1320,7 +1767,7 @@ Panel {
         spacing: Style.space(8)
 
         Text {
-          text: "[1-9] Quick Paste • ↵ Paste • P Pin • F Star • 🔤 Transform • Del Remove"
+          text: "[1-9] Quick Paste • ↵ Paste • P Pin • F Star • 󰸗 Date Filter • 🔤 Transform • Del Remove"
           color: Util.alpha(root.fg, 0.45)
           font.family: root.fontFamily
           font.pixelSize: Style.space(10)
