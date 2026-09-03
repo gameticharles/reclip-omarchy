@@ -29,6 +29,8 @@ Panel {
   property string incognitoPath: stateDir + "/incognito"
   property string pluginDir: home + "/.config/omarchy/plugins/reclip"
   property string captureScript: pluginDir + "/capture.sh"
+  property string ocrScript: pluginDir + "/ocr-capture.sh"
+  property string settingsPath: stateDir + "/settings.json"
 
   property bool incognito: false
   // Tabs: 0: History, 1: Pinned/Favs, 2: Snippets, 3: Color Studio, 4: Queue
@@ -37,6 +39,29 @@ Panel {
   property string filterText: ""
   property int selectedIndex: 0
   property int historyLimit: 500
+
+  // Settings & Privacy State
+  property bool settingsOpen: false
+  property int settingsMaxClips: 500
+  property int settingsRetainDays: 30
+  property bool settingsIgnoreSensitive: true
+
+  // Image Zoom Modal State
+  property bool imageZoomOpen: false
+  property string imageZoomPath: ""
+  property real imageZoomScale: 1.0
+  property real imageZoomPanX: 0.0
+  property real imageZoomPanY: 0.0
+
+  // Bulk Selection Mode State
+  property bool bulkMode: false
+  property var bulkSelectedIndices: []
+
+  // Tag / Collection Editor State
+  property bool tagModalOpen: false
+  property int tagModalClipIndex: -1
+  property var tagModalCurrentTags: []
+  property string tagModalInputText: ""
 
   // Timeline & Calendar State (Exact parity with ReClip TimelineView)
   property bool showTimeline: false
@@ -61,6 +86,7 @@ Panel {
     for (var i = 0; i < history.length; i++) if (history[i].pinned) count++
     return count
   }
+  readonly property var allTags: ClipboardHistory.getAllTags(history)
   readonly property var dateCounts: TimelineStudio.getClipDateCounts(history)
   readonly property var timelineData: TimelineStudio.computeTimelineMarkers(history, timelineZoom)
   readonly property var calendarDays: TimelineStudio.buildCalendarGrid(calendarYear, calendarMonth, history, activeDateFilter)
@@ -109,6 +135,11 @@ Panel {
     root.mergeDialogOpen = false
     root.qrOpen = false
     root.showCalendar = false
+    root.imageZoomOpen = false
+    root.settingsOpen = false
+    root.tagModalOpen = false
+    root.bulkMode = false
+    root.bulkSelectedIndices = []
     root.activeMenuClipIndex = -1
     root.rebuildDisplay()
     Qt.callLater(function() { searchInput.forceActiveFocus() })
@@ -122,6 +153,11 @@ Panel {
     root.mergeDialogOpen = false
     root.qrOpen = false
     root.showCalendar = false
+    root.imageZoomOpen = false
+    root.settingsOpen = false
+    root.tagModalOpen = false
+    root.bulkMode = false
+    root.bulkSelectedIndices = []
     root.activeMenuClipIndex = -1
     controller.hide()
   }
@@ -244,6 +280,198 @@ Panel {
     root.rebuildDisplay()
   }
 
+  // --- OCR Text Recognition Helpers ---
+  function captureOcrScreen() {
+    root.close()
+    Quickshell.execDetached([root.ocrScript])
+  }
+
+  function runOcrOnImage(imgUriOrPath) {
+    if (!imgUriOrPath) return
+    var cleanPath = String(imgUriOrPath).replace(/^file:\/\//, "")
+    Quickshell.execDetached([root.ocrScript, cleanPath])
+  }
+
+  // --- URL Open in Browser Helper ---
+  function openUrlInBrowser(urlStr) {
+    if (!urlStr) return
+    Quickshell.execDetached(["xdg-open", urlStr])
+  }
+
+  // --- Image Zoom Helpers ---
+  function openImageZoom(imgUriOrPath) {
+    if (!imgUriOrPath) return
+    root.imageZoomPath = String(imgUriOrPath).replace(/^file:\/\//, "")
+    root.imageZoomScale = 1.0
+    root.imageZoomPanX = 0.0
+    root.imageZoomPanY = 0.0
+    root.imageZoomOpen = true
+  }
+
+  function closeImageZoom() {
+    root.imageZoomOpen = false
+  }
+
+  function resetImageZoom() {
+    root.imageZoomScale = 1.0
+    root.imageZoomPanX = 0.0
+    root.imageZoomPanY = 0.0
+  }
+
+  // --- Settings & Retention Helpers ---
+  function loadSettings(raw) {
+    try {
+      var s = JSON.parse(raw)
+      if (s.maxClips !== undefined) root.settingsMaxClips = s.maxClips
+      if (s.retainDays !== undefined) root.settingsRetainDays = s.retainDays
+      if (s.ignoreSensitive !== undefined) root.settingsIgnoreSensitive = s.ignoreSensitive
+    } catch(e) {}
+  }
+
+  function saveSettings() {
+    var obj = {
+      maxClips: root.settingsMaxClips,
+      retainDays: root.settingsRetainDays,
+      ignoreSensitive: root.settingsIgnoreSensitive
+    }
+    settingsFile.setText(JSON.stringify(obj, null, 2) + "\n")
+  }
+
+  function applyRetentionClean() {
+    root.history = ClipboardHistory.applyRetentionLimits(root.history, root.settingsMaxClips, root.settingsRetainDays)
+    root.saveHistory()
+    root.rebuildDisplay()
+    Quickshell.execDetached(["notify-send", "-a", "ReClip", "Retention Policy Applied", "Cleaned older clips based on your retention limits."])
+  }
+
+  function exportBackupJson() {
+    var d = new Date()
+    var dateStr = d.toISOString().substring(0, 10)
+    var exportPath = root.home + "/reclip-backup-" + dateStr + ".json"
+    Quickshell.execDetached(["bash", "-c", "cp " + Util.shellQuote(root.historyPath) + " " + Util.shellQuote(exportPath) + " && notify-send -a 'ReClip' 'Backup Exported' 'Saved history to " + exportPath + "'"])
+  }
+
+  // --- Bulk Selection Helpers ---
+  function toggleBulkMode() {
+    root.bulkMode = !root.bulkMode
+    root.bulkSelectedIndices = []
+  }
+
+  function isBulkSelected(hIdx) {
+    return root.bulkSelectedIndices.indexOf(hIdx) >= 0
+  }
+
+  function toggleBulkSelect(hIdx) {
+    var arr = root.bulkSelectedIndices.slice()
+    var p = arr.indexOf(hIdx)
+    if (p >= 0) arr.splice(p, 1)
+    else arr.push(hIdx)
+    root.bulkSelectedIndices = arr
+  }
+
+  function bulkSelectAll() {
+    var arr = []
+    for (var i = 0; i < displayModel.count; i++) {
+      var item = displayModel.get(i)
+      if (item.itemType === "history" && item.historyIndex >= 0) {
+        arr.push(item.historyIndex)
+      }
+    }
+    root.bulkSelectedIndices = arr
+  }
+
+  function bulkClearSelection() {
+    root.bulkSelectedIndices = []
+  }
+
+  function executeBulkPin(pinState) {
+    if (root.bulkSelectedIndices.length === 0) return
+    root.history = ClipboardHistory.bulkPin(root.history, root.bulkSelectedIndices, pinState)
+    root.saveHistory()
+    root.rebuildDisplay()
+  }
+
+  function executeBulkDelete() {
+    if (root.bulkSelectedIndices.length === 0) return
+    root.history = ClipboardHistory.bulkDelete(root.history, root.bulkSelectedIndices)
+    root.saveHistory()
+    root.bulkSelectedIndices = []
+    root.rebuildDisplay()
+  }
+
+  function executeBulkPaste() {
+    if (root.bulkSelectedIndices.length === 0) return
+    root.close()
+    var parts = []
+    for (var i = 0; i < root.bulkSelectedIndices.length; i++) {
+      var idx = root.bulkSelectedIndices[i]
+      if (idx >= 0 && idx < root.history.length) {
+        var entry = root.history[idx]
+        parts.push(ClipboardHistory.fullText(entry))
+      }
+    }
+    var merged = parts.join("\n")
+    Quickshell.execDetached(["bash", "-c", "printf '%s' " + Util.shellQuote(merged) + " | wl-copy && sleep 0.15 && wtype -M shift -k Insert -m shift"])
+    root.bulkSelectedIndices = []
+  }
+
+  function executeBulkTransform(mode) {
+    if (root.bulkSelectedIndices.length === 0) return
+    var next = root.history.slice()
+    for (var i = 0; i < root.bulkSelectedIndices.length; i++) {
+      var idx = root.bulkSelectedIndices[i]
+      if (idx >= 0 && idx < next.length) {
+        var item = Object.assign({}, next[idx])
+        if (item.type === "text" && item.text) {
+          item.text = ClipboardHistory.transformText(item.text, mode)
+          next[idx] = item
+        }
+      }
+    }
+    root.history = next
+    root.saveHistory()
+    root.rebuildDisplay()
+  }
+
+  // --- Tag / Collection Helpers ---
+  function openTagModal(hIdx) {
+    if (hIdx < 0 || hIdx >= root.history.length) return
+    root.tagModalClipIndex = hIdx
+    var item = root.history[hIdx]
+    root.tagModalCurrentTags = (item && Array.isArray(item.tags)) ? item.tags.slice() : []
+    root.tagModalInputText = ""
+    root.tagModalOpen = true
+  }
+
+  function addTagToClipModal(tagStr) {
+    var clean = String(tagStr || "").trim().replace(/^#/, "")
+    if (!clean) return
+    var arr = root.tagModalCurrentTags.slice()
+    if (arr.indexOf(clean) < 0) {
+      arr.push(clean)
+      root.tagModalCurrentTags = arr
+    }
+    root.tagModalInputText = ""
+  }
+
+  function removeTagFromClipModal(tagStr) {
+    var arr = root.tagModalCurrentTags.slice()
+    var p = arr.indexOf(tagStr)
+    if (p >= 0) {
+      arr.splice(p, 1)
+      root.tagModalCurrentTags = arr
+    }
+  }
+
+  function saveTagModal() {
+    if (root.tagModalClipIndex >= 0) {
+      root.history = ClipboardHistory.setClipTags(root.history, root.tagModalClipIndex, root.tagModalCurrentTags)
+      root.saveHistory()
+      root.tagModalOpen = false
+      root.rebuildDisplay()
+    }
+  }
+
   function openClipMenu(idx, item) {
     if (root.activeMenuClipIndex === idx) {
       root.activeMenuClipIndex = -1
@@ -292,11 +520,12 @@ Panel {
           wordCount: r.wordCount || 0,
           isPinned: !!r.isPinned,
           isFavorite: !!r.isFavorite,
+          urlDomain: r.urlDomain || "",
+          tags: Array.isArray(r.tags) ? r.tags.join(",") : (r.tags || ""),
           historyIndex: r.index,
           snippetIndex: -1,
           title: "",
-          language: "",
-          tags: ""
+          language: ""
         })
       }
     } else if (root.activeTab === 2) { // Snippets
@@ -322,11 +551,12 @@ Panel {
           wordCount: s.content.split(/\s+/).length,
           isPinned: false,
           isFavorite: !!s.favorite,
+          urlDomain: "",
+          tags: s.tags || "",
           historyIndex: -1,
           snippetIndex: s.index,
           title: s.title,
-          language: s.language,
-          tags: s.tags
+          language: s.language
         })
       }
     } else if (root.activeTab === 4) { // Queue
@@ -354,11 +584,12 @@ Panel {
             wordCount: qTxt.split(/\s+/).length,
             isPinned: false,
             isFavorite: false,
+            urlDomain: ClipboardHistory.extractDomain(qTxt),
+            tags: Array.isArray(qEntry.tags) ? qEntry.tags.join(",") : (qEntry.tags || ""),
             historyIndex: qIdx,
             snippetIndex: -1,
             title: "Step " + (q + 1),
-            language: "",
-            tags: ""
+            language: ""
           })
         }
       }
@@ -525,6 +756,17 @@ Panel {
     printErrors: false
     onLoaded: root.loadSnippets(text())
     onLoadFailed: root.loadSnippets("{\"snippets\":[],\"folders\":[]}")
+    onFileChanged: reload()
+  }
+
+  FileView {
+    id: settingsFile
+    path: root.settingsPath
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    onLoaded: root.loadSettings(text())
+    onLoadFailed: root.loadSettings("{}")
     onFileChanged: reload()
   }
 
@@ -708,6 +950,25 @@ Panel {
             }
           }
 
+          // Multi-Select Mode Toggle
+          Rectangle {
+            width: Style.space(30); height: Style.space(30)
+            radius: Style.space(6)
+            color: root.bulkMode ? Color.accent : Util.alpha(root.fg, 0.08)
+            border.width: 1
+            border.color: root.bulkMode ? Color.accent : Util.alpha(root.fg, 0.12)
+            Text {
+              text: "󰒆"
+              color: root.bulkMode ? "#fff" : root.fg
+              font.family: root.fontFamily; font.pixelSize: Style.font.body
+              anchors.centerIn: parent
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: root.toggleBulkMode()
+            }
+          }
+
           // Screenshot Button
           Rectangle {
             width: Style.space(30); height: Style.space(30)
@@ -722,6 +983,41 @@ Panel {
             MouseArea {
               anchors.fill: parent; cursorShape: Qt.PointingHandCursor
               onClicked: root.takeScreenshot()
+            }
+          }
+
+          // OCR Screen Capture Button
+          Rectangle {
+            width: Style.space(30); height: Style.space(30)
+            radius: Style.space(6)
+            color: Util.alpha(root.fg, 0.08)
+            border.width: 1; border.color: Util.alpha(root.fg, 0.12)
+            Text {
+              text: "󰐳"
+              color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body
+              anchors.centerIn: parent
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: root.captureOcrScreen()
+            }
+          }
+
+          // Settings & Preferences Button
+          Rectangle {
+            width: Style.space(30); height: Style.space(30)
+            radius: Style.space(6)
+            color: root.settingsOpen ? Color.accent : Util.alpha(root.fg, 0.08)
+            border.width: 1; border.color: root.settingsOpen ? Color.accent : Util.alpha(root.fg, 0.12)
+            Text {
+              text: "󰒓"
+              color: root.settingsOpen ? "#fff" : root.fg
+              font.family: root.fontFamily; font.pixelSize: Style.font.body
+              anchors.centerIn: parent
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: root.settingsOpen = !root.settingsOpen
             }
           }
 
@@ -1314,54 +1610,138 @@ Panel {
         }
       }
 
-      // Category Chips (History tab only)
+      // Active Tag Filter Banner
       Row {
-        visible: root.activeTab === 0
-        width: parent.width
+        visible: root.categoryFilter.indexOf("tag:") === 0 && root.activeTab === 0
         spacing: Style.space(6)
 
-        Repeater {
-          model: [
-            { id: "all", label: "All", icon: "󰅍" },
-            { id: "code", label: "Code", icon: "󰅩" },
-            { id: "color", label: "Colors", icon: "󰏘" },
-            { id: "link", label: "Links", icon: "󰌹" },
-            { id: "image", label: "Images", icon: "" },
-            { id: "file", label: "Files", icon: "󰈔" }
-          ]
+        Rectangle {
+          height: Style.space(22)
+          radius: Style.space(11)
+          color: Util.alpha(Color.accent, 0.15)
+          border.width: 1; border.color: Color.accent
+          width: filterTagContent.implicitWidth + Style.space(20)
 
-          Rectangle {
-            required property var modelData
-            width: chipContent.implicitWidth + Style.space(16)
-            height: Style.space(24)
-            radius: Style.space(12)
-            color: root.categoryFilter === modelData.id ? Color.accent : Util.alpha(root.fg, 0.06)
-            border.width: 1
-            border.color: root.categoryFilter === modelData.id ? Color.accent : Util.alpha(root.fg, 0.1)
+          Row {
+            id: filterTagContent
+            anchors.centerIn: parent
+            spacing: Style.space(6)
+            Text {
+              text: "󰋚 Collection: #" + root.categoryFilter.substring(4)
+              color: Color.accent
+              font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
+            }
+            Text { text: "✕"; color: Color.accent; font.pixelSize: Style.space(10); font.bold: true }
+          }
 
-            Row {
-              id: chipContent
-              anchors.centerIn: parent
-              spacing: Style.space(4)
-              Text {
-                text: parent.parent.modelData.icon
-                color: root.categoryFilter === parent.parent.modelData.id ? "#fff" : root.fg
-                font.family: root.fontFamily; font.pixelSize: Style.font.caption
+          MouseArea {
+            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              root.categoryFilter = "all"
+              root.rebuildDisplay()
+            }
+          }
+        }
+      }
+
+      // Category & Collection Tag Chips (History tab only)
+      Flickable {
+        visible: root.activeTab === 0
+        width: parent.width
+        height: Style.space(26)
+        contentWidth: chipsInnerRow.implicitWidth
+        clip: true
+        flickableDirection: Flickable.HorizontalFlick
+
+        Row {
+          id: chipsInnerRow
+          spacing: Style.space(6)
+
+          Repeater {
+            model: [
+              { id: "all", label: "All", icon: "󰅍" },
+              { id: "code", label: "Code", icon: "󰅩" },
+              { id: "color", label: "Colors", icon: "󰏘" },
+              { id: "link", label: "Links", icon: "󰌹" },
+              { id: "image", label: "Images", icon: "" },
+              { id: "file", label: "Files", icon: "󰈔" }
+            ]
+
+            Rectangle {
+              required property var modelData
+              width: chipContent.implicitWidth + Style.space(16)
+              height: Style.space(24)
+              radius: Style.space(12)
+              color: root.categoryFilter === modelData.id ? Color.accent : Util.alpha(root.fg, 0.06)
+              border.width: 1
+              border.color: root.categoryFilter === modelData.id ? Color.accent : Util.alpha(root.fg, 0.1)
+
+              Row {
+                id: chipContent
+                anchors.centerIn: parent
+                spacing: Style.space(4)
+                Text {
+                  text: parent.parent.modelData.icon
+                  color: root.categoryFilter === parent.parent.modelData.id ? "#fff" : root.fg
+                  font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                }
+                Text {
+                  text: parent.parent.modelData.label
+                  color: root.categoryFilter === parent.parent.modelData.id ? "#fff" : root.fg
+                  font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                  font.bold: root.categoryFilter === parent.parent.modelData.id
+                }
               }
-              Text {
-                text: parent.parent.modelData.label
-                color: root.categoryFilter === parent.parent.modelData.id ? "#fff" : root.fg
-                font.family: root.fontFamily; font.pixelSize: Style.font.caption
-                font.bold: root.categoryFilter === parent.parent.modelData.id
+
+              MouseArea {
+                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.categoryFilter = parent.modelData.id
+                  root.selectedIndex = 0
+                  root.rebuildDisplay()
+                }
               }
             }
+          }
 
-            MouseArea {
-              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-              onClicked: {
-                root.categoryFilter = parent.modelData.id
-                root.selectedIndex = 0
-                root.rebuildDisplay()
+          // Custom Tag / Collection Chips
+          Repeater {
+            model: root.allTags
+            Rectangle {
+              required property string modelData
+              readonly property string tagCat: "tag:" + modelData.toLowerCase()
+              readonly property bool isSelected: root.categoryFilter === tagCat
+              width: tagChipContent.implicitWidth + Style.space(14)
+              height: Style.space(24)
+              radius: Style.space(12)
+              color: isSelected ? Color.accent : Util.alpha(root.fg, 0.05)
+              border.width: 1
+              border.color: isSelected ? Color.accent : Util.alpha(root.fg, 0.12)
+
+              Row {
+                id: tagChipContent
+                anchors.centerIn: parent
+                spacing: Style.space(3)
+                Text {
+                  text: "#"
+                  color: parent.parent.isSelected ? "#fff" : Color.accent
+                  font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
+                }
+                Text {
+                  text: parent.parent.modelData
+                  color: parent.parent.isSelected ? "#fff" : root.fg
+                  font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                  font.bold: parent.parent.isSelected
+                }
+              }
+
+              MouseArea {
+                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.categoryFilter = parent.isSelected ? "all" : parent.tagCat
+                  root.selectedIndex = 0
+                  root.rebuildDisplay()
+                }
               }
             }
           }
@@ -2010,23 +2390,26 @@ Panel {
             required property int wordCount
             required property bool isPinned
             required property bool isFavorite
+            required property string urlDomain
+            required property string tags
             required property int historyIndex
             required property int snippetIndex
             required property string title
 
             readonly property bool isSelected: root.selectedIndex === index
+            readonly property bool isBulkChecked: root.isBulkSelected(cardItem.historyIndex)
             readonly property bool isHovered: cardMouse.containsMouse
 
             width: list.width - Style.space(6)
             height: kind === "code" ? Style.space(78) : (entryType === "image" ? Style.space(80) : Style.space(62))
             radius: Style.space(8)
-            color: isSelected ? root.selBg : (isHovered ? Util.alpha(root.fg, 0.06) : Util.alpha(root.fg, 0.03))
+            color: isBulkChecked ? Util.alpha(Color.accent, 0.18) : (isSelected ? root.selBg : (isHovered ? Util.alpha(root.fg, 0.06) : Util.alpha(root.fg, 0.03)))
             border.width: 1
-            border.color: isSelected ? Color.accent : (cardItem.isPinned ? Util.alpha(Color.accent, 0.4) : Util.alpha(root.fg, 0.08))
+            border.color: isBulkChecked ? Color.accent : (isSelected ? Color.accent : (cardItem.isPinned ? Util.alpha(Color.accent, 0.4) : Util.alpha(root.fg, 0.08)))
 
             // Glowing Left Accent Line for selected item
             Rectangle {
-              visible: cardItem.isSelected
+              visible: cardItem.isSelected || cardItem.isBulkChecked
               width: Style.space(3); height: parent.height - Style.space(12)
               radius: Style.space(2)
               color: Color.accent
@@ -2040,15 +2423,41 @@ Panel {
               cursorShape: Qt.PointingHandCursor
               onClicked: {
                 root.selectedIndex = parent.index
-                root.pasteRow(displayModel.get(parent.index))
+                if (root.bulkMode && cardItem.itemType === "history") {
+                  root.toggleBulkSelect(cardItem.historyIndex)
+                } else {
+                  root.pasteRow(displayModel.get(parent.index))
+                }
               }
             }
 
             Row {
               anchors.fill: parent
               anchors.margins: Style.space(8)
-              anchors.leftMargin: cardItem.isSelected ? Style.space(12) : Style.space(8)
+              anchors.leftMargin: (cardItem.isSelected || cardItem.isBulkChecked) ? Style.space(12) : Style.space(8)
               spacing: Style.space(10)
+
+              // Bulk Selection Checkbox (Visible in bulk mode)
+              Rectangle {
+                visible: root.bulkMode && cardItem.itemType === "history"
+                width: Style.space(22); height: Style.space(22)
+                radius: Style.space(5)
+                anchors.verticalCenter: parent.verticalCenter
+                color: cardItem.isBulkChecked ? Color.accent : Util.alpha(root.fg, 0.08)
+                border.width: 1
+                border.color: cardItem.isBulkChecked ? Color.accent : Util.alpha(root.fg, 0.25)
+                Text {
+                  visible: cardItem.isBulkChecked
+                  text: "✓"
+                  color: "#fff"
+                  font.family: root.fontFamily; font.pixelSize: Style.space(12); font.bold: true
+                  anchors.centerIn: parent
+                }
+                MouseArea {
+                  anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.toggleBulkSelect(cardItem.historyIndex)
+                }
+              }
 
               // Type Visual / Swatch / Thumbnail
               Rectangle {
@@ -2076,11 +2485,19 @@ Panel {
                   fillMode: Image.PreserveAspectCrop
                   clip: true
                 }
+
+                // Click image to zoom / inspect
+                MouseArea {
+                  anchors.fill: parent
+                  enabled: cardItem.entryType === "image"
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.openImageZoom(cardItem.path)
+                }
               }
 
               // Metadata & Content Details
               Column {
-                width: parent.width - Style.space(120)
+                width: parent.width - Style.space(130) - (root.bulkMode ? Style.space(26) : 0)
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(2)
 
@@ -2090,7 +2507,7 @@ Panel {
 
                   // 1-9 Quick paste badge
                   Rectangle {
-                    visible: cardItem.index < 9 && root.activeTab === 0
+                    visible: cardItem.index < 9 && root.activeTab === 0 && !root.bulkMode
                     width: Style.space(14); height: Style.space(14)
                     radius: Style.space(3)
                     color: Util.alpha(root.fg, 0.12)
@@ -2129,6 +2546,47 @@ Panel {
                       color: cardItem.kind === "color" ? root.fg : Color.accent
                       font.pixelSize: Style.space(9); font.bold: true
                       anchors.centerIn: parent
+                    }
+                  }
+
+                  // URL Domain Badge (e.g. github.com)
+                  Rectangle {
+                    visible: cardItem.urlDomain !== ""
+                    height: Style.space(14)
+                    width: domainBadgeContent.implicitWidth + Style.space(8)
+                    radius: Style.space(3)
+                    color: Util.alpha(Color.accent, 0.15)
+                    Row {
+                      id: domainBadgeContent
+                      anchors.centerIn: parent
+                      spacing: Style.space(3)
+                      Text { text: "󰌹"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(8) }
+                      Text { text: cardItem.urlDomain; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true }
+                    }
+                  }
+
+                  // Collection / Custom Tags Badges
+                  Repeater {
+                    model: cardItem.tags ? cardItem.tags.split(",").filter(function(t) { return t.trim() !== "" }) : []
+                    Rectangle {
+                      required property string modelData
+                      height: Style.space(14)
+                      width: tagBadgeTxt.implicitWidth + Style.space(8)
+                      radius: Style.space(3)
+                      color: Util.alpha(root.fg, 0.1)
+                      Text {
+                        id: tagBadgeTxt
+                        text: "#" + parent.modelData
+                        color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true
+                        anchors.centerIn: parent
+                      }
+                      MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          root.categoryFilter = "tag:" + parent.modelData.toLowerCase()
+                          root.rebuildDisplay()
+                        }
+                      }
                     }
                   }
 
@@ -2172,11 +2630,49 @@ Panel {
               }
 
               // ==========================================
-              // COMPACT TRAILING CONTROLS (Quick Copy + Actions Dropdown)
+              // COMPACT TRAILING CONTROLS (Quick Actions + Dropdown)
               // ==========================================
               Row {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(4)
+
+                // Quick Open in Browser (for links)
+                Rectangle {
+                  visible: cardItem.kind === "link" || cardItem.urlDomain !== ""
+                  width: Style.space(28); height: Style.space(28); radius: Style.space(5)
+                  color: urlMouse.containsMouse ? Util.alpha(Color.accent, 0.2) : Util.alpha(root.fg, 0.08)
+                  border.width: 1; border.color: urlMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.1)
+                  Text {
+                    text: "󰌹"
+                    color: urlMouse.containsMouse ? Color.accent : (cardItem.isSelected ? root.selFg : root.fg)
+                    font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                    anchors.centerIn: parent
+                  }
+                  MouseArea {
+                    id: urlMouse
+                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.openUrlInBrowser(cardItem.fullText)
+                  }
+                }
+
+                // Quick OCR Extract (for image clips)
+                Rectangle {
+                  visible: cardItem.entryType === "image"
+                  width: Style.space(28); height: Style.space(28); radius: Style.space(5)
+                  color: ocrMouse.containsMouse ? Util.alpha(Color.accent, 0.2) : Util.alpha(root.fg, 0.08)
+                  border.width: 1; border.color: ocrMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.1)
+                  Text {
+                    text: "󰐳"
+                    color: ocrMouse.containsMouse ? Color.accent : (cardItem.isSelected ? root.selFg : root.fg)
+                    font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                    anchors.centerIn: parent
+                  }
+                  MouseArea {
+                    id: ocrMouse
+                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.runOcrOnImage(cardItem.path)
+                  }
+                }
 
                 // Quick Copy
                 Rectangle {
@@ -2456,6 +2952,94 @@ Panel {
               }
             }
 
+            // URL: Open in Browser
+            Rectangle {
+              visible: menuDropdownCard.clipRow && (menuDropdownCard.clipRow.kind === "link" || menuDropdownCard.clipRow.urlDomain !== "")
+              width: parent.width; height: Style.space(28); radius: Style.space(5)
+              color: urlItemMouse.containsMouse ? Util.alpha(Color.accent, 0.15) : "transparent"
+              Row {
+                anchors.fill: parent; anchors.leftMargin: Style.space(8); anchors.rightMargin: Style.space(8)
+                spacing: Style.space(8)
+                Text { text: "󰌹"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "Open in Browser"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                id: urlItemMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  var url = menuDropdownCard.clipRow ? menuDropdownCard.clipRow.fullText : ""
+                  root.activeMenuClipIndex = -1
+                  if (url) root.openUrlInBrowser(url)
+                }
+              }
+            }
+
+            // Image: View & Zoom
+            Rectangle {
+              visible: menuDropdownCard.clipRow && menuDropdownCard.clipRow.entryType === "image"
+              width: parent.width; height: Style.space(28); radius: Style.space(5)
+              color: zoomItemMouse.containsMouse ? Util.alpha(Color.accent, 0.15) : "transparent"
+              Row {
+                anchors.fill: parent; anchors.leftMargin: Style.space(8); anchors.rightMargin: Style.space(8)
+                spacing: Style.space(8)
+                Text { text: "󰍉"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "View & Zoom Image"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                id: zoomItemMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  var p = menuDropdownCard.clipRow ? menuDropdownCard.clipRow.path : ""
+                  root.activeMenuClipIndex = -1
+                  if (p) root.openImageZoom(p)
+                }
+              }
+            }
+
+            // Image: OCR Text Extraction
+            Rectangle {
+              visible: menuDropdownCard.clipRow && menuDropdownCard.clipRow.entryType === "image"
+              width: parent.width; height: Style.space(28); radius: Style.space(5)
+              color: ocrItemMouse.containsMouse ? Util.alpha(Color.accent, 0.15) : "transparent"
+              Row {
+                anchors.fill: parent; anchors.leftMargin: Style.space(8); anchors.rightMargin: Style.space(8)
+                spacing: Style.space(8)
+                Text { text: "󰐳"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "Extract Text (OCR)"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                id: ocrItemMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  var p = menuDropdownCard.clipRow ? menuDropdownCard.clipRow.path : ""
+                  root.activeMenuClipIndex = -1
+                  if (p) root.runOcrOnImage(p)
+                }
+              }
+            }
+
+            // Tags: Manage Tags / Collections
+            Rectangle {
+              visible: menuDropdownCard.isHistoryClip
+              width: parent.width; height: Style.space(28); radius: Style.space(5)
+              color: tagItemMouse.containsMouse ? Util.alpha(Color.accent, 0.15) : "transparent"
+              Row {
+                anchors.fill: parent; anchors.leftMargin: Style.space(8); anchors.rightMargin: Style.space(8)
+                spacing: Style.space(8)
+                Text { text: "󰋚"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "Manage Tags…"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                id: tagItemMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  var hIdx = menuDropdownCard.clipRow ? menuDropdownCard.clipRow.historyIndex : -1
+                  root.activeMenuClipIndex = -1
+                  if (hIdx >= 0) root.openTagModal(hIdx)
+                }
+              }
+            }
+
             // Separator
             Rectangle {
               width: parent.width; height: 1
@@ -2485,6 +3069,179 @@ Panel {
                   root.activeMenuClipIndex = -1
                   root.deleteRow(idx)
                 }
+              }
+            }
+          }
+        }
+      }
+
+      // ==========================================
+      // BULK ACTIONS BAR (Floating dock when bulk mode active)
+      // ==========================================
+      Rectangle {
+        id: bulkActionsDock
+        visible: root.bulkMode && (root.activeTab === 0 || root.activeTab === 1)
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: Style.space(8)
+        anchors.horizontalCenter: parent.horizontalCenter
+        width: Math.min(parent.width - Style.space(16), bulkDockRow.implicitWidth + Style.space(20))
+        height: Style.space(40)
+        radius: Style.space(8)
+        color: root.bg
+        border.width: 1
+        border.color: Color.accent
+        z: 90
+
+        Row {
+          id: bulkDockRow
+          anchors.centerIn: parent
+          spacing: Style.space(6)
+
+          // Selected Count Info
+          Rectangle {
+            height: Style.space(26)
+            width: countTxt.implicitWidth + Style.space(14)
+            radius: Style.space(5)
+            color: Util.alpha(Color.accent, 0.15)
+            Text {
+              id: countTxt
+              text: root.bulkSelectedIndices.length + " selected"
+              color: Color.accent
+              font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true
+              anchors.centerIn: parent
+            }
+          }
+
+          // Select All
+          Rectangle {
+            height: Style.space(26)
+            width: selAllTxt.implicitWidth + Style.space(12)
+            radius: Style.space(5)
+            color: Util.alpha(root.fg, 0.08)
+            Text {
+              id: selAllTxt
+              text: "Select All"
+              color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10)
+              anchors.centerIn: parent
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: root.bulkSelectAll()
+            }
+          }
+
+          // Bulk Pin (if any selected)
+          Rectangle {
+            visible: root.bulkSelectedIndices.length > 0
+            height: Style.space(26)
+            width: bulkPinTxt.implicitWidth + Style.space(12)
+            radius: Style.space(5)
+            color: Util.alpha(Color.accent, 0.15)
+            border.width: 1; border.color: Util.alpha(Color.accent, 0.3)
+            Row {
+              id: bulkPinTxt
+              anchors.centerIn: parent; spacing: Style.space(4)
+              Text { text: "󰐃"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+              Text { text: "Pin"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: root.executeBulkPin(true)
+            }
+          }
+
+          // Bulk Merge & Paste (if 2+ selected)
+          Rectangle {
+            visible: root.bulkSelectedIndices.length >= 2
+            height: Style.space(26)
+            width: bulkMergeTxt.implicitWidth + Style.space(12)
+            radius: Style.space(5)
+            color: Color.accent
+            Row {
+              id: bulkMergeTxt
+              anchors.centerIn: parent; spacing: Style.space(4)
+              Text { text: "󰅪"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+              Text { text: "Merge & Paste"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: root.executeBulkPaste()
+            }
+          }
+
+          // Bulk UPPER (if selected)
+          Rectangle {
+            visible: root.bulkSelectedIndices.length > 0
+            height: Style.space(26)
+            width: Style.space(32)
+            radius: Style.space(5)
+            color: Util.alpha(root.fg, 0.08)
+            Text {
+              text: "TT"
+              color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true
+              anchors.centerIn: parent
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: root.executeBulkTransform("upper")
+            }
+          }
+
+          // Bulk lower (if selected)
+          Rectangle {
+            visible: root.bulkSelectedIndices.length > 0
+            height: Style.space(26)
+            width: Style.space(32)
+            radius: Style.space(5)
+            color: Util.alpha(root.fg, 0.08)
+            Text {
+              text: "tt"
+              color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true
+              anchors.centerIn: parent
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: root.executeBulkTransform("lower")
+            }
+          }
+
+          // Bulk Delete (if selected)
+          Rectangle {
+            visible: root.bulkSelectedIndices.length > 0
+            height: Style.space(26)
+            width: bulkDelTxt.implicitWidth + Style.space(12)
+            radius: Style.space(5)
+            color: Util.alpha(Color.urgent, 0.15)
+            border.width: 1; border.color: Util.alpha(Color.urgent, 0.3)
+            Row {
+              id: bulkDelTxt
+              anchors.centerIn: parent; spacing: Style.space(3)
+              Text { text: "󰆴"; color: Color.urgent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+              Text { text: "Delete"; color: Color.urgent; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: root.executeBulkDelete()
+            }
+          }
+
+          // Cancel / Done
+          Rectangle {
+            height: Style.space(26)
+            width: cancelTxt.implicitWidth + Style.space(12)
+            radius: Style.space(5)
+            color: Util.alpha(root.fg, 0.1)
+            Text {
+              id: cancelTxt
+              text: "Done"
+              color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true
+              anchors.centerIn: parent
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                root.bulkMode = false
+                root.bulkSelectedIndices = []
               }
             }
           }
@@ -2886,6 +3643,750 @@ Panel {
                   root.rebuildDisplay()
                 }
               }
+            }
+          }
+        }
+      }
+    }
+
+    // ==========================================
+    // MODAL: IMAGE ZOOM / FULL PREVIEW MODAL
+    // ==========================================
+    Rectangle {
+      id: imageZoomModal
+      visible: root.imageZoomOpen
+      anchors.fill: parent
+      color: Util.alpha(Color.background, 0.95)
+      radius: Style.cornerRadius
+      z: 100
+
+      focus: root.imageZoomOpen
+      Keys.onEscapePressed: root.closeImageZoom()
+      Keys.onDigit0Pressed: root.resetImageZoom()
+      Keys.onPlusPressed: root.imageZoomScale = Math.min(8.0, root.imageZoomScale * 1.3)
+      Keys.onMinusPressed: root.imageZoomScale = Math.max(0.15, root.imageZoomScale / 1.3)
+
+      // Top Header Bar
+      Item {
+        id: zoomTopBar
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: Style.space(46)
+        anchors.margins: Style.space(10)
+        z: 10
+
+        Row {
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.space(8)
+
+          Rectangle {
+            width: Style.space(28); height: Style.space(28); radius: Style.space(6)
+            color: Util.alpha(Color.accent, 0.2)
+            Text { text: "󰍉"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.body; anchors.centerIn: parent }
+          }
+
+          Column {
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 1
+            Text {
+              text: root.imageZoomPath ? root.imageZoomPath.split("/").pop() : "Image Preview"
+              color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
+              elide: Text.ElideMiddle
+              width: Style.space(220)
+            }
+            Text {
+              text: "Wheel to zoom • Drag to pan • Esc to close"
+              color: Util.alpha(root.fg, 0.5); font.family: root.fontFamily; font.pixelSize: Style.space(8)
+            }
+          }
+        }
+
+        // Close Button
+        Rectangle {
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          width: Style.space(30); height: Style.space(30); radius: Style.space(6)
+          color: Util.alpha(root.fg, 0.1)
+          Text { text: "✕"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+          MouseArea {
+            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+            onClicked: root.closeImageZoom()
+          }
+        }
+      }
+
+      // Interactive Pan & Zoom Canvas
+      Item {
+        id: zoomCanvas
+        anchors.top: zoomTopBar.bottom
+        anchors.bottom: zoomBottomBar.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        clip: true
+
+        MouseArea {
+          id: zoomMouseArea
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: pressed ? Qt.ClosedHandCursor : (root.imageZoomScale > 1.0 ? Qt.OpenHandCursor : Qt.ArrowCursor)
+
+          property real lastX: 0
+          property real lastY: 0
+
+          onPressed: function(mouse) {
+            lastX = mouse.x
+            lastY = mouse.y
+          }
+
+          onPositionChanged: function(mouse) {
+            if (pressed) {
+              root.imageZoomPanX += (mouse.x - lastX)
+              root.imageZoomPanY += (mouse.y - lastY)
+              lastX = mouse.x
+              lastY = mouse.y
+            }
+          }
+
+          onWheel: function(wheel) {
+            var factor = wheel.angleDelta.y > 0 ? 1.25 : 0.8
+            root.imageZoomScale = Math.max(0.15, Math.min(8.0, root.imageZoomScale * factor))
+          }
+        }
+
+        Image {
+          id: fullZoomImg
+          source: root.imageZoomPath ? ("file://" + root.imageZoomPath) : ""
+          fillMode: Image.PreserveAspectFit
+          anchors.centerIn: parent
+          width: parent.width * 0.9
+          height: parent.height * 0.9
+          scale: root.imageZoomScale
+          transformOrigin: Item.Center
+          x: (parent.width - width) / 2 + root.imageZoomPanX
+          y: (parent.height - height) / 2 + root.imageZoomPanY
+          smooth: true
+        }
+      }
+
+      // Floating Bottom Controls Bar
+      Rectangle {
+        id: zoomBottomBar
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: Style.space(16)
+        anchors.horizontalCenter: parent.horizontalCenter
+        height: Style.space(42)
+        width: zoomBtnRow.implicitWidth + Style.space(24)
+        radius: Style.space(21)
+        color: root.bg
+        border.width: 1
+        border.color: Util.alpha(root.fg, 0.16)
+        z: 10
+
+        Row {
+          id: zoomBtnRow
+          anchors.centerIn: parent
+          spacing: Style.space(8)
+
+          // Zoom Out
+          Rectangle {
+            width: Style.space(28); height: Style.space(28); radius: Style.space(14)
+            color: Util.alpha(root.fg, 0.08)
+            Text { text: "−"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true; anchors.centerIn: parent }
+            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.imageZoomScale = Math.max(0.15, root.imageZoomScale / 1.3) }
+          }
+
+          // Percentage & Reset
+          Rectangle {
+            height: Style.space(28); width: Style.space(52); radius: Style.space(14)
+            color: Util.alpha(Color.accent, 0.15)
+            Text {
+              text: Math.round(root.imageZoomScale * 100) + "%"
+              color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true
+              anchors.centerIn: parent
+            }
+            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.resetImageZoom() }
+          }
+
+          // Zoom In
+          Rectangle {
+            width: Style.space(28); height: Style.space(28); radius: Style.space(14)
+            color: Util.alpha(root.fg, 0.08)
+            Text { text: "+"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true; anchors.centerIn: parent }
+            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.imageZoomScale = Math.min(8.0, root.imageZoomScale * 1.3) }
+          }
+
+          // Divider
+          Rectangle { width: 1; height: Style.space(20); color: Util.alpha(root.fg, 0.15); anchors.verticalCenter: parent.verticalCenter }
+
+          // Copy Image
+          Rectangle {
+            height: Style.space(28); width: copyImgTxt.implicitWidth + Style.space(16); radius: Style.space(14)
+            color: Util.alpha(root.fg, 0.08)
+            Row {
+              id: copyImgTxt
+              anchors.centerIn: parent; spacing: Style.space(4)
+              Text { text: "󰆏"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+              Text { text: "Copy Image"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                if (root.imageZoomPath) {
+                  Quickshell.execDetached(["bash", "-c", "wl-copy --type image/png < " + Util.shellQuote(root.imageZoomPath) + " && notify-send -a 'ReClip' 'Image Copied' 'Image loaded to clipboard'"])
+                }
+              }
+            }
+          }
+
+          // Extract Text (OCR)
+          Rectangle {
+            height: Style.space(28); width: ocrImgTxt.implicitWidth + Style.space(16); radius: Style.space(14)
+            color: Util.alpha(Color.accent, 0.2)
+            border.width: 1; border.color: Color.accent
+            Row {
+              id: ocrImgTxt
+              anchors.centerIn: parent; spacing: Style.space(4)
+              Text { text: "󰐳"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+              Text { text: "Extract Text (OCR)"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                if (root.imageZoomPath) root.runOcrOnImage(root.imageZoomPath)
+              }
+            }
+          }
+
+          // Open in Viewer
+          Rectangle {
+            height: Style.space(28); width: openExtTxt.implicitWidth + Style.space(14); radius: Style.space(14)
+            color: Util.alpha(root.fg, 0.08)
+            Row {
+              id: openExtTxt
+              anchors.centerIn: parent; spacing: Style.space(4)
+              Text { text: "󰅍"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+              Text { text: "Viewer"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                if (root.imageZoomPath) root.openUrlInBrowser(root.imageZoomPath)
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // ==========================================
+    // MODAL: SETTINGS & PRIVACY PREFERENCES
+    // ==========================================
+    Rectangle {
+      id: settingsModal
+      visible: root.settingsOpen
+      anchors.fill: parent
+      color: root.scrimCol
+      radius: Style.cornerRadius
+      z: 95
+
+      Rectangle {
+        width: parent.width * 0.92
+        height: parent.height * 0.86
+        radius: Style.cornerRadius
+        color: root.bg
+        border.width: 1
+        border.color: root.borderCol
+        anchors.centerIn: parent
+
+        Column {
+          anchors.fill: parent
+          anchors.margins: Style.space(18)
+          spacing: Style.space(14)
+
+          // Header
+          Row {
+            width: parent.width
+            height: Style.space(32)
+
+            Row {
+              spacing: Style.space(8)
+              anchors.verticalCenter: parent.verticalCenter
+              Rectangle {
+                width: Style.space(28); height: Style.space(28); radius: Style.space(6)
+                color: Util.alpha(Color.accent, 0.15)
+                Text { text: "󰒓"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.body; anchors.centerIn: parent }
+              }
+              Column {
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 0
+                Text { text: "Settings & Privacy"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.title; font.bold: true }
+                Text { text: "Retention limits, privacy controls, and backup tools"; color: Util.alpha(root.fg, 0.5); font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+              }
+            }
+
+            Item { Layout.fillWidth: true }
+
+            Rectangle {
+              width: Style.space(28); height: Style.space(28); radius: Style.space(6)
+              color: Util.alpha(root.fg, 0.08)
+              Text { text: "✕"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+              MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.settingsOpen = false }
+            }
+          }
+
+          // Scrollable Settings Body
+          Flickable {
+            width: parent.width
+            height: parent.height - Style.space(90)
+            contentWidth: width
+            contentHeight: settingsBodyCol.implicitHeight + Style.space(20)
+            clip: true
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+            Column {
+              id: settingsBodyCol
+              width: parent.width
+              spacing: Style.space(14)
+
+              // SECTION 1: CLIPBOARD HISTORY & RETENTION LIMITS
+              Rectangle {
+                width: parent.width
+                height: sec1Col.implicitHeight + Style.space(20)
+                radius: Style.space(8)
+                color: Util.alpha(root.fg, 0.03)
+                border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+
+                Column {
+                  id: sec1Col
+                  anchors.fill: parent; anchors.margins: Style.space(12)
+                  spacing: Style.space(10)
+
+                  Text { text: "📋 History & Retention Limits"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+
+                  // Max Clips Option
+                  Column {
+                    width: parent.width; spacing: Style.space(4)
+                    Text { text: "Maximum clips stored in history:"; color: Util.alpha(root.fg, 0.7); font.family: root.fontFamily; font.pixelSize: Style.space(10) }
+                    Row {
+                      spacing: Style.space(6)
+                      Repeater {
+                        model: [
+                          { val: 100, label: "100" },
+                          { val: 250, label: "250" },
+                          { val: 500, label: "500" },
+                          { val: 1000, label: "1,000" },
+                          { val: 10000, label: "Unlimited" }
+                        ]
+                        Rectangle {
+                          required property var modelData
+                          width: Style.space(64); height: Style.space(26); radius: Style.space(4)
+                          color: root.settingsMaxClips === modelData.val ? Color.accent : Util.alpha(root.fg, 0.06)
+                          border.width: 1; border.color: root.settingsMaxClips === modelData.val ? Color.accent : Util.alpha(root.fg, 0.1)
+                          Text {
+                            text: parent.modelData.label
+                            color: root.settingsMaxClips === parent.modelData.val ? "#fff" : root.fg
+                            font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true
+                            anchors.centerIn: parent
+                          }
+                          MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.settingsMaxClips = parent.modelData.val
+                              root.saveSettings()
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  // Auto Cleanup Age Option
+                  Column {
+                    width: parent.width; spacing: Style.space(4)
+                    Text { text: "Auto-cleanup clips older than:"; color: Util.alpha(root.fg, 0.7); font.family: root.fontFamily; font.pixelSize: Style.space(10) }
+                    Row {
+                      spacing: Style.space(6)
+                      Repeater {
+                        model: [
+                          { days: 7, label: "7 Days" },
+                          { days: 30, label: "30 Days" },
+                          { days: 90, label: "90 Days" },
+                          { days: 0, label: "Keep All" }
+                        ]
+                        Rectangle {
+                          required property var modelData
+                          width: Style.space(70); height: Style.space(26); radius: Style.space(4)
+                          color: root.settingsRetainDays === modelData.days ? Color.accent : Util.alpha(root.fg, 0.06)
+                          border.width: 1; border.color: root.settingsRetainDays === modelData.days ? Color.accent : Util.alpha(root.fg, 0.1)
+                          Text {
+                            text: parent.modelData.label
+                            color: root.settingsRetainDays === parent.modelData.days ? "#fff" : root.fg
+                            font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true
+                            anchors.centerIn: parent
+                          }
+                          MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.settingsRetainDays = parent.modelData.days
+                              root.saveSettings()
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  // Apply Clean Button
+                  Rectangle {
+                    height: Style.space(28); width: cleanBtnTxt.implicitWidth + Style.space(16); radius: Style.space(4)
+                    color: Util.alpha(Color.accent, 0.15); border.width: 1; border.color: Color.accent
+                    Row {
+                      id: cleanBtnTxt
+                      anchors.centerIn: parent; spacing: Style.space(4)
+                      Text { text: "󰃢"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                      Text { text: "Apply Retention Clean Now"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                    }
+                    MouseArea {
+                      anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                      onClicked: root.applyRetentionClean()
+                    }
+                  }
+                }
+              }
+
+              // SECTION 2: PRIVACY & SECURITY
+              Rectangle {
+                width: parent.width
+                height: sec2Col.implicitHeight + Style.space(20)
+                radius: Style.space(8)
+                color: Util.alpha(root.fg, 0.03)
+                border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+
+                Column {
+                  id: sec2Col
+                  anchors.fill: parent; anchors.margins: Style.space(12)
+                  spacing: Style.space(10)
+
+                  Text { text: "🛡 Privacy & Security Preferences"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+
+                  // Password Manager Protection
+                  Row {
+                    width: parent.width
+                    Rectangle {
+                      width: parent.width; height: Style.space(38); radius: Style.space(6)
+                      color: Util.alpha(root.fg, 0.05)
+                      Row {
+                        anchors.fill: parent; anchors.margins: Style.space(8)
+                        spacing: Style.space(8)
+                        Text { text: "󰌋"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.body; anchors.verticalCenter: parent.verticalCenter }
+                        Column {
+                          anchors.verticalCenter: parent.verticalCenter; spacing: 0
+                          Text { text: "Password Manager Protection"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true }
+                          Text { text: "Filter sensitive entries from KeePassXC, 1Password, Bitwarden"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(8) }
+                        }
+                        Item { Layout.fillWidth: true }
+                        Rectangle {
+                          width: Style.space(64); height: Style.space(22); radius: Style.space(11)
+                          color: root.settingsIgnoreSensitive ? Color.accent : Util.alpha(root.fg, 0.15)
+                          anchors.verticalCenter: parent.verticalCenter
+                          Text {
+                            text: root.settingsIgnoreSensitive ? "Active" : "Off"
+                            color: root.settingsIgnoreSensitive ? "#fff" : root.fg
+                            font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true
+                            anchors.centerIn: parent
+                          }
+                          MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.settingsIgnoreSensitive = !root.settingsIgnoreSensitive
+                              root.saveSettings()
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  // Incognito Explanation
+                  Row {
+                    width: parent.width
+                    Rectangle {
+                      width: parent.width; height: Style.space(38); radius: Style.space(6)
+                      color: Util.alpha(root.fg, 0.05)
+                      Row {
+                        anchors.fill: parent; anchors.margins: Style.space(8)
+                        spacing: Style.space(8)
+                        Text { text: "󰈈"; color: root.incognito ? Color.urgent : root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body; anchors.verticalCenter: parent.verticalCenter }
+                        Column {
+                          anchors.verticalCenter: parent.verticalCenter; spacing: 0
+                          Text { text: "Incognito Mode"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true }
+                          Text { text: "Pauses clipboard history recording immediately"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(8) }
+                        }
+                        Item { Layout.fillWidth: true }
+                        Rectangle {
+                          width: Style.space(64); height: Style.space(22); radius: Style.space(11)
+                          color: root.incognito ? Color.urgent : Util.alpha(root.fg, 0.15)
+                          anchors.verticalCenter: parent.verticalCenter
+                          Text {
+                            text: root.incognito ? "Active" : "Normal"
+                            color: root.incognito ? "#fff" : root.fg
+                            font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true
+                            anchors.centerIn: parent
+                          }
+                          MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleIncognito()
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+              // SECTION 3: BACKUP & EXPORT
+              Rectangle {
+                width: parent.width
+                height: sec3Col.implicitHeight + Style.space(20)
+                radius: Style.space(8)
+                color: Util.alpha(root.fg, 0.03)
+                border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+
+                Column {
+                  id: sec3Col
+                  anchors.fill: parent; anchors.margins: Style.space(12)
+                  spacing: Style.space(10)
+
+                  Text { text: "💾 Backup & Data Export"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+
+                  Row {
+                    spacing: Style.space(8)
+                    Rectangle {
+                      height: Style.space(28); width: exportTxt.implicitWidth + Style.space(16); radius: Style.space(4)
+                      color: Color.accent
+                      Row {
+                        id: exportTxt
+                        anchors.centerIn: parent; spacing: Style.space(4)
+                        Text { text: "󰍉"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                        Text { text: "Export Backup (JSON)"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                      }
+                      MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: root.exportBackupJson()
+                      }
+                    }
+                  }
+                }
+              }
+
+              // SECTION 4: ABOUT & PARITY
+              Rectangle {
+                width: parent.width
+                height: Style.space(48)
+                radius: Style.space(8)
+                color: Util.alpha(root.fg, 0.03)
+                border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+
+                Row {
+                  anchors.fill: parent; anchors.margins: Style.space(10)
+                  spacing: Style.space(8)
+                  Text { text: "󰅍"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.heading; anchors.verticalCenter: parent.verticalCenter }
+                  Column {
+                    anchors.verticalCenter: parent.verticalCenter; spacing: 1
+                    Text { text: "ReClip Omarchy Edition • v1.0"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true }
+                    Text { text: "Native Quickshell integration with 100% ReClip feature parity"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(8) }
+                  }
+                }
+              }
+            }
+          }
+
+          // Close Button
+          Row {
+            anchors.right: parent.right; spacing: Style.space(8)
+            Rectangle {
+              width: Style.space(80); height: Style.space(30); radius: Style.space(4)
+              color: Color.accent
+              Text { text: "Close"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.centerIn: parent }
+              MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.settingsOpen = false }
+            }
+          }
+        }
+      }
+    }
+
+    // ==========================================
+    // MODAL: CUSTOM COLLECTIONS & TAGS EDITOR
+    // ==========================================
+    Rectangle {
+      id: tagModal
+      visible: root.tagModalOpen
+      anchors.fill: parent
+      color: root.scrimCol
+      radius: Style.cornerRadius
+      z: 95
+
+      Rectangle {
+        width: Style.space(340)
+        height: Style.space(300)
+        radius: Style.cornerRadius
+        color: root.bg
+        border.width: 1
+        border.color: root.borderCol
+        anchors.centerIn: parent
+
+        Column {
+          anchors.fill: parent
+          anchors.margins: Style.space(16)
+          spacing: Style.space(10)
+
+          Row {
+            width: parent.width
+            Text { text: "󰋚 Manage Tags"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.title; font.bold: true }
+            Item { Layout.fillWidth: true }
+            Rectangle {
+              width: Style.space(24); height: Style.space(24); radius: Style.space(4); color: Util.alpha(root.fg, 0.08)
+              Text { text: "✕"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.centerIn: parent }
+              MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.tagModalOpen = false }
+            }
+          }
+
+          Text { text: "Add tags to categorize this clip into collections:"; color: Util.alpha(root.fg, 0.6); font.pixelSize: Style.font.caption }
+
+          // Active Tags on this Clip
+          Rectangle {
+            width: parent.width; height: Style.space(60); radius: Style.space(6)
+            color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.1)
+
+            Flickable {
+              anchors.fill: parent; anchors.margins: Style.space(6); clip: true
+              contentWidth: width; contentHeight: tagFlow.implicitHeight
+
+              Flow {
+                id: tagFlow
+                width: parent.width; spacing: Style.space(6)
+
+                Repeater {
+                  model: root.tagModalCurrentTags
+                  Rectangle {
+                    required property string modelData
+                    height: Style.space(22)
+                    width: tagChipText.implicitWidth + Style.space(20)
+                    radius: Style.space(11)
+                    color: Util.alpha(Color.accent, 0.15)
+                    border.width: 1; border.color: Color.accent
+
+                    Row {
+                      anchors.centerIn: parent; spacing: Style.space(4)
+                      Text {
+                        id: tagChipText
+                        text: "#" + parent.parent.modelData
+                        color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true
+                      }
+                      Text { text: "✕"; color: Color.accent; font.pixelSize: Style.space(8); font.bold: true }
+                    }
+
+                    MouseArea {
+                      anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                      onClicked: root.removeTagFromClipModal(parent.modelData)
+                    }
+                  }
+                }
+
+                Text {
+                  visible: root.tagModalCurrentTags.length === 0
+                  text: "No tags assigned yet."
+                  color: Util.alpha(root.fg, 0.4); font.family: root.fontFamily; font.pixelSize: Style.space(9)
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+              }
+            }
+          }
+
+          // Add New Tag Input Field
+          Row {
+            width: parent.width; spacing: Style.space(6)
+            Rectangle {
+              width: parent.width - Style.space(70); height: Style.space(32); radius: Style.space(5)
+              color: Util.alpha(root.fg, 0.06); border.width: 1; border.color: newTagInput.activeFocus ? Color.accent : Util.alpha(root.fg, 0.15)
+
+              TextInput {
+                id: newTagInput
+                anchors.fill: parent; anchors.margins: Style.space(6)
+                color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body
+                text: root.tagModalInputText
+                onTextChanged: root.tagModalInputText = text
+                onAccepted: {
+                  root.addTagToClipModal(text)
+                  text = ""
+                }
+
+                Text {
+                  visible: newTagInput.text === "" && !newTagInput.activeFocus
+                  text: "Enter tag (e.g. work, dev)..."
+                  color: Util.alpha(root.fg, 0.4); font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+              }
+            }
+
+            Rectangle {
+              width: Style.space(64); height: Style.space(32); radius: Style.space(5)
+              color: Color.accent
+              Text { text: "+ Add"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.centerIn: parent }
+              MouseArea {
+                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.addTagToClipModal(newTagInput.text)
+                  newTagInput.text = ""
+                }
+              }
+            }
+          }
+
+          // Existing Suggestions
+          Column {
+            width: parent.width; spacing: Style.space(4)
+            Text { text: "Existing tags:"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(8) }
+            Flow {
+              width: parent.width; spacing: Style.space(4)
+              Repeater {
+                model: root.allTags.filter(function(t) { return root.tagModalCurrentTags.indexOf(t) < 0 })
+                Rectangle {
+                  required property string modelData
+                  height: Style.space(18); width: sugTxt.implicitWidth + Style.space(10); radius: Style.space(9)
+                  color: Util.alpha(root.fg, 0.08)
+                  Text {
+                    id: sugTxt
+                    text: "+" + parent.modelData
+                    color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(8)
+                    anchors.centerIn: parent
+                  }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.addTagToClipModal(parent.modelData)
+                  }
+                }
+              }
+            }
+          }
+
+          Item { Layout.fillHeight: true }
+
+          // Footer
+          Row {
+            anchors.right: parent.right; spacing: Style.space(8)
+            Rectangle {
+              width: Style.space(70); height: Style.space(28); radius: Style.space(4); color: Util.alpha(root.fg, 0.1)
+              Text { text: "Cancel"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+              MouseArea { anchors.fill: parent; onClicked: root.tagModalOpen = false; cursorShape: Qt.PointingHandCursor }
+            }
+            Rectangle {
+              width: Style.space(80); height: Style.space(28); radius: Style.space(4); color: Color.accent
+              Text { text: "Save Tags"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.centerIn: parent }
+              MouseArea { anchors.fill: parent; onClicked: root.saveTagModal(); cursorShape: Qt.PointingHandCursor }
             }
           }
         }
