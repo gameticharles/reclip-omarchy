@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "reclip",
+  "name": "ReClip",
+  "version": "1.0.0",
+  "author": "Charles Gameti",
+  "description": "Advanced clipboard manager with snippet library, syntax highlighting, paste queue, and QR code generation",
+  "kinds": [
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "ReClip.qml"
+  }
+}
