@@ -10,6 +10,7 @@ import "lib/ClipboardHistory.js" as ClipboardHistory
 import "lib/SnippetLibrary.js" as SnippetLib
 import "lib/SyntaxHighlight.js" as Syntax
 import "lib/ColorStudio.js" as ColorStudio
+import "lib/TimelineStudio.js" as TimelineStudio
 
 Panel {
   id: root
@@ -37,8 +38,10 @@ Panel {
   property int selectedIndex: 0
   property int historyLimit: 500
 
-  // Calendar / Timeline Filter State
-  property bool calendarOpen: false
+  // Timeline & Calendar State (Exact parity with ReClip TimelineView)
+  property bool showTimeline: false
+  property bool showCalendar: false
+  property string timelineZoom: "hour" // "hour", "day", "week", "month"
   property int calendarYear: new Date().getFullYear()
   property int calendarMonth: new Date().getMonth()
   property string activeDateFilter: "" // "", "today", "yesterday", "7d", "30d", "mtd", or "YYYY-MM-DD"
@@ -58,7 +61,9 @@ Panel {
     for (var i = 0; i < history.length; i++) if (history[i].pinned) count++
     return count
   }
-  readonly property var dateCounts: ClipboardHistory.getClipDateCounts(history)
+  readonly property var dateCounts: TimelineStudio.getClipDateCounts(history)
+  readonly property var timelineData: TimelineStudio.computeTimelineMarkers(history, timelineZoom)
+  readonly property var calendarDays: TimelineStudio.buildCalendarGrid(calendarYear, calendarMonth, history, activeDateFilter)
 
   // Modals & Popups
   property bool clearConfirmOpen: false
@@ -100,7 +105,7 @@ Panel {
     root.transformOpen = false
     root.mergeDialogOpen = false
     root.qrOpen = false
-    root.calendarOpen = false
+    root.showCalendar = false
     root.rebuildDisplay()
     Qt.callLater(function() { searchInput.forceActiveFocus() })
   }
@@ -112,7 +117,7 @@ Panel {
     root.transformOpen = false
     root.mergeDialogOpen = false
     root.qrOpen = false
-    root.calendarOpen = false
+    root.showCalendar = false
     controller.hide()
   }
 
@@ -230,7 +235,7 @@ Panel {
 
   function setDateFilter(f) {
     root.activeDateFilter = (root.activeDateFilter === f) ? "" : f
-    root.calendarOpen = false
+    root.showCalendar = false
     root.rebuildDisplay()
   }
 
@@ -647,10 +652,29 @@ Panel {
 
         Item { Layout.fillWidth: true; width: Style.space(12) }
 
-        // Trailing Controls (Screenshot, Incognito Switch, Close)
+        // Trailing Controls (Timeline, Screenshot, Incognito Switch, Close)
         Row {
           spacing: Style.space(6)
           anchors.verticalCenter: parent.verticalCenter
+
+          // Timeline / Calendar Toggle (ReClip title-btn style)
+          Rectangle {
+            width: Style.space(30); height: Style.space(30)
+            radius: Style.space(6)
+            color: root.showTimeline ? Color.accent : (root.activeDateFilter !== "" ? Util.alpha(Color.accent, 0.2) : Util.alpha(root.fg, 0.08))
+            border.width: 1
+            border.color: root.showTimeline || root.activeDateFilter !== "" ? Color.accent : Util.alpha(root.fg, 0.12)
+            Text {
+              text: "󰸗"
+              color: root.showTimeline ? "#fff" : (root.activeDateFilter !== "" ? Color.accent : root.fg)
+              font.family: root.fontFamily; font.pixelSize: Style.font.body
+              anchors.centerIn: parent
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: root.showTimeline = !root.showTimeline
+            }
+          }
 
           // Screenshot Button
           Rectangle {
@@ -779,8 +803,352 @@ Panel {
         }
       }
 
+      // =========================================================================
+      // 3. COMPLETE RECLIP TIMELINE & CALENDAR (Parity with TimelineView.tsx)
+      // =========================================================================
+      Rectangle {
+        visible: root.showTimeline && (root.activeTab === 0 || root.activeTab === 1)
+        width: parent.width
+        height: timelineContentCol.implicitHeight + Style.space(16)
+        radius: Style.space(10)
+        color: Util.alpha(root.fg, 0.04)
+        border.width: 1; border.color: Util.alpha(root.fg, 0.1)
+
+        Column {
+          id: timelineContentCol
+          anchors.fill: parent; anchors.margins: Style.space(10)
+          spacing: Style.space(8)
+
+          // Row 1: Title, Count, and Quick Presets (7d, 30d, MTD, Clear)
+          Row {
+            width: parent.width
+            height: Style.space(24)
+
+            Row {
+              spacing: Style.space(6)
+              anchors.verticalCenter: parent.verticalCenter
+              Text { text: "📅 Timeline"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+              Text { text: root.historyCount + " clips"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.font.caption }
+            }
+
+            Item { Layout.fillWidth: true; width: Style.space(8) }
+
+            Row {
+              spacing: Style.space(4)
+              anchors.verticalCenter: parent.verticalCenter
+
+              Repeater {
+                model: [
+                  { id: "7d", label: "7d", tip: "Last 7 days" },
+                  { id: "30d", label: "30d", tip: "Last 30 days" },
+                  { id: "mtd", label: "MTD", tip: "Month to date" }
+                ]
+                Rectangle {
+                  required property var modelData
+                  width: Style.space(34); height: Style.space(22); radius: Style.space(4)
+                  color: root.activeDateFilter === modelData.id ? Color.accent : Util.alpha(root.fg, 0.08)
+                  Text {
+                    text: parent.modelData.label
+                    color: root.activeDateFilter === parent.modelData.id ? "#fff" : root.fg
+                    font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true
+                    anchors.centerIn: parent
+                  }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.setDateFilter(parent.modelData.id)
+                  }
+                }
+              }
+
+              // Clear button (✕)
+              Rectangle {
+                visible: root.activeDateFilter !== ""
+                width: Style.space(22); height: Style.space(22); radius: Style.space(4)
+                color: Util.alpha(Color.urgent, 0.15)
+                Text { text: "✕"; color: Color.urgent; font.pixelSize: Style.space(10); font.bold: true; anchors.centerIn: parent }
+                MouseArea {
+                  anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.setDateFilter("")
+                }
+              }
+            }
+          }
+
+          // Row 2: Zoom Levels (Hour, Day, Week, Month) & Calendar Toggle / Today
+          Row {
+            width: parent.width
+            height: Style.space(24)
+
+            // Zoom Buttons
+            Row {
+              spacing: Style.space(4)
+              anchors.verticalCenter: parent.verticalCenter
+              Repeater {
+                model: [
+                  { id: "hour", label: "Hour" },
+                  { id: "day", label: "Day" },
+                  { id: "week", label: "Week" },
+                  { id: "month", label: "Month" }
+                ]
+                Rectangle {
+                  required property var modelData
+                  width: Style.space(42); height: Style.space(20); radius: Style.space(4)
+                  color: root.timelineZoom === modelData.id ? Color.accent : Util.alpha(root.fg, 0.06)
+                  Text {
+                    text: parent.modelData.label
+                    color: root.timelineZoom === parent.modelData.id ? "#fff" : root.fg
+                    font.family: root.fontFamily; font.pixelSize: Style.space(9)
+                    font.bold: root.timelineZoom === parent.modelData.id
+                    anchors.centerIn: parent
+                  }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.timelineZoom = parent.modelData.id
+                  }
+                }
+              }
+            }
+
+            Item { Layout.fillWidth: true; width: Style.space(8) }
+
+            // Calendar Dropdown Toggle & Today Jump
+            Row {
+              spacing: Style.space(6)
+              anchors.verticalCenter: parent.verticalCenter
+
+              // Calendar Toggle Button
+              Rectangle {
+                width: calBtnRow.implicitWidth + Style.space(10); height: Style.space(22); radius: Style.space(4)
+                color: root.showCalendar ? Color.accent : Util.alpha(root.fg, 0.08)
+                Row {
+                  id: calBtnRow
+                  anchors.centerIn: parent; spacing: Style.space(4)
+                  Text { text: "📆"; font.pixelSize: Style.space(10) }
+                  Text {
+                    text: "Calendar"
+                    color: root.showCalendar ? "#fff" : root.fg
+                    font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true
+                  }
+                }
+                MouseArea {
+                  anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.showCalendar = !root.showCalendar
+                }
+              }
+
+              // Today Jump Button
+              Rectangle {
+                width: Style.space(44); height: Style.space(22); radius: Style.space(4)
+                color: root.activeDateFilter === "today" ? Color.accent : Util.alpha(root.fg, 0.08)
+                Text {
+                  text: "Today"
+                  color: root.activeDateFilter === "today" ? "#fff" : root.fg
+                  font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true
+                  anchors.centerIn: parent
+                }
+                MouseArea {
+                  anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.setDateFilter("today")
+                }
+              }
+            }
+          }
+
+          // Mini Month Calendar View (Opens when showCalendar is true)
+          Rectangle {
+            visible: root.showCalendar
+            width: parent.width
+            height: calInnerCol.implicitHeight + Style.space(12)
+            radius: Style.space(8)
+            color: Util.alpha(root.fg, 0.04)
+            border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+
+            Column {
+              id: calInnerCol
+              anchors.fill: parent; anchors.margins: Style.space(8)
+              spacing: Style.space(6)
+
+              // Month Navigation Header
+              Row {
+                width: parent.width
+                height: Style.space(22)
+
+                Rectangle {
+                  width: Style.space(22); height: Style.space(22); radius: Style.space(4)
+                  color: Util.alpha(root.fg, 0.08)
+                  Text { text: "◀"; color: root.fg; font.pixelSize: Style.space(9); anchors.centerIn: parent }
+                  MouseArea { anchors.fill: parent; onClicked: root.prevMonth(); cursorShape: Qt.PointingHandCursor }
+                }
+
+                Item { Layout.fillWidth: true; width: Style.space(6) }
+
+                Text {
+                  text: root.getMonthName(root.calendarMonth) + " " + root.calendarYear
+                  color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+
+                Item { Layout.fillWidth: true; width: Style.space(6) }
+
+                Rectangle {
+                  width: Style.space(22); height: Style.space(22); radius: Style.space(4)
+                  color: Util.alpha(root.fg, 0.08)
+                  Text { text: "▶"; color: root.fg; font.pixelSize: Style.space(9); anchors.centerIn: parent }
+                  MouseArea { anchors.fill: parent; onClicked: root.nextMonth(); cursorShape: Qt.PointingHandCursor }
+                }
+              }
+
+              // Day of Week Labels (S M T W T F S)
+              Row {
+                width: parent.width
+                Repeater {
+                  model: ["S", "M", "T", "W", "T", "F", "S"]
+                  Text {
+                    required property string modelData
+                    width: parent.width / 7
+                    text: modelData
+                    color: Util.alpha(root.fg, 0.5)
+                    font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true
+                    horizontalAlignment: Text.AlignHCenter
+                  }
+                }
+              }
+
+              // Days Grid
+              Grid {
+                columns: 7
+                width: parent.width
+                rowSpacing: Style.space(2)
+
+                Repeater {
+                  model: root.calendarDays
+                  Rectangle {
+                    required property var modelData
+                    width: parent.width / 7
+                    height: Style.space(24)
+                    radius: Style.space(4)
+                    color: modelData.isPad ? "transparent" : (modelData.isSelected ? Color.accent : (modelData.count > 0 ? Util.alpha(Color.accent, Math.min(0.25 + modelData.count * 0.08, 0.75)) : "transparent"))
+                    border.width: modelData.isToday && !modelData.isSelected ? 1.5 : 0
+                    border.color: Color.accent
+
+                    Text {
+                      visible: !parent.modelData.isPad
+                      text: String(parent.modelData.day)
+                      color: parent.modelData.isSelected ? "#fff" : (parent.modelData.count > 0 ? root.fg : Util.alpha(root.fg, 0.35))
+                      font.family: root.fontFamily; font.pixelSize: Style.space(9)
+                      font.bold: parent.modelData.count > 0 || parent.modelData.isToday
+                      anchors.centerIn: parent
+                    }
+
+                    // Clip heat dot below number
+                    Rectangle {
+                      visible: !parent.modelData.isPad && parent.modelData.count > 0 && !parent.modelData.isSelected
+                      width: Style.space(3); height: Style.space(3); radius: Style.space(1.5)
+                      color: Color.accent
+                      anchors.bottom: parent.bottom; anchors.bottomMargin: 1
+                      anchors.horizontalCenter: parent.horizontalCenter
+                    }
+
+                    MouseArea {
+                      anchors.fill: parent
+                      enabled: !parent.modelData.isPad && parent.modelData.count > 0
+                      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                      onClicked: {
+                        root.setDateFilter(parent.modelData.dateStr)
+                        root.showCalendar = false
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // Interactive Timeline Track with Heatmap Markers
+          Item {
+            width: parent.width
+            height: Style.space(26)
+
+            Rectangle {
+              anchors.fill: parent
+              radius: Style.space(6)
+              color: Util.alpha(root.fg, 0.06)
+              clip: true
+
+              Repeater {
+                model: root.timelineData.markers
+                Rectangle {
+                  required property var modelData
+                  x: Math.max(0, Math.min(parent.width - Style.space(12), (parent.width - Style.space(12)) * (modelData.position / 100)))
+                  width: Math.max(Style.space(10), (parent.width / Math.max(root.timelineData.markers.length, 1)) * 0.8)
+                  height: parent.height
+                  radius: Style.space(3)
+                  color: Util.alpha(Color.accent, Math.max(0.35, modelData.intensity))
+
+                  MouseArea {
+                    id: markerHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.setDateFilter(parent.modelData.dateStr)
+                  }
+
+                  // Tooltip
+                  Rectangle {
+                    visible: markerHover.containsMouse
+                    z: 50
+                    anchors.bottom: parent.top; anchors.bottomMargin: Style.space(4)
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: tipContent.implicitWidth + Style.space(10)
+                    height: tipContent.implicitHeight + Style.space(6)
+                    radius: Style.space(4)
+                    color: root.bg; border.width: 1; border.color: root.borderCol
+
+                    Column {
+                      id: tipContent
+                      anchors.centerIn: parent
+                      Text { text: parent.parent.parent.modelData.label; color: root.fg; font.pixelSize: Style.space(9); font.bold: true }
+                      Text { text: parent.parent.parent.modelData.count + " clips"; color: Color.accent; font.pixelSize: Style.space(8) }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // Timeline Range Dates & Active Selection Info
+          Row {
+            width: parent.width
+            height: Style.space(16)
+
+            Text {
+              text: root.timelineData.oldestStr
+              color: Util.alpha(root.fg, 0.45); font.family: root.fontFamily; font.pixelSize: Style.space(9)
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Item { Layout.fillWidth: true }
+
+            Text {
+              text: root.activeDateFilter !== "" ? ("Filtered: " + root.formatDateFilterLabel(root.activeDateFilter)) : "Click markers to filter"
+              color: root.activeDateFilter !== "" ? Color.accent : Util.alpha(root.fg, 0.45)
+              font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: root.activeDateFilter !== ""
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Item { Layout.fillWidth: true }
+
+            Text {
+              text: root.timelineData.newestStr
+              color: Util.alpha(root.fg, 0.45); font.family: root.fontFamily; font.pixelSize: Style.space(9)
+              anchors.verticalCenter: parent.verticalCenter
+            }
+          }
+        }
+      }
+
       // ==========================================
-      // 3. SEARCH & CALENDAR FILTER ROW (History/Pinned Tabs)
+      // 4. SEARCH & QUICK FILTER ROW
       // ==========================================
       Row {
         visible: root.activeTab === 0 || root.activeTab === 1 || root.activeTab === 2
@@ -789,7 +1157,7 @@ Panel {
 
         // Search Input
         Rectangle {
-          width: root.activeTab === 0 ? parent.width - Style.space(38) : parent.width
+          width: parent.width
           height: Style.space(38)
           radius: Style.cornerRadius
           color: Util.alpha(root.fg, 0.05)
@@ -854,9 +1222,10 @@ Panel {
                 }
               }
               Keys.onEscapePressed: {
-                if (root.calendarOpen) root.calendarOpen = false
+                if (root.showCalendar) root.showCalendar = false
+                else if (root.showTimeline) root.showTimeline = false
                 else if (root.filterText !== "") root.filterText = ""
-                else if (root.activeDateFilter !== "") { root.activeDateFilter = ""; root.rebuildDisplay() }
+                else if (root.activeDateFilter !== "") root.setDateFilter("")
                 else root.close()
               }
 
@@ -879,181 +1248,6 @@ Panel {
             }
           }
         }
-
-        // Calendar Filter Button (History tab only)
-        Rectangle {
-          visible: root.activeTab === 0
-          width: Style.space(32); height: Style.space(38)
-          radius: Style.cornerRadius
-          color: root.activeDateFilter !== "" ? Color.accent : (root.calendarOpen ? Util.alpha(Color.accent, 0.25) : Util.alpha(root.fg, 0.08))
-          border.width: 1
-          border.color: root.activeDateFilter !== "" ? Color.accent : Util.alpha(root.fg, 0.12)
-
-          Text {
-            text: "󰸗"
-            color: root.activeDateFilter !== "" ? "#fff" : (root.calendarOpen ? Color.accent : root.fg)
-            font.family: root.fontFamily; font.pixelSize: Style.font.heading
-            anchors.centerIn: parent
-          }
-
-          MouseArea {
-            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-            onClicked: root.calendarOpen = !root.calendarOpen
-          }
-        }
-      }
-
-      // ==========================================
-      // CALENDAR PICKER DROPDOWN CARD
-      // ==========================================
-      Rectangle {
-        visible: root.calendarOpen && root.activeTab === 0
-        width: parent.width
-        height: Style.space(230)
-        radius: Style.space(8)
-        color: root.bg
-        border.width: 1; border.color: root.borderCol
-
-        Column {
-          anchors.fill: parent; anchors.margins: Style.space(10)
-          spacing: Style.space(8)
-
-          // Month / Year Navigation Header
-          Row {
-            width: parent.width
-            height: Style.space(24)
-
-            Rectangle {
-              width: Style.space(24); height: Style.space(24); radius: Style.space(4)
-              color: Util.alpha(root.fg, 0.08)
-              Text { text: "◀"; color: root.fg; font.pixelSize: Style.space(10); anchors.centerIn: parent }
-              MouseArea { anchors.fill: parent; onClicked: root.prevMonth(); cursorShape: Qt.PointingHandCursor }
-            }
-
-            Item { Layout.fillWidth: true; width: Style.space(8) }
-
-            Text {
-              text: root.getMonthName(root.calendarMonth) + " " + root.calendarYear
-              color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Item { Layout.fillWidth: true; width: Style.space(8) }
-
-            Rectangle {
-              width: Style.space(24); height: Style.space(24); radius: Style.space(4)
-              color: Util.alpha(root.fg, 0.08)
-              Text { text: "▶"; color: root.fg; font.pixelSize: Style.space(10); anchors.centerIn: parent }
-              MouseArea { anchors.fill: parent; onClicked: root.nextMonth(); cursorShape: Qt.PointingHandCursor }
-            }
-          }
-
-          // Presets Bar (All, Today, Yesterday, 7d, 30d, MTD)
-          Row {
-            spacing: Style.space(4)
-            Repeater {
-              model: [
-                { id: "all", label: "All Time" },
-                { id: "today", label: "Today" },
-                { id: "yesterday", label: "Yesterday" },
-                { id: "7d", label: "7 Days" },
-                { id: "30d", label: "30 Days" },
-                { id: "mtd", label: "This Month" }
-              ]
-              Rectangle {
-                required property var modelData
-                width: (parent.width - Style.space(20)) / 6
-                height: Style.space(22)
-                radius: Style.space(4)
-                color: root.activeDateFilter === modelData.id ? Color.accent : Util.alpha(root.fg, 0.06)
-                Text {
-                  text: parent.modelData.label
-                  color: root.activeDateFilter === parent.modelData.id ? "#fff" : root.fg
-                  font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: root.activeDateFilter === parent.modelData.id
-                  anchors.centerIn: parent
-                }
-                MouseArea {
-                  anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                  onClicked: root.setDateFilter(parent.modelData.id === "all" ? "" : parent.modelData.id)
-                }
-              }
-            }
-          }
-
-          // Day Headers S M T W T F S
-          Row {
-            width: parent.width
-            Repeater {
-              model: ["S", "M", "T", "W", "T", "F", "S"]
-              Text {
-                required property string modelData
-                width: parent.width / 7
-                text: modelData
-                color: Util.alpha(root.fg, 0.45)
-                font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true
-                horizontalAlignment: Text.AlignHCenter
-              }
-            }
-          }
-
-          // Days Grid (6 rows x 7 cols)
-          Grid {
-            columns: 7
-            width: parent.width
-            rowSpacing: Style.space(2)
-
-            Repeater {
-              model: 35
-              Rectangle {
-                required property int index
-                readonly property int firstDay: new Date(root.calendarYear, root.calendarMonth, 1).getDay()
-                readonly property int totalDays: new Date(root.calendarYear, root.calendarMonth + 1, 0).getDate()
-                readonly property int dayNum: index - firstDay + 1
-                readonly property bool isValidDay: dayNum >= 1 && dayNum <= totalDays
-                readonly property string dateStr: isValidDay ? (root.calendarYear + "-" + String(root.calendarMonth + 1).padStart(2, '0') + "-" + String(dayNum).padStart(2, '0')) : ""
-                readonly property int count: isValidDay ? (root.dateCounts[dateStr] || 0) : 0
-                readonly property bool isSelected: root.activeDateFilter === dateStr
-                readonly property bool isToday: {
-                  var now = new Date()
-                  return isValidDay && now.getFullYear() === root.calendarYear && now.getMonth() === root.calendarMonth && now.getDate() === dayNum
-                }
-
-                width: parent.width / 7
-                height: Style.space(22)
-                radius: Style.space(4)
-                color: isSelected ? Color.accent : (count > 0 ? Util.alpha(Color.accent, Math.min(0.2 + count * 0.1, 0.6)) : "transparent")
-                border.width: isToday ? 1 : 0
-                border.color: Color.accent
-
-                Text {
-                  visible: parent.isValidDay
-                  text: String(parent.dayNum)
-                  color: parent.isSelected ? "#fff" : (parent.count > 0 ? root.fg : Util.alpha(root.fg, 0.35))
-                  font.family: root.fontFamily; font.pixelSize: Style.space(10)
-                  font.bold: parent.count > 0 || parent.isToday
-                  anchors.centerIn: parent
-                }
-
-                Rectangle {
-                  visible: parent.isValidDay && parent.count > 0 && !parent.isSelected
-                  width: Style.space(3); height: Style.space(3); radius: Style.space(1.5)
-                  color: Color.accent
-                  anchors.bottom: parent.bottom; anchors.bottomMargin: 1
-                  anchors.horizontalCenter: parent.horizontalCenter
-                }
-
-                MouseArea {
-                  anchors.fill: parent
-                  enabled: parent.isValidDay
-                  cursorShape: parent.isValidDay ? Qt.PointingHandCursor : Qt.ArrowCursor
-                  onClicked: {
-                    if (parent.dateStr) root.setDateFilter(parent.dateStr)
-                  }
-                }
-              }
-            }
-          }
-        }
       }
 
       // Active Date Filter Banner
@@ -1073,7 +1267,7 @@ Panel {
             anchors.centerIn: parent
             spacing: Style.space(6)
             Text {
-              text: "󰸗 " + root.formatDateFilterLabel(root.activeDateFilter)
+              text: "󰸗 Filtered by: " + root.formatDateFilterLabel(root.activeDateFilter)
               color: Color.accent
               font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
             }
@@ -1082,14 +1276,14 @@ Panel {
 
           MouseArea {
             anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-            onClicked: { root.activeDateFilter = ""; root.rebuildDisplay() }
+            onClicked: root.setDateFilter("")
           }
         }
       }
 
       // Category Chips (History tab only)
       Row {
-        visible: root.activeTab === 0 && !root.calendarOpen
+        visible: root.activeTab === 0
         width: parent.width
         spacing: Style.space(6)
 
@@ -1431,7 +1625,7 @@ Panel {
       Rectangle {
         visible: root.activeTab !== 3
         width: parent.width
-        height: root.calendarOpen ? Style.space(220) : (root.activeTab === 0 ? Style.space(420) : Style.space(445))
+        height: root.showCalendar ? Style.space(200) : (root.showTimeline ? Style.space(330) : (root.activeTab === 0 ? Style.space(450) : Style.space(475)))
         color: "transparent"
 
         ListView {
