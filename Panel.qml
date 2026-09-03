@@ -87,6 +87,9 @@ Panel {
   property bool qrOpen: false
   property string qrImgPath: "/tmp/reclip-qr.png"
 
+  property int activeMenuClipIndex: -1
+  property point activeMenuPos: Qt.point(0, 0)
+
   readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
   readonly property color bg: Color.popups.background
   readonly property color fg: Color.popups.text
@@ -106,6 +109,7 @@ Panel {
     root.mergeDialogOpen = false
     root.qrOpen = false
     root.showCalendar = false
+    root.activeMenuClipIndex = -1
     root.rebuildDisplay()
     Qt.callLater(function() { searchInput.forceActiveFocus() })
   }
@@ -118,6 +122,7 @@ Panel {
     root.mergeDialogOpen = false
     root.qrOpen = false
     root.showCalendar = false
+    root.activeMenuClipIndex = -1
     controller.hide()
   }
 
@@ -239,7 +244,28 @@ Panel {
     root.rebuildDisplay()
   }
 
+  function openClipMenu(idx, item) {
+    if (root.activeMenuClipIndex === idx) {
+      root.activeMenuClipIndex = -1
+      return
+    }
+    var pt = item.mapToItem(contentArea, 0, item.height + Style.space(4))
+    var menuW = Style.space(210)
+    var menuH = Style.space(260)
+    var targetX = pt.x - menuW + item.width
+    var targetY = pt.y
+    if (targetX < Style.space(10)) targetX = Style.space(10)
+    if (targetX + menuW > contentArea.width - Style.space(10)) targetX = contentArea.width - menuW - Style.space(10)
+    if (targetY + menuH > contentArea.height - Style.space(10)) {
+      targetY = pt.y - item.height - menuH - Style.space(8)
+    }
+    if (targetY < Style.space(10)) targetY = Style.space(10)
+    root.activeMenuPos = Qt.point(Math.round(targetX), Math.round(targetY))
+    root.activeMenuClipIndex = idx
+  }
+
   function rebuildDisplay() {
+    root.activeMenuClipIndex = -1
     displayModel.clear()
 
     if (root.activeTab === 0 || root.activeTab === 1) {
@@ -613,15 +639,16 @@ Panel {
       // ==========================================
       // 1. HERO HEADER (Omarchy PanelHero Style)
       // ==========================================
-      Row {
+      Item {
+        id: heroHeader
         width: parent.width
         height: Style.space(38)
-        spacing: Style.space(10)
 
-        // Logo & Title
+        // Logo & Title (Aligned Left)
         Row {
-          spacing: Style.space(8)
+          anchors.left: parent.left
           anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.space(8)
 
           Rectangle {
             width: Style.space(32); height: Style.space(32)
@@ -656,12 +683,11 @@ Panel {
           }
         }
 
-        Item { Layout.fillWidth: true; width: Style.space(12) }
-
-        // Trailing Controls (Timeline, Screenshot, Incognito Switch, Close)
+        // Trailing Controls (Aligned strictly to the Right: Calendar, Capture, Incognito, Close)
         Row {
-          spacing: Style.space(6)
+          anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.space(6)
 
           // Timeline / Calendar Toggle (ReClip title-btn style)
           Rectangle {
@@ -1228,7 +1254,8 @@ Panel {
                 }
               }
               Keys.onEscapePressed: {
-                if (root.showCalendar) root.showCalendar = false
+                if (root.activeMenuClipIndex >= 0) root.activeMenuClipIndex = -1
+                else if (root.showCalendar) root.showCalendar = false
                 else if (root.showTimeline) root.showTimeline = false
                 else if (root.filterText !== "") root.filterText = ""
                 else if (root.activeDateFilter !== "") root.setDateFilter("")
@@ -2053,7 +2080,7 @@ Panel {
 
               // Metadata & Content Details
               Column {
-                width: parent.width - Style.space(200)
+                width: parent.width - Style.space(120)
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(2)
 
@@ -2145,7 +2172,7 @@ Panel {
               }
 
               // ==========================================
-              // ACTION BUTTONS TOOLBAR
+              // COMPACT TRAILING CONTROLS (Quick Copy + Actions Dropdown)
               // ==========================================
               Row {
                 anchors.verticalCenter: parent.verticalCenter
@@ -2153,108 +2180,42 @@ Panel {
 
                 // Quick Copy
                 Rectangle {
-                  width: Style.space(26); height: Style.space(26); radius: Style.space(4)
-                  color: Util.alpha(root.fg, 0.08)
-                  Text { text: "󰆏"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
-                  MouseArea {
-                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.copyRow(displayModel.get(cardItem.index))
-                  }
-                }
+                  width: Style.space(28); height: Style.space(28); radius: Style.space(5)
+                  color: copyMouse.containsMouse ? Util.alpha(Color.accent, 0.2) : Util.alpha(root.fg, 0.08)
+                  border.width: 1
+                  border.color: copyMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.1)
 
-                // Pin / Unpin
-                Rectangle {
-                  visible: cardItem.itemType === "history"
-                  width: Style.space(26); height: Style.space(26); radius: Style.space(4)
-                  color: cardItem.isPinned ? Color.accent : Util.alpha(root.fg, 0.08)
                   Text {
-                    text: "󰐃"
-                    color: cardItem.isPinned ? "#fff" : root.fg
+                    text: "󰆏"
+                    color: copyMouse.containsMouse ? Color.accent : (cardItem.isSelected ? root.selFg : root.fg)
                     font.family: root.fontFamily; font.pixelSize: Style.font.caption
                     anchors.centerIn: parent
                   }
                   MouseArea {
-                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.togglePinRow(displayModel.get(cardItem.index))
+                    id: copyMouse
+                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.copyRow(displayModel.get(cardItem.index))
                   }
                 }
 
-                // Favorite Star
+                // Dropdown Menu Button (Three Dots)
                 Rectangle {
-                  width: Style.space(26); height: Style.space(26); radius: Style.space(4)
-                  color: cardItem.isFavorite ? Color.accent : Util.alpha(root.fg, 0.08)
+                  id: menuBtn
+                  width: Style.space(28); height: Style.space(28); radius: Style.space(5)
+                  color: (root.activeMenuClipIndex === cardItem.index || menuMouse.containsMouse) ? Color.accent : Util.alpha(root.fg, 0.08)
+                  border.width: 1
+                  border.color: (root.activeMenuClipIndex === cardItem.index || menuMouse.containsMouse) ? Color.accent : Util.alpha(root.fg, 0.1)
+
                   Text {
-                    text: "⭐"
-                    font.pixelSize: Style.space(10)
+                    text: "󰇙"
+                    color: (root.activeMenuClipIndex === cardItem.index || menuMouse.containsMouse) ? "#fff" : (cardItem.isSelected ? root.selFg : root.fg)
+                    font.family: root.fontFamily; font.pixelSize: Style.font.heading; font.bold: true
                     anchors.centerIn: parent
                   }
                   MouseArea {
-                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.toggleFavRow(displayModel.get(cardItem.index))
-                  }
-                }
-
-                // Edit Clip inline
-                Rectangle {
-                  visible: cardItem.entryType === "text"
-                  width: Style.space(26); height: Style.space(26); radius: Style.space(4)
-                  color: Util.alpha(root.fg, 0.08)
-                  Text { text: "✏"; color: root.fg; font.pixelSize: Style.space(10); anchors.centerIn: parent }
-                  MouseArea {
-                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.openEditRow(displayModel.get(cardItem.index))
-                  }
-                }
-
-                // Transform Text Case
-                Rectangle {
-                  visible: cardItem.entryType === "text" && cardItem.itemType === "history"
-                  width: Style.space(26); height: Style.space(26); radius: Style.space(4)
-                  color: Util.alpha(root.fg, 0.08)
-                  Text { text: "🔤"; font.pixelSize: Style.space(10); anchors.centerIn: parent }
-                  MouseArea {
-                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.openTransformRow(displayModel.get(cardItem.index))
-                  }
-                }
-
-                // QR Code
-                Rectangle {
-                  visible: cardItem.entryType === "text" && cardItem.fullText !== ""
-                  width: Style.space(26); height: Style.space(26); radius: Style.space(4)
-                  color: Util.alpha(root.fg, 0.08)
-                  Text { text: "󰐳"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
-                  MouseArea {
-                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.showQrModal(cardItem.fullText)
-                  }
-                }
-
-                // Add to Queue
-                Rectangle {
-                  visible: cardItem.itemType === "history"
-                  width: Style.space(26); height: Style.space(26); radius: Style.space(4)
-                  color: root.pasteQueue.indexOf(cardItem.historyIndex) >= 0 ? Color.accent : Util.alpha(root.fg, 0.08)
-                  Text {
-                    text: "+"
-                    color: root.pasteQueue.indexOf(cardItem.historyIndex) >= 0 ? "#fff" : root.fg
-                    font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
-                    anchors.centerIn: parent
-                  }
-                  MouseArea {
-                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.toggleQueue(displayModel.get(cardItem.index))
-                  }
-                }
-
-                // Delete
-                Rectangle {
-                  width: Style.space(26); height: Style.space(26); radius: Style.space(4)
-                  color: Util.alpha(root.fg, 0.08)
-                  Text { text: "󰆴"; color: Color.urgent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
-                  MouseArea {
-                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.deleteRow(cardItem.index)
+                    id: menuMouse
+                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.openClipMenu(cardItem.index, menuBtn)
                   }
                 }
               }
@@ -2273,6 +2234,259 @@ Panel {
             color: Util.alpha(root.fg, 0.5)
             font.family: root.fontFamily; font.pixelSize: Style.font.body
             anchors.horizontalCenter: parent.horizontalCenter
+        }
+      }
+
+      // ==========================================
+      // FLOATING DROPDOWN CONTEXT MENU FOR CLIPS
+      // ==========================================
+      Item {
+        id: menuOverlay
+        visible: root.activeMenuClipIndex >= 0 && root.activeMenuClipIndex < displayModel.count
+        anchors.fill: parent
+        z: 99
+
+        // Dismiss click catcher outside menu
+        MouseArea {
+          anchors.fill: parent
+          onClicked: root.activeMenuClipIndex = -1
+        }
+
+        // Dropdown Card
+        Rectangle {
+          id: menuDropdownCard
+          readonly property var clipRow: root.activeMenuClipIndex >= 0 && root.activeMenuClipIndex < displayModel.count ? displayModel.get(root.activeMenuClipIndex) : null
+          readonly property bool isClipPinned: clipRow ? (clipRow.isPinned === true) : false
+          readonly property bool isClipFav: clipRow ? (clipRow.isFavorite === true) : false
+          readonly property bool isClipQueued: clipRow ? (root.pasteQueue.indexOf(clipRow.historyIndex) >= 0) : false
+          readonly property bool isTextClip: clipRow ? (clipRow.entryType === "text") : false
+          readonly property bool isHistoryClip: clipRow ? (clipRow.itemType === "history") : false
+
+          x: root.activeMenuPos.x
+          y: root.activeMenuPos.y
+          width: Style.space(210)
+          height: menuCol.implicitHeight + Style.space(12)
+          radius: Style.space(8)
+          color: root.bg
+          border.width: 1
+          border.color: Util.alpha(root.fg, 0.16)
+
+          Column {
+            id: menuCol
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.margins: Style.space(6)
+            spacing: Style.space(2)
+
+            // 1. Copy
+            Rectangle {
+              width: parent.width; height: Style.space(28); radius: Style.space(5)
+              color: copyItemMouse.containsMouse ? Util.alpha(Color.accent, 0.15) : "transparent"
+              Row {
+                anchors.fill: parent; anchors.leftMargin: Style.space(8); anchors.rightMargin: Style.space(8)
+                spacing: Style.space(8)
+                Text { text: "󰆏"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "Copy to Clipboard"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                id: copyItemMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (menuDropdownCard.clipRow) root.copyRow(menuDropdownCard.clipRow)
+                  root.activeMenuClipIndex = -1
+                }
+              }
+            }
+
+            // 2. Pin / Unpin
+            Rectangle {
+              visible: menuDropdownCard.isHistoryClip
+              width: parent.width; height: Style.space(28); radius: Style.space(5)
+              color: pinItemMouse.containsMouse ? Util.alpha(Color.accent, 0.15) : "transparent"
+              Row {
+                anchors.fill: parent; anchors.leftMargin: Style.space(8); anchors.rightMargin: Style.space(8)
+                spacing: Style.space(8)
+                Text {
+                  text: "󰐃"
+                  color: menuDropdownCard.isClipPinned ? Color.accent : root.fg
+                  font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+                Text {
+                  text: menuDropdownCard.isClipPinned ? "Unpin Item" : "Pin to Top"
+                  color: root.fg
+                  font.family: root.fontFamily; font.pixelSize: Style.space(10)
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+              }
+              MouseArea {
+                id: pinItemMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (menuDropdownCard.clipRow) root.togglePinRow(menuDropdownCard.clipRow)
+                  root.activeMenuClipIndex = -1
+                }
+              }
+            }
+
+            // 3. Favorite Star
+            Rectangle {
+              width: parent.width; height: Style.space(28); radius: Style.space(5)
+              color: favItemMouse.containsMouse ? Util.alpha(Color.accent, 0.15) : "transparent"
+              Row {
+                anchors.fill: parent; anchors.leftMargin: Style.space(8); anchors.rightMargin: Style.space(8)
+                spacing: Style.space(8)
+                Text {
+                  text: "⭐"
+                  font.pixelSize: Style.space(10)
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+                Text {
+                  text: menuDropdownCard.isClipFav ? "Remove Favorite" : "Add to Favorites"
+                  color: root.fg
+                  font.family: root.fontFamily; font.pixelSize: Style.space(10)
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+              }
+              MouseArea {
+                id: favItemMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (menuDropdownCard.clipRow) root.toggleFavRow(menuDropdownCard.clipRow)
+                  root.activeMenuClipIndex = -1
+                }
+              }
+            }
+
+            // 4. Edit Clip Content
+            Rectangle {
+              visible: menuDropdownCard.isTextClip
+              width: parent.width; height: Style.space(28); radius: Style.space(5)
+              color: editItemMouse.containsMouse ? Util.alpha(Color.accent, 0.15) : "transparent"
+              Row {
+                anchors.fill: parent; anchors.leftMargin: Style.space(8); anchors.rightMargin: Style.space(8)
+                spacing: Style.space(8)
+                Text { text: "✏"; color: root.fg; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "Edit Content"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                id: editItemMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  var row = menuDropdownCard.clipRow
+                  root.activeMenuClipIndex = -1
+                  if (row) root.openEditRow(row)
+                }
+              }
+            }
+
+            // 5. Transform Text Case
+            Rectangle {
+              visible: menuDropdownCard.isTextClip && menuDropdownCard.isHistoryClip
+              width: parent.width; height: Style.space(28); radius: Style.space(5)
+              color: tfItemMouse.containsMouse ? Util.alpha(Color.accent, 0.15) : "transparent"
+              Row {
+                anchors.fill: parent; anchors.leftMargin: Style.space(8); anchors.rightMargin: Style.space(8)
+                spacing: Style.space(8)
+                Text { text: "🔤"; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "Transform Text Case…"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                id: tfItemMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  var row = menuDropdownCard.clipRow
+                  root.activeMenuClipIndex = -1
+                  if (row) root.openTransformRow(row)
+                }
+              }
+            }
+
+            // 6. QR Code
+            Rectangle {
+              visible: menuDropdownCard.isTextClip && menuDropdownCard.clipRow && menuDropdownCard.clipRow.fullText !== ""
+              width: parent.width; height: Style.space(28); radius: Style.space(5)
+              color: qrItemMouse.containsMouse ? Util.alpha(Color.accent, 0.15) : "transparent"
+              Row {
+                anchors.fill: parent; anchors.leftMargin: Style.space(8); anchors.rightMargin: Style.space(8)
+                spacing: Style.space(8)
+                Text { text: "󰐳"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "Generate QR Code"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                id: qrItemMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  var text = menuDropdownCard.clipRow ? menuDropdownCard.clipRow.fullText : ""
+                  root.activeMenuClipIndex = -1
+                  if (text !== "") root.showQrModal(text)
+                }
+              }
+            }
+
+            // 7. Queue Toggle
+            Rectangle {
+              visible: menuDropdownCard.isHistoryClip
+              width: parent.width; height: Style.space(28); radius: Style.space(5)
+              color: queueItemMouse.containsMouse ? Util.alpha(Color.accent, 0.15) : "transparent"
+              Row {
+                anchors.fill: parent; anchors.leftMargin: Style.space(8); anchors.rightMargin: Style.space(8)
+                spacing: Style.space(8)
+                Text {
+                  text: "󰆒"
+                  color: menuDropdownCard.isClipQueued ? Color.accent : root.fg
+                  font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+                Text {
+                  text: menuDropdownCard.isClipQueued ? "Remove from Queue" : "Add to Paste Queue"
+                  color: root.fg
+                  font.family: root.fontFamily; font.pixelSize: Style.space(10)
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+              }
+              MouseArea {
+                id: queueItemMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (menuDropdownCard.clipRow) root.toggleQueue(menuDropdownCard.clipRow)
+                  root.activeMenuClipIndex = -1
+                }
+              }
+            }
+
+            // Separator
+            Rectangle {
+              width: parent.width; height: 1
+              color: Util.alpha(root.fg, 0.08)
+            }
+
+            // 8. Delete
+            Rectangle {
+              width: parent.width; height: Style.space(28); radius: Style.space(5)
+              color: delItemMouse.containsMouse ? Util.alpha(Color.urgent, 0.15) : "transparent"
+              Row {
+                anchors.fill: parent; anchors.leftMargin: Style.space(8); anchors.rightMargin: Style.space(8)
+                spacing: Style.space(8)
+                Text { text: "󰆴"; color: Color.urgent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text {
+                  text: menuDropdownCard.clipRow && menuDropdownCard.clipRow.itemType === "snippet" ? "Delete Snippet" : "Delete from History"
+                  color: Color.urgent
+                  font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+              }
+              MouseArea {
+                id: delItemMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  var idx = root.activeMenuClipIndex
+                  root.activeMenuClipIndex = -1
+                  root.deleteRow(idx)
+                }
+              }
+            }
           }
         }
       }
@@ -2678,4 +2892,5 @@ Panel {
       }
     }
   }
+}
 }
