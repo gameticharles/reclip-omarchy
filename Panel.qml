@@ -29,7 +29,8 @@ Panel {
   property string captureScript: pluginDir + "/capture.sh"
 
   property bool incognito: false
-  property int activeTab: 0 // 0: History, 1: Snippets, 2: Queue
+  // Tabs: 0: History, 1: Pinned/Favs, 2: Snippets, 3: Colors, 4: Queue
+  property int activeTab: 0
   property string categoryFilter: "all"
   property string filterText: ""
   property int selectedIndex: 0
@@ -39,25 +40,43 @@ Panel {
   property var snippets: []
   property var folders: []
   property var pasteQueue: []
+  property var colorPalette: []
   readonly property int historyCount: history.length
+  readonly property int pinnedCount: {
+    var count = 0
+    for (var i = 0; i < history.length; i++) if (history[i].pinned) count++
+    return count
+  }
 
+  // Modals & Popups
   property bool clearConfirmOpen: false
   property bool snippetEditOpen: false
   property int snippetEditIndex: -1
   property string snippetEditTitle: ""
   property string snippetEditContent: ""
-  property string snippetEditLang: "text"
+  property string snippetEditLang: "javascript"
   property string snippetEditFolder: ""
+
+  property bool clipEditOpen: false
+  property int clipEditIndex: -1
+  property string clipEditContent: ""
+
+  property bool transformOpen: false
+  property int transformClipIndex: -1
+
+  property bool mergeDialogOpen: false
+  property string mergeSeparator: "\n"
+
   property bool qrOpen: false
   property string qrImgPath: "/tmp/reclip-qr.png"
 
   readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-  readonly property color bg: Color.menu.background
-  readonly property color fg: Color.menu.text
-  readonly property color borderCol: Color.menu.border
-  readonly property color selBg: Color.menu.selectedBackground
-  readonly property color selFg: Color.menu.selectedText
-  readonly property color scrimCol: Color.menu.scrim
+  readonly property color bg: Color.popups.background
+  readonly property color fg: Color.popups.text
+  readonly property color borderCol: Color.popups.border
+  readonly property color selBg: Style.selectedFillFor(Color.foreground, Color.accent)
+  readonly property color selFg: Color.foreground
+  readonly property color scrimCol: Util.alpha(Color.background, 0.75)
 
   function open(payload) {
     controller.show()
@@ -65,6 +84,9 @@ Panel {
     root.selectedIndex = 0
     root.clearConfirmOpen = false
     root.snippetEditOpen = false
+    root.clipEditOpen = false
+    root.transformOpen = false
+    root.mergeDialogOpen = false
     root.qrOpen = false
     root.rebuildDisplay()
     Qt.callLater(function() { searchInput.forceActiveFocus() })
@@ -73,6 +95,9 @@ Panel {
   function close() {
     root.clearConfirmOpen = false
     root.snippetEditOpen = false
+    root.clipEditOpen = false
+    root.transformOpen = false
+    root.mergeDialogOpen = false
     root.qrOpen = false
     controller.hide()
   }
@@ -91,17 +116,24 @@ Panel {
     }
   }
 
+  function takeScreenshot() {
+    root.close()
+    Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-capture-screenshot"])
+  }
+
   function checkIncognitoFile() {
     incognitoCheckProc.running = true
   }
 
   function loadHistory(raw) {
     root.history = ClipboardHistory.parseHistory(raw)
-    if (root.opened && root.activeTab === 0) root.rebuildDisplay()
+    root.colorPalette = ClipboardHistory.extractColors(root.history)
+    if (root.opened) root.rebuildDisplay()
   }
 
   function saveHistory() {
     historyFile.setText(JSON.stringify(root.history.slice(0, root.historyLimit), null, 2) + "\n")
+    root.colorPalette = ClipboardHistory.extractColors(root.history)
   }
 
   function addClipboardEntry(entry) {
@@ -121,7 +153,7 @@ Panel {
     var parsed = SnippetLib.parseStore(raw)
     root.snippets = parsed.snippets
     root.folders = parsed.folders
-    if (root.opened && root.activeTab === 1) root.rebuildDisplay()
+    if (root.opened && root.activeTab === 2) root.rebuildDisplay()
   }
 
   function saveSnippets() {
@@ -133,8 +165,10 @@ Panel {
 
   function rebuildDisplay() {
     displayModel.clear()
-    if (root.activeTab === 0) {
-      var rows = ClipboardHistory.displayRows(root.history, root.filterText, root.categoryFilter, 100)
+
+    if (root.activeTab === 0 || root.activeTab === 1) {
+      var cat = root.activeTab === 1 ? "pinned" : root.categoryFilter
+      var rows = ClipboardHistory.displayRows(root.history, root.filterText, cat, 100)
       for (var i = 0; i < rows.length; i++) {
         var r = rows[i]
         displayModel.append({
@@ -142,20 +176,27 @@ Panel {
           entryType: r.entryType,
           kind: r.kind || "text",
           colorValue: r.colorValue || "",
+          colorRgb: r.colorRgb || "",
+          codeLang: r.codeLang || "",
           fullText: r.fullText,
           previewText: r.previewText,
           previewImage: r.previewImage ? Util.fileUrl(r.previewImage) : "",
           path: r.path,
           mime: r.mime,
+          timeAgo: r.timeAgo || "",
+          charCount: r.charCount || 0,
+          lineCount: r.lineCount || 1,
+          wordCount: r.wordCount || 0,
+          isPinned: !!r.isPinned,
+          isFavorite: !!r.isFavorite,
           historyIndex: r.index,
           snippetIndex: -1,
           title: "",
           language: "",
-          tags: "",
-          isFavorite: false
+          tags: ""
         })
       }
-    } else if (root.activeTab === 1) {
+    } else if (root.activeTab === 2) { // Snippets
       var sRows = SnippetLib.displayRows(root.snippets, root.filterText, 100)
       for (var j = 0; j < sRows.length; j++) {
         var s = sRows[j]
@@ -164,20 +205,57 @@ Panel {
           entryType: "text",
           kind: "code",
           colorValue: "",
+          colorRgb: "",
+          codeLang: s.language || "text",
           fullText: s.content,
           previewText: s.preview,
           previewImage: "",
           path: "",
           mime: "text/plain",
+          timeAgo: "",
+          charCount: s.content.length,
+          lineCount: s.content.split("\n").length,
+          wordCount: s.content.split(/\s+/).length,
+          isPinned: false,
+          isFavorite: !!s.favorite,
           historyIndex: -1,
           snippetIndex: s.index,
           title: s.title,
           language: s.language,
-          tags: s.tags,
-          isFavorite: s.favorite
+          tags: s.tags
         })
       }
-    } else if (root.activeTab === 2) {
+    } else if (root.activeTab === 3) { // Colors
+      var cRows = root.colorPalette
+      for (var c = 0; c < cRows.length; c++) {
+        var col = cRows[c]
+        if (root.filterText && col.hex.toLowerCase().indexOf(root.filterText.toLowerCase()) < 0) continue
+        displayModel.append({
+          itemType: "color",
+          entryType: "text",
+          kind: "color",
+          colorValue: col.hex,
+          colorRgb: col.rgb,
+          codeLang: "HEX",
+          fullText: col.hex,
+          previewText: col.hex + " • " + col.rgb,
+          previewImage: "",
+          path: "",
+          mime: "text/plain",
+          timeAgo: col.timeAgo,
+          charCount: col.hex.length,
+          lineCount: 1,
+          wordCount: 1,
+          isPinned: false,
+          isFavorite: false,
+          historyIndex: -1,
+          snippetIndex: -1,
+          title: col.hex,
+          language: "CSS",
+          tags: "palette"
+        })
+      }
+    } else if (root.activeTab === 4) { // Queue
       for (var q = 0; q < root.pasteQueue.length; q++) {
         var qIdx = root.pasteQueue[q]
         if (qIdx >= 0 && qIdx < root.history.length) {
@@ -188,17 +266,24 @@ Panel {
             entryType: qEntry.type,
             kind: ClipboardHistory.detectKind(qEntry),
             colorValue: ClipboardHistory.isHexColor(qTxt) ? qTxt.trim() : "",
+            colorRgb: ClipboardHistory.isHexColor(qTxt) ? ClipboardHistory.hexToRgb(qTxt.trim()) : "",
+            codeLang: ClipboardHistory.detectCodeLanguage(qTxt),
             fullText: qTxt,
             previewText: (q + 1) + ". " + ClipboardHistory.previewText(qEntry),
             previewImage: qEntry.type === "image" ? Util.fileUrl(qEntry.path) : "",
             path: qEntry.path || "",
             mime: qEntry.mime || "text/plain",
+            timeAgo: ClipboardHistory.formatTimeAgo(qEntry.capturedAt),
+            charCount: qTxt.length,
+            lineCount: qTxt.split("\n").length,
+            wordCount: qTxt.split(/\s+/).length,
+            isPinned: false,
+            isFavorite: false,
             historyIndex: qIdx,
             snippetIndex: -1,
             title: "Step " + (q + 1),
             language: "",
-            tags: "",
-            isFavorite: false
+            tags: ""
           })
         }
       }
@@ -222,11 +307,72 @@ Panel {
   function copyRow(row) {
     if (!row) return
     if (row.entryType === "image" && row.path) {
-      Quickshell.execDetached(["wl-copy", "--type", row.mime || "image/png"], null, function(proc) {
-        Quickshell.execDetached(["cat", row.path])
-      })
+      Quickshell.execDetached(["bash", "-c", "wl-copy --type " + Util.shellQuote(row.mime || "image/png") + " < " + Util.shellQuote(row.path)])
     } else if (row.fullText) {
       Quickshell.execDetached(["bash", "-c", "printf '%s' " + Util.shellQuote(row.fullText) + " | wl-copy"])
+    }
+  }
+
+  function togglePinRow(row) {
+    if (!row || row.historyIndex < 0) return
+    root.history = ClipboardHistory.togglePin(root.history, row.historyIndex)
+    root.saveHistory()
+    root.rebuildDisplay()
+  }
+
+  function toggleFavRow(row) {
+    if (!row) return
+    if (row.itemType === "history" && row.historyIndex >= 0) {
+      root.history = ClipboardHistory.toggleFavorite(root.history, row.historyIndex)
+      root.saveHistory()
+    } else if (row.itemType === "snippet" && row.snippetIndex >= 0) {
+      root.snippets = SnippetLib.toggleFavorite(root.snippets, row.snippetIndex)
+      root.saveSnippets()
+    }
+    root.rebuildDisplay()
+  }
+
+  function openEditRow(row) {
+    if (!row) return
+    if (row.itemType === "snippet") {
+      root.snippetEditIndex = row.snippetIndex
+      root.snippetEditTitle = row.title || ""
+      root.snippetEditContent = row.fullText || ""
+      root.snippetEditLang = row.language || "javascript"
+      root.snippetEditFolder = ""
+      root.snippetEditOpen = true
+    } else if (row.itemType === "history" && row.entryType === "text") {
+      root.clipEditIndex = row.historyIndex
+      root.clipEditContent = row.fullText || ""
+      root.clipEditOpen = true
+    }
+  }
+
+  function saveClipEdit() {
+    if (root.clipEditIndex >= 0 && root.clipEditContent) {
+      root.history = ClipboardHistory.updateEntryText(root.history, root.clipEditIndex, root.clipEditContent)
+      root.saveHistory()
+      root.clipEditOpen = false
+      root.rebuildDisplay()
+    }
+  }
+
+  function openTransformRow(row) {
+    if (!row || row.entryType !== "text") return
+    root.transformClipIndex = row.historyIndex
+    root.transformOpen = true
+  }
+
+  function applyTransform(mode) {
+    if (root.transformClipIndex >= 0) {
+      var item = root.history[root.transformClipIndex]
+      if (item && item.type === "text") {
+        var transformed = ClipboardHistory.transformText(item.text, mode)
+        root.history = ClipboardHistory.updateEntryText(root.history, root.transformClipIndex, transformed)
+        root.saveHistory()
+        root.transformOpen = false
+        root.rebuildDisplay()
+      }
     }
   }
 
@@ -267,10 +413,20 @@ Panel {
     queueProc.step()
   }
 
+  function mergeQueueClips() {
+    if (root.pasteQueue.length < 2) return
+    root.history = ClipboardHistory.mergeEntries(root.history, root.pasteQueue, root.mergeSeparator)
+    root.saveHistory()
+    root.pasteQueue = []
+    root.mergeDialogOpen = false
+    root.activeTab = 0
+    root.rebuildDisplay()
+  }
+
   function saveAsSnippet(row) {
     if (!row || !row.fullText) return
     var title = row.previewText.slice(0, 30)
-    var lang = row.kind === "code" ? "javascript" : "text"
+    var lang = row.codeLang ? row.codeLang.toLowerCase() : "text"
     root.snippets = SnippetLib.addSnippet(root.snippets, {
       title: title,
       content: row.fullText,
@@ -279,7 +435,7 @@ Panel {
       favorite: false
     })
     root.saveSnippets()
-    root.activeTab = 1
+    root.activeTab = 2
     root.rebuildDisplay()
   }
 
@@ -396,15 +552,15 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: searchInput
-    contentWidth: panel.fittedContentWidth(Style.space(480))
-    contentHeight: panel.fittedContentHeight(Style.space(600))
+    contentWidth: panel.fittedContentWidth(Style.space(520))
+    contentHeight: panel.fittedContentHeight(Style.space(640))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
       onCloseRequested: root.close()
       onTabRequested: function(direction) {
-        root.activeTab = (root.activeTab + direction + 3) % 3
+        root.activeTab = (root.activeTab + direction + 5) % 5
         root.selectedIndex = 0
         root.rebuildDisplay()
       }
@@ -413,168 +569,235 @@ Panel {
     Column {
       id: mainColumn
       width: parent.width
-      spacing: Style.space(8)
+      spacing: Style.space(10)
 
-      // 1. App Header (Title + Tabs + Incognito + Close)
+      // ==========================================
+      // 1. HERO HEADER (Omarchy PanelHero Style)
+      // ==========================================
       Row {
         width: parent.width
-        height: Style.space(32)
-        spacing: Style.space(8)
+        height: Style.space(38)
+        spacing: Style.space(10)
 
+        // Logo & Title
+        Row {
+          spacing: Style.space(8)
+          anchors.verticalCenter: parent.verticalCenter
+
+          Rectangle {
+            width: Style.space(32); height: Style.space(32)
+            radius: Style.space(8)
+            color: root.incognito ? Util.alpha(Color.urgent, 0.15) : Util.alpha(Color.accent, 0.15)
+            border.width: 1
+            border.color: root.incognito ? Color.urgent : Color.accent
+
+            Text {
+              text: "󰅍"
+              color: root.incognito ? Color.urgent : Color.accent
+              font.family: root.fontFamily; font.pixelSize: Style.font.heading
+              anchors.centerIn: parent
+            }
+          }
+
+          Column {
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 0
+
+            Text {
+              text: "ReClip"
+              color: root.fg
+              font.family: root.fontFamily; font.pixelSize: Style.font.title; font.bold: true
+            }
+
+            Text {
+              text: root.historyCount + " clips • " + root.pinnedCount + " pinned" + (root.incognito ? " • Incognito" : "")
+              color: root.incognito ? Color.urgent : Util.alpha(root.fg, 0.55)
+              font.family: root.fontFamily; font.pixelSize: Style.font.caption
+            }
+          }
+        }
+
+        Item { Layout.fillWidth: true; width: Style.space(12) }
+
+        // Trailing Controls (Screenshot, Incognito Switch, Clear)
         Row {
           spacing: Style.space(6)
           anchors.verticalCenter: parent.verticalCenter
-          Text {
-            text: "󰅍"
-            color: root.incognito ? Color.urgent : Color.accent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.title
-            anchors.verticalCenter: parent.verticalCenter
-          }
-          Text {
-            text: "ReClip"
-            color: root.fg
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.title
-            font.bold: true
-            anchors.verticalCenter: parent.verticalCenter
-          }
-        }
 
-        Item { Layout.fillWidth: true; width: Style.space(16) }
-
-        // Tab Pill Switcher
-        Row {
-          spacing: Style.space(4)
-          anchors.verticalCenter: parent.verticalCenter
-
+          // Screenshot Button
           Rectangle {
-            width: Style.space(70); height: Style.space(26)
-            radius: Style.space(13)
-            color: root.activeTab === 0 ? Color.accent : Util.alpha(root.fg, 0.08)
+            width: Style.space(30); height: Style.space(30)
+            radius: Style.space(6)
+            color: Util.alpha(root.fg, 0.08)
+            border.width: 1; border.color: Util.alpha(root.fg, 0.12)
             Text {
-              text: "History (" + root.historyCount + ")"
-              color: root.activeTab === 0 ? "#fff" : root.fg
-              font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: root.activeTab === 0
+              text: "󰄀"
+              color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body
               anchors.centerIn: parent
             }
             MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: { root.activeTab = 0; root.rebuildDisplay() }
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: root.takeScreenshot()
             }
           }
 
+          // Incognito Toggle Pill
           Rectangle {
-            width: Style.space(70); height: Style.space(26)
-            radius: Style.space(13)
-            color: root.activeTab === 1 ? Color.accent : Util.alpha(root.fg, 0.08)
-            Text {
-              text: "Snippets"
-              color: root.activeTab === 1 ? "#fff" : root.fg
-              font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: root.activeTab === 1
+            width: incogRow.implicitWidth + Style.space(12); height: Style.space(30)
+            radius: Style.space(6)
+            color: root.incognito ? Util.alpha(Color.urgent, 0.2) : Util.alpha(root.fg, 0.08)
+            border.width: 1; border.color: root.incognito ? Color.urgent : Util.alpha(root.fg, 0.12)
+
+            Row {
+              id: incogRow
               anchors.centerIn: parent
+              spacing: Style.space(4)
+              Text {
+                text: root.incognito ? "󰈈" : "󰈉"
+                color: root.incognito ? Color.urgent : root.fg
+                font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                anchors.verticalCenter: parent.verticalCenter
+              }
+              Text {
+                text: root.incognito ? "Incognito" : "Normal"
+                color: root.incognito ? Color.urgent : root.fg
+                font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true
+                anchors.verticalCenter: parent.verticalCenter
+              }
             }
+
             MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: { root.activeTab = 1; root.rebuildDisplay() }
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: root.toggleIncognito()
             }
           }
 
+          // Close Button
           Rectangle {
-            width: Style.space(60); height: Style.space(26)
-            radius: Style.space(13)
-            color: root.activeTab === 2 ? Color.accent : (root.pasteQueue.length > 0 ? Color.urgent : Util.alpha(root.fg, 0.08))
-            Text {
-              text: "Queue " + (root.pasteQueue.length > 0 ? "(" + root.pasteQueue.length + ")" : "")
-              color: (root.activeTab === 2 || root.pasteQueue.length > 0) ? "#fff" : root.fg
-              font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: root.activeTab === 2
-              anchors.centerIn: parent
-            }
+            width: Style.space(30); height: Style.space(30)
+            radius: Style.space(6)
+            color: Util.alpha(root.fg, 0.08)
+            border.width: 1; border.color: Util.alpha(root.fg, 0.12)
+            Text { text: "✕"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
             MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: { root.activeTab = 2; root.rebuildDisplay() }
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: root.close()
             }
           }
-        }
-
-        Item { Layout.fillWidth: true; width: Style.space(8) }
-
-        // Incognito Button
-        Rectangle {
-          width: Style.space(26); height: Style.space(26)
-          radius: Style.space(13)
-          color: root.incognito ? Color.urgent : Util.alpha(root.fg, 0.08)
-          anchors.verticalCenter: parent.verticalCenter
-          Text {
-            text: root.incognito ? "󰈈" : "󰈉"
-            color: root.incognito ? "#fff" : root.fg
-            font.family: root.fontFamily; font.pixelSize: Style.font.body
-            anchors.centerIn: parent
-          }
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.toggleIncognito()
-          }
-        }
-
-        // Close Button
-        Rectangle {
-          width: Style.space(26); height: Style.space(26)
-          radius: Style.space(13)
-          color: Util.alpha(root.fg, 0.08)
-          anchors.verticalCenter: parent.verticalCenter
-          Text {
-            text: "✕"
-            color: root.fg
-            font.family: root.fontFamily; font.pixelSize: Style.font.body
-            anchors.centerIn: parent
-          }
-          MouseArea { anchors.fill: parent; onClicked: root.close(); cursorShape: Qt.PointingHandCursor }
         }
       }
 
-      // 2. Search Box
+      // ==========================================
+      // 2. SEGMENTED TAB BAR
+      // ==========================================
       Rectangle {
         width: parent.width
-        height: Style.space(36)
+        height: Style.space(32)
+        radius: Style.space(8)
+        color: Util.alpha(root.fg, 0.05)
+        border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+
+        Row {
+          anchors.fill: parent; anchors.margins: Style.space(2)
+          spacing: Style.space(2)
+
+          Repeater {
+            model: [
+              { id: 0, label: "History", icon: "󰅍", count: root.historyCount },
+              { id: 1, label: "Pinned", icon: "󰐃", count: root.pinnedCount },
+              { id: 2, label: "Snippets", icon: "󰅩", count: root.snippets.length },
+              { id: 3, label: "Colors", icon: "󰏘", count: root.colorPalette.length },
+              { id: 4, label: "Queue", icon: "󰆒", count: root.pasteQueue.length }
+            ]
+
+            Rectangle {
+              required property var modelData
+              width: (parent.width - Style.space(8)) / 5
+              height: parent.height
+              radius: Style.space(6)
+              color: root.activeTab === modelData.id ? Color.accent : "transparent"
+
+              Row {
+                anchors.centerIn: parent
+                spacing: Style.space(4)
+
+                Text {
+                  text: parent.parent.modelData.icon
+                  color: root.activeTab === parent.parent.modelData.id ? "#fff" : root.fg
+                  font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+
+                Text {
+                  text: parent.parent.modelData.label + (parent.parent.modelData.count > 0 ? " (" + parent.parent.modelData.count + ")" : "")
+                  color: root.activeTab === parent.parent.modelData.id ? "#fff" : root.fg
+                  font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                  font.bold: root.activeTab === parent.parent.modelData.id
+                  elide: Text.ElideRight
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+              }
+
+              MouseArea {
+                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.activeTab = parent.modelData.id
+                  root.selectedIndex = 0
+                  root.rebuildDisplay()
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // ==========================================
+      // 3. SEARCH & FILTER SECTION
+      // ==========================================
+      Rectangle {
+        width: parent.width
+        height: Style.space(38)
         radius: Style.cornerRadius
-        color: Util.alpha(root.fg, 0.06)
+        color: Util.alpha(root.fg, 0.05)
         border.width: 1
         border.color: searchInput.activeFocus ? Color.accent : Util.alpha(root.fg, 0.12)
 
         Row {
           anchors.fill: parent
-          anchors.leftMargin: Style.space(10)
-          anchors.rightMargin: Style.space(10)
+          anchors.leftMargin: Style.space(10); anchors.rightMargin: Style.space(10)
           spacing: Style.space(8)
 
           Text {
             text: "󰍉"
-            color: Util.alpha(root.fg, 0.6)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
+            color: searchInput.activeFocus ? Color.accent : Util.alpha(root.fg, 0.5)
+            font.family: root.fontFamily; font.pixelSize: Style.font.body
             anchors.verticalCenter: parent.verticalCenter
           }
 
           TextInput {
             id: searchInput
-            width: parent.width - Style.space(48)
-            color: root.fg
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
+            width: parent.width - Style.space(50)
+            color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body
             text: root.filterText
             anchors.verticalCenter: parent.verticalCenter
-            clip: true
-            selectByMouse: true
+            clip: true; selectByMouse: true
 
             onTextChanged: {
               root.filterText = text
               root.selectedIndex = 0
               root.rebuildDisplay()
+            }
+
+            // Quick 1-9 paste shortcuts!
+            Keys.onPressed: function(event) {
+              if (!event.modifiers && event.key >= Qt.Key_1 && event.key <= Qt.Key_9 && root.filterText === "") {
+                var numIdx = event.key - Qt.Key_1
+                if (numIdx < displayModel.count) {
+                  root.pasteRow(displayModel.get(numIdx))
+                  event.accepted = true
+                  return
+                }
+              }
             }
 
             Keys.onUpPressed: {
@@ -592,29 +815,20 @@ Panel {
             Keys.onReturnPressed: function(event) {
               if (displayModel.count > 0 && root.selectedIndex >= 0 && root.selectedIndex < displayModel.count) {
                 var row = displayModel.get(root.selectedIndex)
-                if (event.modifiers & Qt.ShiftModifier) {
-                  root.toggleQueue(row)
-                } else {
-                  root.pasteRow(row)
-                }
+                if (event.modifiers & Qt.ShiftModifier) root.toggleQueue(row)
+                else root.pasteRow(row)
               }
             }
             Keys.onEscapePressed: {
               if (root.filterText !== "") root.filterText = ""
               else root.close()
             }
-            Keys.onTabPressed: function(e) {
-              root.activeTab = (root.activeTab + 1) % 3
-              root.rebuildDisplay()
-              e.accepted = true
-            }
 
             Text {
               visible: searchInput.text === "" && !searchInput.activeFocus
-              text: root.activeTab === 0 ? "Type to filter clipboard clips..." : (root.activeTab === 1 ? "Search saved snippets..." : "Search queued items...")
+              text: root.activeTab === 0 ? "Search history, code, colors… (Press 1-9 to paste)" : (root.activeTab === 2 ? "Search snippets…" : "Filter items…")
               color: Util.alpha(root.fg, 0.4)
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
+              font.family: root.fontFamily; font.pixelSize: Style.font.body
               anchors.verticalCenter: parent.verticalCenter
             }
           }
@@ -630,7 +844,7 @@ Panel {
         }
       }
 
-      // 3. Category Filter Chips (History tab only)
+      // Category Chips (History tab only)
       Row {
         visible: root.activeTab === 0
         width: parent.width
@@ -638,36 +852,42 @@ Panel {
 
         Repeater {
           model: [
-            { id: "all", label: "All" },
-            { id: "text", label: "Text" },
-            { id: "code", label: "Code" },
-            { id: "color", label: "Colors" },
-            { id: "link", label: "Links" },
-            { id: "image", label: "Images" },
-            { id: "file", label: "Files" }
+            { id: "all", label: "All", icon: "󰅍" },
+            { id: "code", label: "Code", icon: "󰅩" },
+            { id: "color", label: "Colors", icon: "󰏘" },
+            { id: "link", label: "Links", icon: "󰌹" },
+            { id: "image", label: "Images", icon: "" },
+            { id: "file", label: "Files", icon: "󰈔" }
           ]
 
           Rectangle {
             required property var modelData
-            width: chipText.implicitWidth + Style.space(16)
-            height: Style.space(22)
-            radius: Style.space(11)
+            width: chipContent.implicitWidth + Style.space(16)
+            height: Style.space(24)
+            radius: Style.space(12)
             color: root.categoryFilter === modelData.id ? Color.accent : Util.alpha(root.fg, 0.06)
             border.width: 1
             border.color: root.categoryFilter === modelData.id ? Color.accent : Util.alpha(root.fg, 0.1)
 
-            Text {
-              id: chipText
-              text: parent.modelData.label
-              color: root.categoryFilter === parent.modelData.id ? "#fff" : root.fg
-              font.family: root.fontFamily; font.pixelSize: Style.font.caption
-              font.bold: root.categoryFilter === parent.modelData.id
+            Row {
+              id: chipContent
               anchors.centerIn: parent
+              spacing: Style.space(4)
+              Text {
+                text: parent.parent.modelData.icon
+                color: root.categoryFilter === parent.parent.modelData.id ? "#fff" : root.fg
+                font.family: root.fontFamily; font.pixelSize: Style.font.caption
+              }
+              Text {
+                text: parent.parent.modelData.label
+                color: root.categoryFilter === parent.parent.modelData.id ? "#fff" : root.fg
+                font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                font.bold: root.categoryFilter === parent.parent.modelData.id
+              }
             }
 
             MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
               onClicked: {
                 root.categoryFilter = parent.modelData.id
                 root.selectedIndex = 0
@@ -678,16 +898,17 @@ Panel {
         }
       }
 
-      // Action Row for Snippets tab
+      // Snippet Action Bar (Snippets Tab)
       Row {
-        visible: root.activeTab === 1
+        visible: root.activeTab === 2
         width: parent.width
         spacing: Style.space(8)
 
         Rectangle {
-          width: Style.space(110); height: Style.space(26)
+          width: Style.space(120); height: Style.space(28)
           radius: Style.space(6)
           color: Color.accent
+
           Row {
             anchors.centerIn: parent; spacing: Style.space(4)
             Text { text: "+"; color: "#fff"; font.pixelSize: Style.font.body; font.bold: true }
@@ -705,24 +926,23 @@ Panel {
             }
           }
         }
-
-        Item { Layout.fillWidth: true }
       }
 
-      // Action Row for Queue tab
+      // Queue Action Bar (Queue Tab)
       Row {
-        visible: root.activeTab === 2
+        visible: root.activeTab === 4
         width: parent.width
         spacing: Style.space(8)
 
         Rectangle {
-          width: Style.space(120); height: Style.space(26)
+          width: Style.space(120); height: Style.space(28)
           radius: Style.space(6)
           color: root.pasteQueue.length > 0 ? Color.accent : Util.alpha(root.fg, 0.1)
+
           Row {
             anchors.centerIn: parent; spacing: Style.space(4)
-            Text { text: "󰆒"; color: "#fff"; font.pixelSize: Style.font.body }
-            Text { text: "Paste Queue (" + root.pasteQueue.length + ")"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+            Text { text: "󰆒"; color: "#fff"; font.pixelSize: Style.font.caption }
+            Text { text: "Paste Next"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
           }
           MouseArea {
             anchors.fill: parent; cursorShape: Qt.PointingHandCursor
@@ -731,7 +951,25 @@ Panel {
         }
 
         Rectangle {
-          width: Style.space(80); height: Style.space(26)
+          visible: root.pasteQueue.length >= 2
+          width: Style.space(110); height: Style.space(28)
+          radius: Style.space(6)
+          color: Util.alpha(Color.accent, 0.2)
+          border.width: 1; border.color: Color.accent
+
+          Row {
+            anchors.centerIn: parent; spacing: Style.space(4)
+            Text { text: "󰑣"; color: Color.accent; font.pixelSize: Style.font.caption }
+            Text { text: "Merge All"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+          }
+          MouseArea {
+            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+            onClicked: root.mergeDialogOpen = true
+          }
+        }
+
+        Rectangle {
+          width: Style.space(90); height: Style.space(28)
           radius: Style.space(6)
           color: Util.alpha(root.fg, 0.08)
           Text { text: "Clear Queue"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
@@ -742,10 +980,12 @@ Panel {
         }
       }
 
-      // 4. Content List
+      // ==========================================
+      // 4. MAIN SCROLLABLE LIST
+      // ==========================================
       Rectangle {
         width: parent.width
-        height: root.activeTab === 0 ? Style.space(410) : Style.space(435)
+        height: root.activeTab === 0 ? Style.space(420) : Style.space(445)
         color: "transparent"
 
         ListView {
@@ -764,24 +1004,44 @@ Panel {
             required property string entryType
             required property string kind
             required property string colorValue
+            required property string colorRgb
+            required property string codeLang
             required property string fullText
             required property string previewText
             required property string previewImage
             required property string path
             required property string mime
-            required property string title
-            required property string language
-            required property string tags
+            required property string timeAgo
+            required property int charCount
+            required property int lineCount
+            required property int wordCount
+            required property bool isPinned
             required property bool isFavorite
+            required property int historyIndex
+            required property int snippetIndex
+            required property string title
+
+            readonly property bool isSelected: root.selectedIndex === index
+            readonly property bool isHovered: cardMouse.containsMouse
 
             width: list.width - Style.space(6)
-            height: kind === "code" ? Style.space(68) : (entryType === "image" ? Style.space(74) : Style.space(52))
-            radius: Style.space(6)
-            color: root.selectedIndex === index ? root.selBg : Util.alpha(root.fg, 0.04)
+            height: kind === "code" ? Style.space(78) : (entryType === "image" ? Style.space(80) : Style.space(62))
+            radius: Style.space(8)
+            color: isSelected ? root.selBg : (isHovered ? Util.alpha(root.fg, 0.06) : Util.alpha(root.fg, 0.03))
             border.width: 1
-            border.color: root.selectedIndex === index ? Color.accent : Util.alpha(root.fg, 0.08)
+            border.color: isSelected ? Color.accent : (cardItem.isPinned ? Util.alpha(Color.accent, 0.4) : Util.alpha(root.fg, 0.08))
+
+            // Glowing Left Accent Line for selected item
+            Rectangle {
+              visible: cardItem.isSelected
+              width: Style.space(3); height: parent.height - Style.space(12)
+              radius: Style.space(2)
+              color: Color.accent
+              anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+            }
 
             MouseArea {
+              id: cardMouse
               anchors.fill: parent
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
@@ -794,87 +1054,140 @@ Panel {
             Row {
               anchors.fill: parent
               anchors.margins: Style.space(8)
-              spacing: Style.space(8)
+              anchors.leftMargin: cardItem.isSelected ? Style.space(12) : Style.space(8)
+              spacing: Style.space(10)
 
-              // Type Visual Badge
+              // Type Visual / Swatch / Thumbnail
               Rectangle {
-                width: Style.space(36)
-                height: Style.space(36)
+                width: Style.space(42); height: Style.space(42)
                 radius: Style.space(6)
                 anchors.verticalCenter: parent.verticalCenter
                 color: cardItem.kind === "color" && cardItem.colorValue !== ""
                   ? cardItem.colorValue
                   : Util.alpha(root.fg, 0.08)
                 border.width: cardItem.kind === "color" ? 1 : 0
-                border.color: Util.alpha(root.fg, 0.3)
+                border.color: Util.alpha(root.fg, 0.25)
 
                 Text {
                   visible: cardItem.kind !== "color" && cardItem.entryType !== "image"
                   text: cardItem.kind === "code" ? "󰅩" : (cardItem.kind === "link" ? "󰌹" : (cardItem.entryType === "file" ? "󰈔" : "󰅍"))
-                  color: root.selectedIndex === cardItem.index ? root.selFg : root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
+                  color: cardItem.isSelected ? root.selFg : root.fg
+                  font.family: root.fontFamily; font.pixelSize: Style.font.heading
                   anchors.centerIn: parent
                 }
 
                 Image {
                   visible: cardItem.entryType === "image" && cardItem.previewImage !== ""
-                  anchors.fill: parent
-                  anchors.margins: Style.space(2)
+                  anchors.fill: parent; anchors.margins: 1
                   source: cardItem.previewImage
                   fillMode: Image.PreserveAspectCrop
                   clip: true
                 }
               }
 
-              // Text info
+              // Metadata & Content Details
               Column {
-                width: parent.width - Style.space(160)
+                width: parent.width - Style.space(200)
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(2)
 
+                // Meta Row (Index badge, Pin, Tag, Time Ago)
                 Row {
                   spacing: Style.space(6)
+
+                  // 1-9 Quick paste badge
+                  Rectangle {
+                    visible: cardItem.index < 9 && root.activeTab === 0
+                    width: Style.space(14); height: Style.space(14)
+                    radius: Style.space(3)
+                    color: Util.alpha(root.fg, 0.12)
+                    Text {
+                      text: String(cardItem.index + 1)
+                      color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true
+                      anchors.centerIn: parent
+                    }
+                  }
+
+                  // Pinned indicator
+                  Text {
+                    visible: cardItem.isPinned
+                    text: "󰐃"
+                    color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(10)
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+
+                  // Favorite indicator
+                  Text {
+                    visible: cardItem.isFavorite
+                    text: "⭐"
+                    font.pixelSize: Style.space(8)
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+
+                  // Type Tag / Language
+                  Rectangle {
+                    visible: cardItem.kind === "code" || cardItem.kind === "color"
+                    width: tagTxt.implicitWidth + Style.space(8); height: Style.space(14)
+                    radius: Style.space(3)
+                    color: cardItem.kind === "color" ? Util.alpha(root.fg, 0.1) : Util.alpha(Color.accent, 0.2)
+                    Text {
+                      id: tagTxt
+                      text: cardItem.kind === "color" ? cardItem.colorValue : (cardItem.codeLang || "CODE")
+                      color: cardItem.kind === "color" ? root.fg : Color.accent
+                      font.pixelSize: Style.space(9); font.bold: true
+                      anchors.centerIn: parent
+                    }
+                  }
+
+                  // Title (for Snippets)
                   Text {
                     visible: cardItem.title !== ""
                     text: cardItem.title
-                    color: root.selectedIndex === cardItem.index ? root.selFg : root.fg
+                    color: cardItem.isSelected ? root.selFg : root.fg
                     font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
                   }
-                  Rectangle {
-                    visible: cardItem.kind === "code"
-                    width: langTag.implicitWidth + Style.space(8); height: Style.space(14)
-                    radius: Style.space(3); color: Util.alpha(Color.accent, 0.2)
-                    Text { id: langTag; text: cardItem.language || "code"; color: Color.accent; font.pixelSize: Style.space(9); font.bold: true; anchors.centerIn: parent }
-                  }
-                  Rectangle {
-                    visible: cardItem.kind === "color"
-                    width: colTag.implicitWidth + Style.space(8); height: Style.space(14)
-                    radius: Style.space(3); color: Util.alpha(root.fg, 0.1)
-                    Text { id: colTag; text: cardItem.colorValue; color: root.fg; font.pixelSize: Style.space(9); font.family: "monospace"; anchors.centerIn: parent }
+
+                  // Time ago
+                  Text {
+                    visible: cardItem.timeAgo !== ""
+                    text: cardItem.timeAgo
+                    color: Util.alpha(root.fg, 0.45)
+                    font.family: root.fontFamily; font.pixelSize: Style.space(9)
+                    anchors.verticalCenter: parent.verticalCenter
                   }
                 }
 
+                // Preview Content
                 Text {
                   width: parent.width
                   text: cardItem.previewText
-                  color: root.selectedIndex === cardItem.index ? root.selFg : Util.alpha(root.fg, 0.85)
+                  color: cardItem.isSelected ? root.selFg : Util.alpha(root.fg, 0.9)
                   font.family: cardItem.kind === "code" ? "monospace" : root.fontFamily
                   font.pixelSize: Style.font.caption
                   elide: Text.ElideRight
                   maximumLineCount: cardItem.kind === "code" ? 2 : 1
                   wrapMode: Text.WrapAnywhere
                 }
+
+                // Stats (lines / characters)
+                Text {
+                  visible: cardItem.entryType === "text" && cardItem.fullText.length > 0
+                  text: cardItem.lineCount + " lines • " + cardItem.charCount + " chars"
+                  color: Util.alpha(root.fg, 0.4)
+                  font.family: root.fontFamily; font.pixelSize: Style.space(9)
+                }
               }
 
-              // Action Buttons
+              // ==========================================
+              // ACTION BUTTONS TOOLBAR
+              // ==========================================
               Row {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(4)
 
                 // Quick Copy
                 Rectangle {
-                  width: Style.space(24); height: Style.space(24); radius: Style.space(4)
+                  width: Style.space(26); height: Style.space(26); radius: Style.space(4)
                   color: Util.alpha(root.fg, 0.08)
                   Text { text: "󰆏"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
                   MouseArea {
@@ -883,34 +1196,66 @@ Panel {
                   }
                 }
 
-                // Add to Queue
+                // Pin / Unpin
                 Rectangle {
                   visible: cardItem.itemType === "history"
-                  width: Style.space(24); height: Style.space(24); radius: Style.space(4)
-                  color: root.pasteQueue.indexOf(cardItem.index) >= 0 ? Color.accent : Util.alpha(root.fg, 0.08)
-                  Text { text: "+"; color: root.pasteQueue.indexOf(cardItem.index) >= 0 ? "#fff" : root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.centerIn: parent }
+                  width: Style.space(26); height: Style.space(26); radius: Style.space(4)
+                  color: cardItem.isPinned ? Color.accent : Util.alpha(root.fg, 0.08)
+                  Text {
+                    text: "󰐃"
+                    color: cardItem.isPinned ? "#fff" : root.fg
+                    font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                    anchors.centerIn: parent
+                  }
                   MouseArea {
                     anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.toggleQueue(displayModel.get(cardItem.index))
+                    onClicked: root.togglePinRow(displayModel.get(cardItem.index))
                   }
                 }
 
-                // Save as Snippet
+                // Favorite Star
                 Rectangle {
-                  visible: cardItem.itemType === "history" && cardItem.entryType === "text"
-                  width: Style.space(24); height: Style.space(24); radius: Style.space(4)
-                  color: Util.alpha(root.fg, 0.08)
-                  Text { text: "⭐"; font.pixelSize: Style.space(10); anchors.centerIn: parent }
+                  width: Style.space(26); height: Style.space(26); radius: Style.space(4)
+                  color: cardItem.isFavorite ? Color.accent : Util.alpha(root.fg, 0.08)
+                  Text {
+                    text: "⭐"
+                    font.pixelSize: Style.space(10)
+                    anchors.centerIn: parent
+                  }
                   MouseArea {
                     anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.saveAsSnippet(displayModel.get(cardItem.index))
+                    onClicked: root.toggleFavRow(displayModel.get(cardItem.index))
+                  }
+                }
+
+                // Edit Clip inline
+                Rectangle {
+                  visible: cardItem.entryType === "text"
+                  width: Style.space(26); height: Style.space(26); radius: Style.space(4)
+                  color: Util.alpha(root.fg, 0.08)
+                  Text { text: "✏"; color: root.fg; font.pixelSize: Style.space(10); anchors.centerIn: parent }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.openEditRow(displayModel.get(cardItem.index))
+                  }
+                }
+
+                // Transform Text Case
+                Rectangle {
+                  visible: cardItem.entryType === "text" && cardItem.itemType === "history"
+                  width: Style.space(26); height: Style.space(26); radius: Style.space(4)
+                  color: Util.alpha(root.fg, 0.08)
+                  Text { text: "🔤"; font.pixelSize: Style.space(10); anchors.centerIn: parent }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.openTransformRow(displayModel.get(cardItem.index))
                   }
                 }
 
                 // QR Code
                 Rectangle {
                   visible: cardItem.entryType === "text" && cardItem.fullText !== ""
-                  width: Style.space(24); height: Style.space(24); radius: Style.space(4)
+                  width: Style.space(26); height: Style.space(26); radius: Style.space(4)
                   color: Util.alpha(root.fg, 0.08)
                   Text { text: "󰐳"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
                   MouseArea {
@@ -919,9 +1264,26 @@ Panel {
                   }
                 }
 
+                // Add to Queue
+                Rectangle {
+                  visible: cardItem.itemType === "history"
+                  width: Style.space(26); height: Style.space(26); radius: Style.space(4)
+                  color: root.pasteQueue.indexOf(cardItem.historyIndex) >= 0 ? Color.accent : Util.alpha(root.fg, 0.08)
+                  Text {
+                    text: "+"
+                    color: root.pasteQueue.indexOf(cardItem.historyIndex) >= 0 ? "#fff" : root.fg
+                    font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
+                    anchors.centerIn: parent
+                  }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.toggleQueue(displayModel.get(cardItem.index))
+                  }
+                }
+
                 // Delete
                 Rectangle {
-                  width: Style.space(24); height: Style.space(24); radius: Style.space(4)
+                  width: Style.space(26); height: Style.space(26); radius: Style.space(4)
                   color: Util.alpha(root.fg, 0.08)
                   Text { text: "󰆴"; color: Color.urgent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
                   MouseArea {
@@ -938,10 +1300,10 @@ Panel {
         Column {
           visible: displayModel.count === 0
           anchors.centerIn: parent
-          spacing: Style.space(8)
-          Text { text: "󰅍"; color: Util.alpha(root.fg, 0.3); font.family: root.fontFamily; font.pixelSize: Style.space(36); anchors.horizontalCenter: parent.horizontalCenter }
+          spacing: Style.space(10)
+          Text { text: "󰅍"; color: Util.alpha(root.fg, 0.25); font.family: root.fontFamily; font.pixelSize: Style.space(42); anchors.horizontalCenter: parent.horizontalCenter }
           Text {
-            text: root.filterText !== "" ? "No matching clips found" : (root.activeTab === 0 ? "Clipboard is empty" : (root.activeTab === 1 ? "No snippets saved" : "Paste queue is empty"))
+            text: root.filterText !== "" ? "No matching clips found" : (root.activeTab === 0 ? "Clipboard history is empty" : (root.activeTab === 1 ? "No pinned items yet • Click 󰐃 on any clip" : (root.activeTab === 2 ? "No snippets created yet" : (root.activeTab === 3 ? "No color codes found in history" : "Paste queue is empty"))))
             color: Util.alpha(root.fg, 0.5)
             font.family: root.fontFamily; font.pixelSize: Style.font.body
             anchors.horizontalCenter: parent.horizontalCenter
@@ -949,14 +1311,16 @@ Panel {
         }
       }
 
-      // 5. Footer (Hints + Clear History)
+      // ==========================================
+      // 5. FOOTER STATUS & CHEATSHEET
+      // ==========================================
       Row {
         width: parent.width
         height: Style.space(24)
         spacing: Style.space(8)
 
         Text {
-          text: "↵ Paste • Shift+↵ Queue • Tab Switch • Esc Close"
+          text: "[1-9] Quick Paste • ↵ Paste • P Pin • F Star • 🔤 Transform • Del Remove"
           color: Util.alpha(root.fg, 0.45)
           font.family: root.fontFamily
           font.pixelSize: Style.space(10)
@@ -974,7 +1338,7 @@ Panel {
 
           Text {
             id: clearText
-            text: "Clear All"
+            text: "Clear History"
             color: Color.urgent
             font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true
             anchors.centerIn: parent
@@ -987,25 +1351,198 @@ Panel {
       }
     }
 
-    // Modal: Snippet Editor
+    // ==========================================
+    // MODAL: CLIP IN-PLACE EDITOR
+    // ==========================================
     Rectangle {
-      visible: root.snippetEditOpen
+      visible: root.clipEditOpen
       anchors.fill: parent
-      color: Util.alpha(root.scrimCol, 0.85)
+      color: root.scrimCol
       radius: Style.cornerRadius
-      z: 30
+      z: 50
 
       Rectangle {
-        width: parent.width * 0.9
-        height: parent.height * 0.85
+        width: parent.width * 0.92; height: parent.height * 0.82
         radius: Style.cornerRadius
-        color: root.bg
-        border.width: 1; border.color: root.borderCol
+        color: root.bg; border.width: 1; border.color: root.borderCol
         anchors.centerIn: parent
 
         Column {
-          anchors.fill: parent
-          anchors.margins: Style.space(16)
+          anchors.fill: parent; anchors.margins: Style.space(16)
+          spacing: Style.space(10)
+
+          Text { text: "Edit Clip"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.title; font.bold: true }
+
+          Rectangle {
+            width: parent.width; height: parent.height - Style.space(80)
+            radius: Style.space(6); color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.12)
+            Flickable {
+              anchors.fill: parent; anchors.margins: Style.space(8); contentWidth: width; clip: true
+              TextEdit {
+                id: clipBodyInput
+                width: parent.width
+                color: root.fg; font.family: "monospace"; font.pixelSize: Style.font.body
+                wrapMode: TextEdit.Wrap
+                text: root.clipEditContent
+                onTextChanged: root.clipEditContent = text
+              }
+            }
+          }
+
+          Row {
+            anchors.right: parent.right; spacing: Style.space(8)
+            Rectangle {
+              width: Style.space(70); height: Style.space(28); radius: Style.space(4); color: Util.alpha(root.fg, 0.1)
+              Text { text: "Cancel"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+              MouseArea { anchors.fill: parent; onClicked: root.clipEditOpen = false; cursorShape: Qt.PointingHandCursor }
+            }
+            Rectangle {
+              width: Style.space(70); height: Style.space(28); radius: Style.space(4); color: Color.accent
+              Text { text: "Save"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.centerIn: parent }
+              MouseArea { anchors.fill: parent; onClicked: root.saveClipEdit(); cursorShape: Qt.PointingHandCursor }
+            }
+          }
+        }
+      }
+    }
+
+    // ==========================================
+    // MODAL: TEXT TRANSFORMS
+    // ==========================================
+    Rectangle {
+      visible: root.transformOpen
+      anchors.fill: parent
+      color: root.scrimCol
+      radius: Style.cornerRadius
+      z: 50
+
+      Rectangle {
+        width: Style.space(280); height: Style.space(340)
+        radius: Style.cornerRadius
+        color: root.bg; border.width: 1; border.color: root.borderCol
+        anchors.centerIn: parent
+
+        Column {
+          anchors.fill: parent; anchors.margins: Style.space(16)
+          spacing: Style.space(8)
+
+          Text { text: "Transform Text"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.title; font.bold: true }
+
+          Repeater {
+            model: [
+              { id: "upper", label: "UPPERCASE" },
+              { id: "lower", label: "lowercase" },
+              { id: "title", label: "Title Case" },
+              { id: "trim", label: "Trim Whitespace" },
+              { id: "kebab", label: "kebab-case" },
+              { id: "snake", label: "snake_case" },
+              { id: "json_pretty", label: "Beautify JSON" },
+              { id: "json_minify", label: "Minify JSON" }
+            ]
+
+            Rectangle {
+              required property var modelData
+              width: parent.width; height: Style.space(28); radius: Style.space(4)
+              color: tfMouse.containsMouse ? Util.alpha(Color.accent, 0.2) : Util.alpha(root.fg, 0.05)
+
+              Text {
+                text: parent.modelData.label; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                anchors.centerIn: parent
+              }
+
+              MouseArea {
+                id: tfMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: root.applyTransform(parent.modelData.id)
+              }
+            }
+          }
+
+          Rectangle {
+            width: parent.width; height: Style.space(28); radius: Style.space(4); color: Util.alpha(root.fg, 0.1)
+            Text { text: "Cancel"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+            MouseArea { anchors.fill: parent; onClicked: root.transformOpen = false; cursorShape: Qt.PointingHandCursor }
+          }
+        }
+      }
+    }
+
+    // ==========================================
+    // MODAL: MERGE DIALOG
+    // ==========================================
+    Rectangle {
+      visible: root.mergeDialogOpen
+      anchors.fill: parent
+      color: root.scrimCol
+      radius: Style.cornerRadius
+      z: 50
+
+      Rectangle {
+        width: Style.space(300); height: Style.space(220)
+        radius: Style.cornerRadius
+        color: root.bg; border.width: 1; border.color: root.borderCol
+        anchors.centerIn: parent
+
+        Column {
+          anchors.fill: parent; anchors.margins: Style.space(16)
+          spacing: Style.space(10)
+
+          Text { text: "Merge Queued Clips"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.title; font.bold: true }
+          Text { text: "Combine " + root.pasteQueue.length + " clips into a single new clip:"; color: Util.alpha(root.fg, 0.65); font.pixelSize: Style.font.caption }
+
+          Row {
+            spacing: Style.space(8)
+            Repeater {
+              model: [
+                { id: "\n", label: "Newlines" },
+                { id: " ", label: "Spaces" },
+                { id: ", ", label: "Commas" }
+              ]
+              Rectangle {
+                required property var modelData
+                width: Style.space(80); height: Style.space(28); radius: Style.space(4)
+                color: root.mergeSeparator === modelData.id ? Color.accent : Util.alpha(root.fg, 0.08)
+                Text { text: parent.modelData.label; color: root.mergeSeparator === parent.modelData.id ? "#fff" : root.fg; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+                MouseArea { anchors.fill: parent; onClicked: root.mergeSeparator = parent.modelData.id; cursorShape: Qt.PointingHandCursor }
+              }
+            }
+          }
+
+          Row {
+            anchors.right: parent.right; spacing: Style.space(8)
+            Rectangle {
+              width: Style.space(70); height: Style.space(28); radius: Style.space(4); color: Util.alpha(root.fg, 0.1)
+              Text { text: "Cancel"; color: root.fg; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+              MouseArea { anchors.fill: parent; onClicked: root.mergeDialogOpen = false; cursorShape: Qt.PointingHandCursor }
+            }
+            Rectangle {
+              width: Style.space(70); height: Style.space(28); radius: Style.space(4); color: Color.accent
+              Text { text: "Merge"; color: "#fff"; font.pixelSize: Style.font.caption; font.bold: true; anchors.centerIn: parent }
+              MouseArea { anchors.fill: parent; onClicked: root.mergeQueueClips(); cursorShape: Qt.PointingHandCursor }
+            }
+          }
+        }
+      }
+    }
+
+    // ==========================================
+    // MODAL: SNIPPET EDITOR
+    // ==========================================
+    Rectangle {
+      visible: root.snippetEditOpen
+      anchors.fill: parent
+      color: root.scrimCol
+      radius: Style.cornerRadius
+      z: 50
+
+      Rectangle {
+        width: parent.width * 0.92; height: parent.height * 0.85
+        radius: Style.cornerRadius
+        color: root.bg; border.width: 1; border.color: root.borderCol
+        anchors.centerIn: parent
+
+        Column {
+          anchors.fill: parent; anchors.margins: Style.space(16)
           spacing: Style.space(10)
 
           Text {
@@ -1075,20 +1612,30 @@ Panel {
           Row {
             anchors.right: parent.right; spacing: Style.space(8)
             Rectangle {
-              width: Style.space(70); height: Style.space(28); radius: Style.space(4)
-              color: Util.alpha(root.fg, 0.1)
+              width: Style.space(70); height: Style.space(28); radius: Style.space(4); color: Util.alpha(root.fg, 0.1)
               Text { text: "Cancel"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
               MouseArea { anchors.fill: parent; onClicked: root.snippetEditOpen = false; cursorShape: Qt.PointingHandCursor }
             }
             Rectangle {
-              width: Style.space(70); height: Style.space(28); radius: Style.space(4)
-              color: Color.accent
+              width: Style.space(70); height: Style.space(28); radius: Style.space(4); color: Color.accent
               Text { text: "Save"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.centerIn: parent }
               MouseArea {
                 anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                 onClicked: {
-                  root.saveSnippet(root.snippetEditTitle, root.snippetEditContent, root.snippetEditLang, root.snippetEditFolder)
+                  if (root.snippetEditIndex >= 0) {
+                    root.snippets = SnippetLib.updateSnippet(root.snippets, root.snippetEditIndex, {
+                      title: root.snippetEditTitle, content: root.snippetEditContent,
+                      language: root.snippetEditLang, folder: root.snippetEditFolder
+                    })
+                  } else {
+                    root.snippets = SnippetLib.addSnippet(root.snippets, {
+                      title: root.snippetEditTitle || "Untitled", content: root.snippetEditContent,
+                      language: root.snippetEditLang, folder: root.snippetEditFolder
+                    })
+                  }
+                  root.saveSnippets()
                   root.snippetEditOpen = false
+                  root.rebuildDisplay()
                 }
               }
             }
@@ -1097,13 +1644,15 @@ Panel {
       }
     }
 
-    // Modal: QR Code Sharing
+    // ==========================================
+    // MODAL: QR CODE MODAL
+    // ==========================================
     Rectangle {
       visible: root.qrOpen
       anchors.fill: parent
-      color: Util.alpha(root.scrimCol, 0.85)
+      color: root.scrimCol
       radius: Style.cornerRadius
-      z: 35
+      z: 50
 
       Rectangle {
         width: Style.space(300); height: Style.space(340)
@@ -1139,13 +1688,15 @@ Panel {
       }
     }
 
-    // Modal: Clear Confirmation
+    // ==========================================
+    // MODAL: CLEAR CONFIRMATION
+    // ==========================================
     Rectangle {
       visible: root.clearConfirmOpen
       anchors.fill: parent
-      color: Util.alpha(root.scrimCol, 0.85)
+      color: root.scrimCol
       radius: Style.cornerRadius
-      z: 40
+      z: 50
 
       Rectangle {
         width: Style.space(280); height: Style.space(140)
@@ -1187,8 +1738,10 @@ Panel {
               MouseArea {
                 anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                 onClicked: {
-                  root.clearHistory()
+                  root.history = []
+                  root.saveHistory()
                   root.clearConfirmOpen = false
+                  root.rebuildDisplay()
                 }
               }
             }
