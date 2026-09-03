@@ -12,7 +12,7 @@ mkdir -p "$IMAGE_DIR"
 
 types=$(wl-paste --list-types 2>/dev/null || true)
 
-if [[ ${CLIPBOARD_STATE:-} == "sensitive" ]] || grep -qx 'x-kde-passwordManagerHint' <<<"$types"; then
+if [[ -f "$STATE_DIR/incognito" ]] || [[ ${CLIPBOARD_STATE:-} == "sensitive" ]] || grep -qx 'x-kde-passwordManagerHint' <<<"$types"; then
   exit 0
 fi
 
