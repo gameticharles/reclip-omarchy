@@ -20,6 +20,7 @@ Panel {
 
   property var anchorItem: null
   property var hostWidget: null
+  readonly property var barIdentity: hostWidget || root
 
   property string omarchyPath: Quickshell.env("OMARCHY_PATH") || "/usr/share/omarchy"
   property string home: Quickshell.env("HOME")
@@ -156,7 +157,7 @@ Panel {
   readonly property color scrimCol: Util.alpha(Color.background, 0.75)
 
   function open(payload) {
-    controller.show()
+    root.controller.show()
     root.filterText = ""
     root.selectedIndex = 0
     root.clearConfirmOpen = false
@@ -172,8 +173,12 @@ Panel {
     root.bulkMode = false
     root.bulkSelectedIndices = []
     root.activeMenuClipIndex = -1
+    if (payload && payload.tab !== undefined) root.activeTab = payload.tab
+    if (payload && payload.subTab !== undefined) root.colorStudioSubTab = payload.subTab
     root.rebuildDisplay()
-    Qt.callLater(function() { searchInput.forceActiveFocus() })
+    if (root.activeTab !== 3) {
+      Qt.callLater(function() { searchInput.forceActiveFocus() })
+    }
   }
 
   function close() {
@@ -190,7 +195,7 @@ Panel {
     root.bulkMode = false
     root.bulkSelectedIndices = []
     root.activeMenuClipIndex = -1
-    controller.hide()
+    root.controller.hide()
   }
 
   function toggle() {
@@ -1023,10 +1028,10 @@ Panel {
   KeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
-    owner: root.hostWidget || root
+    owner: root.barIdentity
     bar: root.bar
     open: root.opened
-    focusTarget: searchInput
+    focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(560))
     contentHeight: panel.cappedContentHeight(panel.screenH > 0 ? Math.round(panel.screenH * 0.94) : Style.space(920))
 
@@ -1580,6 +1585,7 @@ Panel {
               Repeater {
                 model: root.timelineData.markers
                 Rectangle {
+                  id: timelineMarkerDelegate
                   required property var modelData
                   x: Math.max(0, Math.min(parent.width - Style.space(12), (parent.width - Style.space(12)) * (modelData.position / 100)))
                   width: Math.max(Style.space(10), (parent.width / Math.max(root.timelineData.markers.length, 1)) * 0.8)
@@ -1592,7 +1598,7 @@ Panel {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: root.setDateFilter(parent.modelData.dateStr)
+                    onClicked: root.setDateFilter(timelineMarkerDelegate.modelData.dateStr)
                   }
 
                   // Tooltip
@@ -1609,8 +1615,8 @@ Panel {
                     Column {
                       id: tipContent
                       anchors.centerIn: parent
-                      Text { text: parent.parent.parent.modelData.label; color: root.fg; font.pixelSize: Style.space(9); font.bold: true }
-                      Text { text: parent.parent.parent.modelData.count + " clips"; color: Color.accent; font.pixelSize: Style.space(8) }
+                      Text { text: timelineMarkerDelegate.modelData.label; color: root.fg; font.pixelSize: Style.space(9); font.bold: true }
+                      Text { text: timelineMarkerDelegate.modelData.count + " clips"; color: Color.accent; font.pixelSize: Style.space(8) }
                     }
                   }
                 }
@@ -2413,31 +2419,32 @@ Panel {
                 { id: 5, label: "Library", icon: "󰆓" }
               ]
               Rectangle {
+                id: subTabBtnDelegate
                 required property var modelData
                 width: (parent.width - Style.space(20)) / 6
                 height: Style.space(30)
                 radius: Style.space(5)
-                color: root.colorStudioSubTab === modelData.id ? Util.alpha(Color.accent, 0.18) : Util.alpha(root.fg, 0.04)
-                border.width: 1; border.color: root.colorStudioSubTab === modelData.id ? Color.accent : Util.alpha(root.fg, 0.08)
+                color: root.colorStudioSubTab === subTabBtnDelegate.modelData.id ? Util.alpha(Color.accent, 0.18) : Util.alpha(root.fg, 0.04)
+                border.width: 1; border.color: root.colorStudioSubTab === subTabBtnDelegate.modelData.id ? Color.accent : Util.alpha(root.fg, 0.08)
 
                 Row {
                   anchors.centerIn: parent; spacing: Style.space(3)
                   Text {
-                    text: parent.parent.modelData.icon
-                    color: root.colorStudioSubTab === parent.parent.modelData.id ? Color.accent : Util.alpha(root.fg, 0.6)
+                    text: subTabBtnDelegate.modelData.icon
+                    color: root.colorStudioSubTab === subTabBtnDelegate.modelData.id ? Color.accent : Util.alpha(root.fg, 0.6)
                     font.family: root.fontFamily; font.pixelSize: Style.space(10)
                   }
                   Text {
-                    text: parent.parent.modelData.label
-                    color: root.colorStudioSubTab === parent.parent.modelData.id ? Color.accent : root.fg
+                    text: subTabBtnDelegate.modelData.label
+                    color: root.colorStudioSubTab === subTabBtnDelegate.modelData.id ? Color.accent : root.fg
                     font.family: root.fontFamily; font.pixelSize: Style.space(8)
-                    font.bold: root.colorStudioSubTab === parent.parent.modelData.id
+                    font.bold: root.colorStudioSubTab === subTabBtnDelegate.modelData.id
                   }
                 }
 
                 MouseArea {
                   anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                  onClicked: root.colorStudioSubTab = parent.modelData.id
+                  onClicked: root.colorStudioSubTab = subTabBtnDelegate.modelData.id
                 }
               }
             }
@@ -2498,6 +2505,7 @@ Panel {
                   { label: "Hex Int", val: root.activeColorAnalysis.hexIntStr }
                 ] : []
                 Rectangle {
+                  id: fmtItemDelegate
                   required property var modelData
                   width: (parent.width - Style.space(6)) / 2
                   height: Style.space(40)
@@ -2512,8 +2520,8 @@ Panel {
                     Column {
                       anchors.verticalCenter: parent.verticalCenter
                       width: parent.width - Style.space(26)
-                      Text { text: parent.parent.parent.modelData.label; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(8); font.bold: true }
-                      Text { text: parent.parent.parent.modelData.val; color: root.fg; font.family: "monospace"; font.pixelSize: Style.space(9); font.bold: true; elide: Text.ElideRight; width: parent.width }
+                      Text { text: fmtItemDelegate.modelData.label; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(8); font.bold: true }
+                      Text { text: fmtItemDelegate.modelData.val; color: root.fg; font.family: "monospace"; font.pixelSize: Style.space(9); font.bold: true; elide: Text.ElideRight; width: parent.width }
                     }
 
                     Text { text: "󰆏"; color: Util.alpha(root.fg, 0.35); font.pixelSize: Style.space(9); anchors.verticalCenter: parent.verticalCenter }
@@ -2521,7 +2529,7 @@ Panel {
 
                   MouseArea {
                     anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.copyText(parent.modelData.val)
+                    onClicked: root.copyText(fmtItemDelegate.modelData.val)
                   }
                 }
               }
@@ -2918,6 +2926,7 @@ Panel {
 
             // Mixed Result Section
             Column {
+              id: mixedResultCol
               width: parent.width; spacing: Style.space(6)
               property string mixedHex: {
                 if (root.blendMode !== "normal") return ColorStudio.blendWithStrength(root.mixColor1, root.mixColor2, root.blendMode, root.mixRatio)
@@ -2928,10 +2937,10 @@ Panel {
 
               Rectangle {
                 width: parent.width; height: Style.space(60); radius: Style.space(8)
-                color: parent.mixedHex; border.width: 1; border.color: Util.alpha(root.fg, 0.2)
+                color: mixedResultCol.mixedHex; border.width: 1; border.color: Util.alpha(root.fg, 0.2)
                 Text {
-                  text: parent.parent.mixedHex
-                  color: ColorStudio.getContrastRatio(parent.parent.mixedHex, "#000000") > 4.5 ? "#000" : "#fff"
+                  text: mixedResultCol.mixedHex
+                  color: ColorStudio.getContrastRatio(mixedResultCol.mixedHex, "#000000") > 4.5 ? "#000" : "#fff"
                   font.family: "monospace"; font.pixelSize: Style.space(14); font.bold: true
                   anchors.centerIn: parent
                 }
@@ -2943,13 +2952,14 @@ Panel {
                 Text { text: "Set as Current Color"; color: "#fff"; font.pixelSize: Style.space(8); font.bold: true; anchors.centerIn: parent }
                 MouseArea {
                   anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                  onClicked: root.selectColor(parent.parent.mixedHex)
+                  onClicked: root.selectColor(mixedResultCol.mixedHex)
                 }
               }
             }
 
             // Step Scale Generator
             Column {
+              id: mixerScaleCol
               width: parent.width; spacing: Style.space(6)
               Row {
                 width: parent.width
@@ -2980,14 +2990,15 @@ Panel {
               Row {
                 width: parent.width; height: Style.space(36); spacing: 1
                 Repeater {
-                  model: parent.currentScale
+                  model: mixerScaleCol.currentScale
                   Rectangle {
+                    id: scaleRectDelegate
                     required property string modelData
-                    width: (parent.width - (parent.parent.currentScale.length - 1)) / parent.parent.currentScale.length
+                    width: (parent.width - (mixerScaleCol.currentScale.length - 1)) / Math.max(1, mixerScaleCol.currentScale.length)
                     height: parent.height; color: modelData
                     MouseArea {
                       anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                      onClicked: { root.selectColor(parent.modelData); root.copyText(parent.modelData) }
+                      onClicked: { root.selectColor(scaleRectDelegate.modelData); root.copyText(scaleRectDelegate.modelData) }
                     }
                   }
                 }
@@ -3005,7 +3016,7 @@ Panel {
                   }
                   MouseArea {
                     anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.copyText(ColorStudio.exportPaletteAsCSS(parent.parent.parent.currentScale))
+                    onClicked: root.copyText(ColorStudio.exportPaletteAsCSS(mixerScaleCol.currentScale))
                   }
                 }
 
@@ -3019,7 +3030,7 @@ Panel {
                   }
                   MouseArea {
                     anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.copyText(ColorStudio.exportPaletteAsJSON(parent.parent.parent.currentScale))
+                    onClicked: root.copyText(ColorStudio.exportPaletteAsJSON(mixerScaleCol.currentScale))
                   }
                 }
               }
@@ -3060,6 +3071,7 @@ Panel {
           // SUB-TAB 2: HARMONIES
           // =========================================================================
           Column {
+            id: harmoniesSubTabCol
             visible: root.colorStudioSubTab === 2
             width: parent.width
             spacing: Style.space(12)
@@ -3074,26 +3086,28 @@ Panel {
 
                 Text { text: "Angle Offset:"; color: Util.alpha(root.fg, 0.6); font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
 
-                // Angle buttons
-                Row {
-                  spacing: Style.space(4); anchors.verticalCenter: parent.verticalCenter
+                // Interactive angle offset slider
+                Rectangle {
+                  width: Style.space(120); height: Style.space(12); radius: Style.space(6)
+                  color: Util.alpha(root.fg, 0.08); anchors.verticalCenter: parent.verticalCenter
+
                   Rectangle {
-                    width: Style.space(24); height: Style.space(24); radius: Style.space(3); color: Util.alpha(root.fg, 0.08)
-                    Text { text: "-5°"; color: root.fg; font.pixelSize: Style.space(8); anchors.centerIn: parent }
-                    MouseArea { anchors.fill: parent; onClicked: root.harmonyAngleOffset = Math.max(-30, root.harmonyAngleOffset - 5) }
+                    x: ((root.harmonyAngleOffset + 180) / 360) * (parent.width - Style.space(12))
+                    width: Style.space(12); height: Style.space(12); radius: Style.space(6); color: Color.accent
                   }
-                  Rectangle {
-                    width: Style.space(36); height: Style.space(24); radius: Style.space(3); color: Util.alpha(Color.accent, 0.15)
-                    Text { text: (root.harmonyAngleOffset > 0 ? "+" : "") + root.harmonyAngleOffset + "°"; color: Color.accent; font.pixelSize: Style.space(8); font.bold: true; anchors.centerIn: parent }
-                  }
-                  Rectangle {
-                    width: Style.space(24); height: Style.space(24); radius: Style.space(3); color: Util.alpha(root.fg, 0.08)
-                    Text { text: "+5°"; color: root.fg; font.pixelSize: Style.space(8); anchors.centerIn: parent }
-                    MouseArea { anchors.fill: parent; onClicked: root.harmonyAngleOffset = Math.min(30, root.harmonyAngleOffset + 5) }
+
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.SizeHorCursor
+                    onPositionChanged: function(mouse) {
+                      var norm = Math.max(0, Math.min(1, mouse.x / width))
+                      root.harmonyAngleOffset = Math.round(norm * 360 - 180)
+                    }
                   }
                 }
 
-                Item { Layout.fillWidth: true; width: parent.width - Style.space(240) }
+                Text { text: root.harmonyAngleOffset + "°"; color: root.fg; font.family: "monospace"; font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
+
+                Item { Layout.fillWidth: true; width: parent.width - Style.space(340) }
 
                 Rectangle {
                   height: Style.space(26); radius: Style.space(4); width: Style.space(100)
@@ -3127,8 +3141,9 @@ Panel {
               ]
 
               Rectangle {
+                id: harmonyDelegate
                 required property var modelData
-                property var colorsList: parent.advancedHarmoniesMap[modelData.key] || []
+                property var colorsList: harmoniesSubTabCol.advancedHarmoniesMap[harmonyDelegate.modelData.key] || []
                 width: parent.width; height: Style.space(56); radius: Style.space(6)
                 color: Util.alpha(root.fg, 0.03); border.width: 1; border.color: Util.alpha(root.fg, 0.07)
 
@@ -3137,7 +3152,7 @@ Panel {
 
                   Row {
                     width: parent.width
-                    Text { text: parent.parent.modelData.name; color: Util.alpha(root.fg, 0.75); font.pixelSize: Style.space(8); font.bold: true }
+                    Text { text: harmonyDelegate.modelData.name; color: Util.alpha(root.fg, 0.75); font.pixelSize: Style.space(8); font.bold: true }
                     Item { Layout.fillWidth: true; width: parent.width - Style.space(200) }
                     Row {
                       spacing: Style.space(4)
@@ -3146,7 +3161,7 @@ Panel {
                         Text { text: "󰆏 CSS"; color: Util.alpha(root.fg, 0.6); font.pixelSize: Style.space(6); anchors.centerIn: parent }
                         MouseArea {
                           anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                          onClicked: root.copyText(ColorStudio.exportPaletteAsCSS(parent.parent.parent.parent.parent.colorsList))
+                          onClicked: root.copyText(ColorStudio.exportPaletteAsCSS(harmonyDelegate.colorsList))
                         }
                       }
                       Rectangle {
@@ -3154,7 +3169,7 @@ Panel {
                         Text { text: "󰆏 JSON"; color: Util.alpha(root.fg, 0.6); font.pixelSize: Style.space(6); anchors.centerIn: parent }
                         MouseArea {
                           anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                          onClicked: root.copyText(ColorStudio.exportPaletteAsJSON(parent.parent.parent.parent.parent.colorsList))
+                          onClicked: root.copyText(ColorStudio.exportPaletteAsJSON(harmonyDelegate.colorsList))
                         }
                       }
                     }
@@ -3164,23 +3179,24 @@ Panel {
                   Row {
                     width: parent.width; height: Style.space(24); spacing: Style.space(4)
                     Repeater {
-                      model: parent.parent.colorsList
+                      model: harmonyDelegate.colorsList
                       Rectangle {
+                        id: harmonySwatchDelegate
                         required property string modelData
-                        width: (parent.width - (parent.parent.parent.colorsList.length - 1) * Style.space(4)) / parent.parent.parent.colorsList.length
-                        height: parent.height; radius: Style.space(4); color: modelData
+                        width: (parent.width - (harmonyDelegate.colorsList.length - 1) * Style.space(4)) / Math.max(1, harmonyDelegate.colorsList.length)
+                        height: parent.height; radius: Style.space(4); color: harmonySwatchDelegate.modelData
                         border.width: 1; border.color: Util.alpha(root.fg, 0.2)
                         Text {
-                          text: parent.modelData
-                          color: ColorStudio.getContrastRatio(parent.modelData, "#000000") > 4.5 ? "#000" : "#fff"
+                          text: harmonySwatchDelegate.modelData
+                          color: ColorStudio.getContrastRatio(harmonySwatchDelegate.modelData, "#000000") > 4.5 ? "#000" : "#fff"
                           font.family: "monospace"; font.pixelSize: Style.space(7); font.bold: true
                           anchors.centerIn: parent
                         }
                         MouseArea {
                           anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                           onClicked: {
-                            if (!root.lockHarmonyColor) root.selectColor(parent.modelData)
-                            root.copyText(parent.modelData)
+                            if (!root.lockHarmonyColor) root.selectColor(harmonySwatchDelegate.modelData)
+                            root.copyText(harmonySwatchDelegate.modelData)
                           }
                         }
                       }
@@ -3205,6 +3221,7 @@ Panel {
               color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.08)
 
               Column {
+                id: a11yCardCol
                 anchors.fill: parent; anchors.margins: Style.space(10); spacing: Style.space(8)
 
                 Row {
@@ -3245,12 +3262,12 @@ Panel {
                 property real currentApca: ColorStudio.getApcaContrast(root.contrastColor, root.activeColorHex)
 
                 Rectangle {
-                  visible: parent.currentRatio < 4.5
+                  visible: a11yCardCol.currentRatio < 4.5
                   width: parent.width; height: Style.space(36); radius: Style.space(5)
                   color: Util.alpha("#EF4444", 0.12); border.width: 1; border.color: Util.alpha("#EF4444", 0.3)
                   Row {
                     anchors.centerIn: parent; spacing: Style.space(8)
-                    Text { text: "󰅙 Contrast Issue (" + parent.parent.currentRatio.toFixed(2) + ":1 < 4.5:1)"; color: "#EF4444"; font.pixelSize: Style.space(8); font.bold: true }
+                    Text { text: "󰅙 Contrast Issue (" + a11yCardCol.currentRatio.toFixed(2) + ":1 < 4.5:1)"; color: "#EF4444"; font.pixelSize: Style.space(8); font.bold: true }
                     Rectangle {
                       height: Style.space(20); radius: Style.space(3); width: Style.space(80); color: "#fff"
                       Text { text: "Suggest Light"; color: "#000"; font.pixelSize: Style.space(7); font.bold: true; anchors.centerIn: parent }
@@ -3308,11 +3325,11 @@ Panel {
                     color: Util.alpha(root.fg, 0.05)
                     Row {
                       anchors.centerIn: parent; spacing: Style.space(6)
-                      Text { text: "WCAG: " + parent.parent.parent.currentRatio.toFixed(2) + ":1"; color: root.fg; font.pixelSize: Style.space(8); font.bold: true }
+                      Text { text: "WCAG: " + a11yCardCol.currentRatio.toFixed(2) + ":1"; color: root.fg; font.pixelSize: Style.space(8); font.bold: true }
                       Rectangle {
                         height: Style.space(16); radius: Style.space(3); width: Style.space(44)
-                        color: parent.parent.parent.parent.currentRatio >= 4.5 ? "#10B981" : "#EF4444"
-                        Text { text: parent.parent.parent.parent.parent.currentRatio >= 4.5 ? "AA Pass" : "AA Fail"; color: "#fff"; font.pixelSize: Style.space(6); font.bold: true; anchors.centerIn: parent }
+                        color: a11yCardCol.currentRatio >= 4.5 ? "#10B981" : "#EF4444"
+                        Text { text: a11yCardCol.currentRatio >= 4.5 ? "AA Pass" : "AA Fail"; color: "#fff"; font.pixelSize: Style.space(6); font.bold: true; anchors.centerIn: parent }
                       }
                     }
                   }
@@ -3322,8 +3339,8 @@ Panel {
                     color: Util.alpha(root.fg, 0.05)
                     Row {
                       anchors.centerIn: parent; spacing: Style.space(6)
-                      Text { text: "APCA: " + Math.abs(parent.parent.parent.currentApca).toFixed(1); color: root.fg; font.pixelSize: Style.space(8); font.bold: true }
-                      Text { text: "Min: " + ColorStudio.calculateMinFontSize(parent.parent.parent.currentRatio, false) + "px"; color: Util.alpha(root.fg, 0.6); font.pixelSize: Style.space(7) }
+                      Text { text: "APCA: " + Math.abs(a11yCardCol.currentApca).toFixed(1); color: root.fg; font.pixelSize: Style.space(8); font.bold: true }
+                      Text { text: "Min: " + ColorStudio.calculateMinFontSize(a11yCardCol.currentRatio, false) + "px"; color: Util.alpha(root.fg, 0.6); font.pixelSize: Style.space(7) }
                     }
                   }
                 }
@@ -3339,14 +3356,15 @@ Panel {
                 Repeater {
                   model: root.activeColorAnalysis ? root.activeColorAnalysis.standardBgResults : []
                   Rectangle {
+                    id: stdBgDelegate
                     required property var modelData
                     width: (parent.width - Style.space(18)) / 4; height: Style.space(42); radius: Style.space(5)
-                    color: modelData.hex; border.width: 1; border.color: Util.alpha(root.fg, 0.2)
+                    color: stdBgDelegate.modelData.hex; border.width: 1; border.color: Util.alpha(root.fg, 0.2)
                     Column {
                       anchors.centerIn: parent; spacing: 1
-                      Text { text: parent.parent.modelData.name; color: root.activeColorHex; font.pixelSize: Style.space(7); font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
-                      Text { text: parent.parent.modelData.ratio.toFixed(2) + ":1"; color: root.activeColorHex; font.pixelSize: Style.space(8); font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
-                      Text { text: parent.parent.modelData.passAA ? "✓ AA" : "✕ Fail"; color: parent.parent.modelData.passAA ? "#10B981" : "#EF4444"; font.pixelSize: Style.space(6); font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
+                      Text { text: stdBgDelegate.modelData.name; color: root.activeColorHex; font.pixelSize: Style.space(7); font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
+                      Text { text: stdBgDelegate.modelData.ratio.toFixed(2) + ":1"; color: root.activeColorHex; font.pixelSize: Style.space(8); font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
+                      Text { text: stdBgDelegate.modelData.passAA ? "✓ AA" : "✕ Fail"; color: stdBgDelegate.modelData.passAA ? "#10B981" : "#EF4444"; font.pixelSize: Style.space(6); font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
                     }
                   }
                 }
@@ -3362,16 +3380,17 @@ Panel {
                 Repeater {
                   model: root.activeColorAnalysis ? root.activeColorAnalysis.blindnessSim : []
                   Rectangle {
+                    id: blindnessDelegate
                     required property var modelData
                     width: (parent.width - Style.space(6)) / 2; height: Style.space(38); radius: Style.space(5)
                     color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.08)
                     Row {
                       anchors.fill: parent; anchors.margins: Style.space(6); spacing: Style.space(8)
-                      Rectangle { width: Style.space(26); height: Style.space(26); radius: Style.space(4); color: parent.parent.modelData.hex; border.width: 1; border.color: Util.alpha(root.fg, 0.2) }
+                      Rectangle { width: Style.space(26); height: Style.space(26); radius: Style.space(4); color: blindnessDelegate.modelData.hex; border.width: 1; border.color: Util.alpha(root.fg, 0.2) }
                       Column {
                         anchors.verticalCenter: parent.verticalCenter
-                        Text { text: parent.parent.parent.modelData.label; color: root.fg; font.pixelSize: Style.space(8); font.bold: true }
-                        Text { text: parent.parent.parent.modelData.hex; color: Util.alpha(root.fg, 0.5); font.family: "monospace"; font.pixelSize: Style.space(7) }
+                        Text { text: blindnessDelegate.modelData.label; color: root.fg; font.pixelSize: Style.space(8); font.bold: true }
+                        Text { text: blindnessDelegate.modelData.hex; color: Util.alpha(root.fg, 0.5); font.family: "monospace"; font.pixelSize: Style.space(7) }
                       }
                     }
                   }
@@ -3500,6 +3519,7 @@ Panel {
               Repeater {
                 model: root.gradientStops
                 Rectangle {
+                  id: gradStopDelegate
                   required property var modelData
                   required property int index
                   width: parent.width; height: Style.space(32); radius: Style.space(5)
@@ -3509,10 +3529,10 @@ Panel {
                     anchors.fill: parent; anchors.margins: Style.space(6); spacing: Style.space(8)
                     Rectangle {
                       width: Style.space(20); height: Style.space(20); radius: Style.space(3)
-                      color: parent.parent.modelData.color; border.width: 1; border.color: Util.alpha(root.fg, 0.2)
+                      color: gradStopDelegate.modelData.color; border.width: 1; border.color: Util.alpha(root.fg, 0.2)
                     }
-                    Text { text: parent.parent.modelData.color; color: root.fg; font.family: "monospace"; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
-                    Text { text: parent.parent.modelData.position + "%"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: gradStopDelegate.modelData.color; color: root.fg; font.family: "monospace"; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: gradStopDelegate.modelData.position + "%"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
 
                     Item { Layout.fillWidth: true; width: parent.width - Style.space(200) }
 
@@ -3524,7 +3544,7 @@ Panel {
                         anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                         onClicked: {
                           var stops = root.gradientStops.slice()
-                          stops[parent.parent.parent.index].position = Math.max(0, stops[parent.parent.parent.index].position - 5)
+                          stops[gradStopDelegate.index].position = Math.max(0, stops[gradStopDelegate.index].position - 5)
                           stops.sort(function(a, b) { return a.position - b.position })
                           root.gradientStops = stops
                           gradCanvas.requestPaint()
@@ -3538,7 +3558,7 @@ Panel {
                         anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                         onClicked: {
                           var stops = root.gradientStops.slice()
-                          stops[parent.parent.parent.index].position = Math.min(100, stops[parent.parent.parent.index].position + 5)
+                          stops[gradStopDelegate.index].position = Math.min(100, stops[gradStopDelegate.index].position + 5)
                           stops.sort(function(a, b) { return a.position - b.position })
                           root.gradientStops = stops
                           gradCanvas.requestPaint()
@@ -3555,7 +3575,7 @@ Panel {
                         anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                         onClicked: {
                           var stops = root.gradientStops.slice()
-                          stops.splice(parent.parent.parent.index, 1)
+                          stops.splice(gradStopDelegate.index, 1)
                           root.gradientStops = stops
                           gradCanvas.requestPaint()
                         }
@@ -3575,26 +3595,25 @@ Panel {
                 Repeater {
                   model: ColorStudio.GRADIENT_PRESETS
                   Rectangle {
+                    id: gradPresetDelegate
                     required property var modelData
                     width: (parent.width - Style.space(12)) / 3; height: Style.space(30); radius: Style.space(4)
-                    color: modelData.colors[0]
+                    color: gradPresetDelegate.modelData.colors[0]
                     border.width: 1; border.color: Util.alpha(root.fg, 0.2)
                     Text {
-                      text: parent.modelData.name
+                      text: gradPresetDelegate.modelData.name
                       color: "#fff"; font.pixelSize: Style.space(8); font.bold: true
                       anchors.centerIn: parent
                     }
                     MouseArea {
                       anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                       onClicked: {
-                        var p = parent.modelData
-                        var stops = []
-                        for (var i = 0; i < p.colors.length; i++) {
-                          stops.push({ color: p.colors[i], position: Math.round((i / (p.colors.length - 1)) * 100) })
+                        var preset = gradPresetDelegate.modelData.colors
+                        var newStops = []
+                        for (var i = 0; i < preset.length; i++) {
+                          newStops.push({ color: preset[i], position: Math.round(i * (100 / (preset.length - 1))) })
                         }
-                        root.gradientStops = stops
-                        root.gradientAngle = p.angle
-                        root.gradientType = "linear"
+                        root.gradientStops = newStops
                         gradCanvas.requestPaint()
                       }
                     }
@@ -3702,6 +3721,7 @@ Panel {
             Repeater {
               model: root.savedPalettes
               Rectangle {
+                id: savedPalDelegate
                 required property var modelData
                 width: parent.width; height: Style.space(82); radius: Style.space(6)
                 color: Util.alpha(root.fg, 0.03); border.width: 1; border.color: Util.alpha(root.fg, 0.07)
@@ -3712,9 +3732,9 @@ Panel {
                   Row {
                     width: parent.width
                     Column {
-                      Text { text: parent.parent.parent.modelData.name; color: root.fg; font.pixelSize: Style.space(9); font.bold: true }
+                      Text { text: savedPalDelegate.modelData.name; color: root.fg; font.pixelSize: Style.space(9); font.bold: true }
                       Text {
-                        text: (parent.parent.parent.modelData.colors ? parent.parent.parent.modelData.colors.length : 0) + " colors • " + new Date(parent.parent.parent.modelData.createdAt).toLocaleDateString()
+                        text: (savedPalDelegate.modelData.colors ? savedPalDelegate.modelData.colors.length : 0) + " colors • " + new Date(savedPalDelegate.modelData.createdAt).toLocaleDateString()
                         color: Util.alpha(root.fg, 0.4); font.pixelSize: Style.space(7)
                       }
                     }
@@ -3728,7 +3748,7 @@ Panel {
                         Text { text: "󰆏"; color: Util.alpha(root.fg, 0.6); font.pixelSize: Style.space(8); anchors.centerIn: parent }
                         MouseArea {
                           anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                          onClicked: root.copyText(ColorStudio.exportPaletteAsJSON(parent.parent.parent.parent.modelData.colors))
+                          onClicked: root.copyText(ColorStudio.exportPaletteAsJSON(savedPalDelegate.modelData.colors))
                         }
                       }
                       Rectangle {
@@ -3736,7 +3756,7 @@ Panel {
                         Text { text: "✕"; color: "#EF4444"; font.pixelSize: Style.space(8); font.bold: true; anchors.centerIn: parent }
                         MouseArea {
                           anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                          onClicked: root.deleteSavedPalette(parent.parent.parent.parent.modelData.id)
+                          onClicked: root.deleteSavedPalette(savedPalDelegate.modelData.id)
                         }
                       }
                     }
@@ -3746,15 +3766,16 @@ Panel {
                   Row {
                     width: parent.width; height: Style.space(24); spacing: Style.space(3)
                     Repeater {
-                      model: parent.parent.modelData.colors || []
+                      model: savedPalDelegate.modelData.colors || []
                       Rectangle {
+                        id: savedPalSwatchDelegate
                         required property string modelData
-                        width: (parent.width - (parent.parent.parent.modelData.colors.length - 1) * Style.space(3)) / parent.parent.parent.modelData.colors.length
-                        height: parent.height; radius: Style.space(3); color: modelData
+                        width: (parent.width - (savedPalDelegate.modelData.colors.length - 1) * Style.space(3)) / Math.max(1, savedPalDelegate.modelData.colors.length)
+                        height: parent.height; radius: Style.space(3); color: savedPalSwatchDelegate.modelData
                         border.width: 1; border.color: Util.alpha(root.fg, 0.2)
                         MouseArea {
                           anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                          onClicked: { root.selectColor(parent.modelData); root.copyText(parent.modelData) }
+                          onClicked: { root.selectColor(savedPalSwatchDelegate.modelData); root.copyText(savedPalSwatchDelegate.modelData) }
                         }
                       }
                     }
