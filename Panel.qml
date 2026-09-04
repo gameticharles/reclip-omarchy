@@ -3661,10 +3661,21 @@ Panel {
       z: 100
 
       focus: root.imageZoomOpen
-      Keys.onEscapePressed: root.closeImageZoom()
-      Keys.onDigit0Pressed: root.resetImageZoom()
-      Keys.onPlusPressed: root.imageZoomScale = Math.min(8.0, root.imageZoomScale * 1.3)
-      Keys.onMinusPressed: root.imageZoomScale = Math.max(0.15, root.imageZoomScale / 1.3)
+      Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_Escape) {
+          root.closeImageZoom()
+          event.accepted = true
+        } else if (event.key === Qt.Key_0) {
+          root.resetImageZoom()
+          event.accepted = true
+        } else if (event.key === Qt.Key_Plus || event.key === Qt.Key_Equal) {
+          root.imageZoomScale = Math.min(8.0, root.imageZoomScale * 1.3)
+          event.accepted = true
+        } else if (event.key === Qt.Key_Minus) {
+          root.imageZoomScale = Math.max(0.15, root.imageZoomScale / 1.3)
+          event.accepted = true
+        }
+      }
 
       // Top Header Bar
       Item {
@@ -4299,7 +4310,6 @@ Panel {
                   visible: root.tagModalCurrentTags.length === 0
                   text: "No tags assigned yet."
                   color: Util.alpha(root.fg, 0.4); font.family: root.fontFamily; font.pixelSize: Style.space(9)
-                  anchors.verticalCenter: parent.verticalCenter
                 }
               }
             }
