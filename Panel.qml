@@ -74,6 +74,37 @@ Panel {
   // Color Studio State
   property string activeColorHex: "#3B82F6"
   property var activeColorAnalysis: ColorStudio.analyzeColor(root.activeColorHex)
+  property int colorStudioSubTab: 0 // 0: Analyze, 1: Mixer, 2: Harmonies, 3: A11y, 4: Gradient, 5: Library
+  property bool showDevFormats: false
+
+  // Color Studio Mixer State
+  property string mixColor1: "#FF0000"
+  property string mixColor2: "#0000FF"
+  property real mixRatio: 0.5
+  property int mixSteps: 5
+  property string mixMode: "rgb" // "rgb", "lab", "oklch"
+  property string blendMode: "normal" // "normal", "multiply", "screen", "overlay", "soft-light", "hard-light", "difference", "exclusion"
+
+  // Color Studio Harmonies State
+  property int harmonyAngleOffset: 0
+  property bool lockHarmonyColor: false
+
+  // Color Studio Accessibility State
+  property string contrastColor: "#FFFFFF"
+
+  // Color Studio Gradient State
+  property string gradientType: "linear" // "linear", "radial", "conic"
+  property int gradientAngle: 90
+  property var gradientStops: [
+    { color: "#3B82F6", position: 0 },
+    { color: "#6366F1", position: 100 }
+  ]
+
+  // Color Studio Library State
+  property string savedPalettesPath: stateDir + "/saved-palettes.json"
+  property var savedPalettes: []
+  property string colorImportText: ""
+  property string editingPaletteId: ""
 
   property var history: []
   property var snippets: []
@@ -230,10 +261,142 @@ Panel {
   }
 
   function selectColor(hex) {
-    var clean = ColorStudio.analyzeColor(hex)
+    var parsed = ColorStudio.parseColor(hex) || hex
+    var clean = ColorStudio.analyzeColor(parsed)
     if (clean) {
       root.activeColorHex = clean.hex
       root.activeColorAnalysis = clean
+    }
+  }
+
+  function randomColor() {
+    var r = Math.floor(Math.random() * 256)
+    var g = Math.floor(Math.random() * 256)
+    var b = Math.floor(Math.random() * 256)
+    root.selectColor(ColorStudio.rgbToHex(r, g, b))
+  }
+
+  function loadSavedPalettes(raw) {
+    try {
+      var arr = JSON.parse(raw)
+      if (Array.isArray(arr)) root.savedPalettes = arr
+    } catch(e) {
+      root.savedPalettes = []
+    }
+  }
+
+  function saveSavedPalettes() {
+    savedPalettesFile.setText(JSON.stringify(root.savedPalettes, null, 2) + "\n")
+  }
+
+  function saveCurrentPalette() {
+    var colors = [root.activeColorHex]
+    if (root.activeColorAnalysis && root.activeColorAnalysis.harmonies && root.activeColorAnalysis.harmonies.length > 0) {
+      var comp = root.activeColorAnalysis.harmonies[0].colors
+      if (comp && comp.length > 1) colors.push(comp[1])
+    }
+    if (root.activeColorAnalysis && root.activeColorAnalysis.tints && root.activeColorAnalysis.tints.length > 2) {
+      colors.push(root.activeColorAnalysis.tints[2])
+    }
+    if (root.activeColorAnalysis && root.activeColorAnalysis.shades && root.activeColorAnalysis.shades.length > 2) {
+      colors.push(root.activeColorAnalysis.shades[2])
+    }
+    var newPal = {
+      id: "pal-" + Date.now(),
+      name: "Palette " + (root.savedPalettes.length + 1),
+      colors: colors,
+      createdAt: Date.now(),
+      tags: []
+    }
+    var updated = [newPal].concat(root.savedPalettes)
+    root.savedPalettes = updated
+    root.saveSavedPalettes()
+    Quickshell.execDetached(["notify-send", "-a", "ReClip", "Palette Saved", "Added " + newPal.name + " to Library"])
+  }
+
+  function deleteSavedPalette(id) {
+    var updated = []
+    for (var i = 0; i < root.savedPalettes.length; i++) {
+      if (root.savedPalettes[i].id !== id) updated.push(root.savedPalettes[i])
+    }
+    root.savedPalettes = updated
+    root.saveSavedPalettes()
+  }
+
+  function renameSavedPalette(id, newName) {
+    var updated = []
+    for (var i = 0; i < root.savedPalettes.length; i++) {
+      var p = root.savedPalettes[i]
+      if (p.id === id) p.name = newName
+      updated.push(p)
+    }
+    root.savedPalettes = updated
+    root.saveSavedPalettes()
+  }
+
+  function addSavedPaletteTag(id, tag) {
+    var t = String(tag || "").trim().replace("#", "")
+    if (!t) return
+    var updated = []
+    for (var i = 0; i < root.savedPalettes.length; i++) {
+      var p = root.savedPalettes[i]
+      if (p.id === id) {
+        var tags = p.tags || []
+        if (tags.indexOf(t) === -1) tags.push(t)
+        p.tags = tags
+      }
+      updated.push(p)
+    }
+    root.savedPalettes = updated
+    root.saveSavedPalettes()
+  }
+
+  function removeSavedPaletteTag(id, tag) {
+    var updated = []
+    for (var i = 0; i < root.savedPalettes.length; i++) {
+      var p = root.savedPalettes[i]
+      if (p.id === id) {
+        var tags = p.tags || []
+        p.tags = tags.filter(function(x) { return x !== tag })
+      }
+      updated.push(p)
+    }
+    root.savedPalettes = updated
+    root.saveSavedPalettes()
+  }
+
+  function importPaletteFromText(txt) {
+    var text = String(txt || "").trim()
+    if (!text) return
+    var colors = []
+    if (text.startsWith("[")) {
+      try {
+        var parsed = JSON.parse(text)
+        if (Array.isArray(parsed)) {
+          colors = parsed.filter(function(c) {
+            return typeof c === "string" && (c.startsWith("#") || c.startsWith("rgb"))
+          })
+        }
+      } catch(e) {}
+    }
+    if (colors.length === 0) {
+      var matches = text.match(/#[0-9A-Fa-f]{6}/g)
+      if (matches) colors = matches
+    }
+    if (colors.length > 0) {
+      var newPal = {
+        id: "pal-" + Date.now(),
+        name: "Imported Palette",
+        colors: colors,
+        createdAt: Date.now(),
+        tags: ["imported"]
+      }
+      root.savedPalettes = [newPal].concat(root.savedPalettes)
+      root.saveSavedPalettes()
+      root.colorImportText = ""
+      Quickshell.execDetached(["notify-send", "-a", "ReClip", "Palette Imported", "Added " + colors.length + " colors to Library"])
+    } else {
+      Quickshell.execDetached(["notify-send", "-a", "ReClip", "Import Failed", "No valid HEX or JSON colors found"])
     }
   }
 
@@ -767,6 +930,17 @@ Panel {
     printErrors: false
     onLoaded: root.loadSettings(text())
     onLoadFailed: root.loadSettings("{}")
+    onFileChanged: reload()
+  }
+
+  FileView {
+    id: savedPalettesFile
+    path: root.savedPalettesPath
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    onLoaded: root.loadSavedPalettes(text())
+    onLoadFailed: root.loadSavedPalettes("[]")
     onFileChanged: reload()
   }
 
@@ -2076,197 +2250,936 @@ Panel {
         visible: root.activeTab === 3
         anchors.fill: parent
         contentWidth: width
-        contentHeight: colorStudioCol.implicitHeight + Style.space(20)
+        contentHeight: colorStudioCol.implicitHeight + Style.space(24)
         clip: true
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
         Column {
           id: colorStudioCol
           width: parent.width
-          spacing: Style.space(12)
+          spacing: Style.space(10)
 
-          // Top Inspector Hero
+          // 1. TOOLBAR HEADER (Title, Color Name, Quick Export, Random)
           Rectangle {
             width: parent.width
-            height: Style.space(110)
+            height: Style.space(34)
+            radius: Style.space(6)
+            color: Util.alpha(root.fg, 0.04)
+            border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+
+            Row {
+              anchors.fill: parent; anchors.margins: Style.space(6)
+              spacing: Style.space(8)
+
+              Rectangle {
+                width: Style.space(16); height: Style.space(16); radius: Style.space(4)
+                color: root.activeColorHex
+                border.width: 1; border.color: Util.alpha(root.fg, 0.25)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Text {
+                text: "Color Tool"
+                color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Text {
+                text: root.activeColorAnalysis ? root.activeColorAnalysis.colorName : ""
+                color: Util.alpha(root.fg, 0.5); font.family: root.fontFamily; font.pixelSize: Style.space(9)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Item { Layout.fillWidth: true; width: parent.width - Style.space(340) }
+
+              // Quick Copy Formats
+              Row {
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(4)
+
+                Rectangle {
+                  height: Style.space(22); radius: Style.space(3); width: Style.space(66)
+                  color: Util.alpha(root.fg, 0.06)
+                  Text { text: "󰆏 Tailwind"; color: root.fg; font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.copyText(ColorStudio.formatCode(root.activeColorHex, "tailwind"))
+                  }
+                }
+
+                Rectangle {
+                  height: Style.space(22); radius: Style.space(3); width: Style.space(50)
+                  color: Util.alpha(root.fg, 0.06)
+                  Text { text: "󰆏 Swift"; color: root.fg; font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.copyText(ColorStudio.formatCode(root.activeColorHex, "swift"))
+                  }
+                }
+
+                Rectangle {
+                  height: Style.space(22); radius: Style.space(3); width: Style.space(55)
+                  color: Util.alpha(root.fg, 0.06)
+                  Text { text: "󰆏 Flutter"; color: root.fg; font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.copyText(ColorStudio.formatCode(root.activeColorHex, "flutter"))
+                  }
+                }
+
+                // Random Color button
+                Rectangle {
+                  height: Style.space(22); radius: Style.space(3); width: Style.space(66)
+                  color: Util.alpha(Color.accent, 0.15); border.width: 1; border.color: Color.accent
+                  Row {
+                    anchors.centerIn: parent; spacing: Style.space(3)
+                    Text { text: "󰑐"; color: Color.accent; font.pixelSize: Style.space(8) }
+                    Text { text: "Random"; color: Color.accent; font.pixelSize: Style.space(8); font.bold: true }
+                  }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.randomColor()
+                  }
+                }
+              }
+            }
+          }
+
+          // 2. CURRENT COLOR INPUT ROW
+          Rectangle {
+            width: parent.width
+            height: Style.space(72)
             radius: Style.space(8)
             color: Util.alpha(root.fg, 0.04)
             border.width: 1; border.color: Util.alpha(root.fg, 0.08)
 
             Row {
-              anchors.fill: parent; anchors.margins: Style.space(10)
+              anchors.fill: parent; anchors.margins: Style.space(8)
               spacing: Style.space(12)
 
-              // Large Color Swatch
               Rectangle {
-                width: Style.space(90); height: Style.space(90)
+                width: Style.space(56); height: Style.space(56)
                 radius: Style.space(8)
                 color: root.activeColorHex
-                border.width: 1; border.color: Util.alpha(root.fg, 0.2)
-
-                Text {
-                  text: root.activeColorHex
-                  color: root.activeColorAnalysis && root.activeColorAnalysis.contrastBlack > 4.5 ? "#000" : "#fff"
-                  font.family: "monospace"; font.pixelSize: Style.space(10); font.bold: true
-                  anchors.bottom: parent.bottom; anchors.bottomMargin: 4
-                  anchors.horizontalCenter: parent.horizontalCenter
-                }
+                border.width: 1; border.color: Util.alpha(root.fg, 0.25)
               }
 
-              // Color Inputs & Quick Actions
               Column {
-                width: parent.width - Style.space(115)
+                width: parent.width - Style.space(80)
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: Style.space(6)
+                spacing: Style.space(4)
+
+                Text {
+                  text: "CURRENT COLOR"
+                  color: Util.alpha(root.fg, 0.45); font.pixelSize: Style.space(8); font.bold: true
+                }
 
                 Row {
                   width: parent.width; spacing: Style.space(6)
                   Rectangle {
-                    width: parent.width - Style.space(70); height: Style.space(30); radius: Style.space(4)
+                    width: parent.width - Style.space(76); height: Style.space(30); radius: Style.space(4)
                     color: Util.alpha(root.fg, 0.06); border.width: 1; border.color: Util.alpha(root.fg, 0.15)
                     TextInput {
                       id: colorTextInput
                       anchors.fill: parent; anchors.margins: Style.space(4)
-                      color: root.fg; font.family: "monospace"; font.pixelSize: Style.font.body
+                      color: root.fg; font.family: "monospace"; font.pixelSize: Style.font.body; font.bold: true
                       text: root.activeColorHex
                       onAccepted: root.selectColor(text)
                     }
                   }
                   Rectangle {
-                    width: Style.space(64); height: Style.space(30); radius: Style.space(4)
+                    width: Style.space(70); height: Style.space(30); radius: Style.space(4)
                     color: Color.accent
                     Text { text: "Inspect"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.centerIn: parent }
                     MouseArea { anchors.fill: parent; onClicked: root.selectColor(colorTextInput.text); cursorShape: Qt.PointingHandCursor }
                   }
                 }
-
-                // WCAG Contrast Badges
-                Row {
-                  spacing: Style.space(8)
-                  Rectangle {
-                    height: Style.space(18); radius: Style.space(3); width: whiteA11y.implicitWidth + Style.space(8)
-                    color: root.activeColorAnalysis && root.activeColorAnalysis.passAAWhite ? "#10B981" : "#EF4444"
-                    Text {
-                      id: whiteA11y
-                      text: "White: " + (root.activeColorAnalysis ? root.activeColorAnalysis.contrastWhite + ":1" : "")
-                      color: "#fff"; font.pixelSize: Style.space(9); font.bold: true; anchors.centerIn: parent
-                    }
-                  }
-                  Rectangle {
-                    height: Style.space(18); radius: Style.space(3); width: blackA11y.implicitWidth + Style.space(8)
-                    color: root.activeColorAnalysis && root.activeColorAnalysis.passAABlack ? "#10B981" : "#EF4444"
-                    Text {
-                      id: blackA11y
-                      text: "Black: " + (root.activeColorAnalysis ? root.activeColorAnalysis.contrastBlack + ":1" : "")
-                      color: "#fff"; font.pixelSize: Style.space(9); font.bold: true; anchors.centerIn: parent
-                    }
-                  }
-                }
-
-                Text {
-                  text: "Click any color code below to copy to clipboard"
-                  color: Util.alpha(root.fg, 0.45); font.family: root.fontFamily; font.pixelSize: Style.space(9)
-                }
               }
             }
           }
 
-          // Format Cards Grid (HEX, RGB, HSL, CMYK)
-          Grid {
-            columns: 2
+          // 3. COLOR TOOL SUB-NAVIGATION TABS (Analyze, Mixer, Harmonies, A11y, Gradient, Library)
+          Row {
             width: parent.width
-            spacing: Style.space(6)
+            spacing: Style.space(4)
 
             Repeater {
               model: [
-                { label: "HEX", val: root.activeColorAnalysis ? root.activeColorAnalysis.hex : "" },
-                { label: "RGB", val: root.activeColorAnalysis ? root.activeColorAnalysis.rgbStr : "" },
-                { label: "HSL", val: root.activeColorAnalysis ? root.activeColorAnalysis.hslStr : "" },
-                { label: "CMYK", val: root.activeColorAnalysis ? root.activeColorAnalysis.cmykStr : "" }
+                { id: 0, label: "Analyze", icon: "󰏘" },
+                { id: 1, label: "Mixer", icon: "󰈲" },
+                { id: 2, label: "Harmonies", icon: "󰄳" },
+                { id: 3, label: "A11y", icon: "󰈈" },
+                { id: 4, label: "Gradient", icon: "󰉼" },
+                { id: 5, label: "Library", icon: "󰆓" }
               ]
               Rectangle {
                 required property var modelData
-                width: (parent.width - Style.space(6)) / 2
-                height: Style.space(42)
-                radius: Style.space(6)
-                color: Util.alpha(root.fg, 0.05)
-                border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+                width: (parent.width - Style.space(20)) / 6
+                height: Style.space(30)
+                radius: Style.space(5)
+                color: root.colorStudioSubTab === modelData.id ? Util.alpha(Color.accent, 0.18) : Util.alpha(root.fg, 0.04)
+                border.width: 1; border.color: root.colorStudioSubTab === modelData.id ? Color.accent : Util.alpha(root.fg, 0.08)
 
                 Row {
-                  anchors.fill: parent; anchors.margins: Style.space(8)
-                  spacing: Style.space(8)
-
-                  Column {
-                    anchors.verticalCenter: parent.verticalCenter
-                    Text { text: parent.parent.parent.modelData.label; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(8); font.bold: true }
-                    Text { text: parent.parent.parent.modelData.val; color: root.fg; font.family: "monospace"; font.pixelSize: Style.space(10); font.bold: true }
+                  anchors.centerIn: parent; spacing: Style.space(3)
+                  Text {
+                    text: parent.parent.modelData.icon
+                    color: root.colorStudioSubTab === parent.parent.modelData.id ? Color.accent : Util.alpha(root.fg, 0.6)
+                    font.family: root.fontFamily; font.pixelSize: Style.space(10)
                   }
-
-                  Item { Layout.fillWidth: true }
-                  Text { text: "󰆏"; color: Util.alpha(root.fg, 0.4); font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                  Text {
+                    text: parent.parent.modelData.label
+                    color: root.colorStudioSubTab === parent.parent.modelData.id ? Color.accent : root.fg
+                    font.family: root.fontFamily; font.pixelSize: Style.space(8)
+                    font.bold: root.colorStudioSubTab === parent.parent.modelData.id
+                  }
                 }
 
                 MouseArea {
                   anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                  onClicked: root.copyText(parent.modelData.val)
+                  onClicked: root.colorStudioSubTab = parent.modelData.id
                 }
               }
             }
           }
 
-          // Harmonies Section
+          // =========================================================================
+          // SUB-TAB 0: ANALYZE
+          // =========================================================================
           Column {
+            visible: root.colorStudioSubTab === 0
             width: parent.width
-            spacing: Style.space(6)
+            spacing: Style.space(10)
 
-            Text {
-              text: "Color Harmonies"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true
+            // Matches Tailwind Pill
+            Rectangle {
+              visible: root.activeColorAnalysis && !!root.activeColorAnalysis.tailwindMatch
+              width: parent.width; height: Style.space(30); radius: Style.space(6)
+              color: Util.alpha(Color.accent, 0.12); border.width: 1; border.color: Util.alpha(Color.accent, 0.25)
+              Row {
+                anchors.fill: parent; anchors.margins: Style.space(8); spacing: Style.space(8)
+                Rectangle { width: 8; height: 8; radius: 4; color: Color.accent; anchors.verticalCenter: parent.verticalCenter }
+                Text {
+                  text: "Matches Tailwind: " + (root.activeColorAnalysis ? root.activeColorAnalysis.tailwindMatch : "")
+                  color: root.fg; font.family: "monospace"; font.pixelSize: Style.space(9); font.bold: true
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+                Item { Layout.fillWidth: true; width: parent.width - Style.space(250) }
+                Text { text: "󰆏"; color: Color.accent; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                onClicked: if (root.activeColorAnalysis) root.copyText(root.activeColorAnalysis.tailwindMatch)
+              }
             }
 
-            Repeater {
-              model: root.activeColorAnalysis ? root.activeColorAnalysis.harmonies : []
-              Rectangle {
-                required property var modelData
-                width: parent.width
-                height: Style.space(46)
-                radius: Style.space(6)
-                color: Util.alpha(root.fg, 0.03)
-                border.width: 1; border.color: Util.alpha(root.fg, 0.06)
+            // 14 Format Cards Grid
+            Grid {
+              columns: 2
+              width: parent.width
+              spacing: Style.space(6)
 
-                Row {
-                  anchors.fill: parent; anchors.margins: Style.space(6)
-                  spacing: Style.space(8)
-
-                  Text {
-                    width: Style.space(110)
-                    text: parent.parent.modelData.name
-                    color: Util.alpha(root.fg, 0.7)
-                    font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
-                    anchors.verticalCenter: parent.verticalCenter
-                  }
+              Repeater {
+                model: root.activeColorAnalysis ? [
+                  { label: "CSS Hex", val: root.activeColorAnalysis.hex },
+                  { label: "Hex Short", val: root.activeColorAnalysis.hexShort || "N/A" },
+                  { label: "CSS RGB", val: root.activeColorAnalysis.rgbStr },
+                  { label: "CSS RGBA", val: root.activeColorAnalysis.rgbaStr },
+                  { label: "CSS HSL", val: root.activeColorAnalysis.hslStr },
+                  { label: "CSS HSLA", val: root.activeColorAnalysis.hslaStr },
+                  { label: "CSS HWB", val: root.activeColorAnalysis.hwbStr },
+                  { label: "LAB", val: root.activeColorAnalysis.labStr },
+                  { label: "LCH", val: root.activeColorAnalysis.lchStr },
+                  { label: "OKLCH", val: root.activeColorAnalysis.oklchStr },
+                  { label: "HSV", val: root.activeColorAnalysis.hsvStr },
+                  { label: "CMYK", val: root.activeColorAnalysis.cmykStr },
+                  { label: "ARGB Hex", val: root.activeColorAnalysis.argbStr },
+                  { label: "Integer", val: root.activeColorAnalysis.integerStr },
+                  { label: "Hex Int", val: root.activeColorAnalysis.hexIntStr }
+                ] : []
+                Rectangle {
+                  required property var modelData
+                  width: (parent.width - Style.space(6)) / 2
+                  height: Style.space(40)
+                  radius: Style.space(6)
+                  color: Util.alpha(root.fg, 0.04)
+                  border.width: 1; border.color: Util.alpha(root.fg, 0.07)
 
                   Row {
-                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.fill: parent; anchors.margins: Style.space(6)
                     spacing: Style.space(6)
+
+                    Column {
+                      anchors.verticalCenter: parent.verticalCenter
+                      width: parent.width - Style.space(26)
+                      Text { text: parent.parent.parent.modelData.label; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(8); font.bold: true }
+                      Text { text: parent.parent.parent.modelData.val; color: root.fg; font.family: "monospace"; font.pixelSize: Style.space(9); font.bold: true; elide: Text.ElideRight; width: parent.width }
+                    }
+
+                    Text { text: "󰆏"; color: Util.alpha(root.fg, 0.35); font.pixelSize: Style.space(9); anchors.verticalCenter: parent.verticalCenter }
+                  }
+
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.copyText(parent.modelData.val)
+                  }
+                }
+              }
+            }
+
+            // Color Properties (Temperature, Luminance, Web-safe)
+            Row {
+              width: parent.width
+              spacing: Style.space(6)
+
+              // Temperature
+              Rectangle {
+                width: (parent.width - Style.space(12)) / 3; height: Style.space(44); radius: Style.space(6)
+                color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+                Row {
+                  anchors.centerIn: parent; spacing: Style.space(6)
+                  Text {
+                    text: "󰔏"; color: (root.activeColorAnalysis && root.activeColorAnalysis.temperatureType === "warm") ? "#F59E0B" : ((root.activeColorAnalysis && root.activeColorAnalysis.temperatureType === "cool") ? "#3B82F6" : "#6B7280")
+                    font.pixelSize: Style.space(14)
+                  }
+                  Column {
+                    Text { text: "Temperature"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(7) }
+                    Text { text: root.activeColorAnalysis ? (root.activeColorAnalysis.temperatureType + " (~" + root.activeColorAnalysis.temperatureKelvin + "K)") : ""; color: root.fg; font.pixelSize: Style.space(8); font.bold: true }
+                  }
+                }
+              }
+
+              // Luminance
+              Rectangle {
+                width: (parent.width - Style.space(12)) / 3; height: Style.space(44); radius: Style.space(6)
+                color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+                Row {
+                  anchors.centerIn: parent; spacing: Style.space(6)
+                  Rectangle {
+                    width: Style.space(16); height: Style.space(16); radius: Style.space(3)
+                    color: root.activeColorAnalysis && root.activeColorAnalysis.luminance > 0.5 ? "#000" : "#fff"
+                  }
+                  Column {
+                    Text { text: "Luminance"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(7) }
+                    Text { text: root.activeColorAnalysis ? root.activeColorAnalysis.luminancePercent : ""; color: root.fg; font.pixelSize: Style.space(8); font.bold: true }
+                  }
+                }
+              }
+
+              // Web-safe
+              Rectangle {
+                width: (parent.width - Style.space(12)) / 3; height: Style.space(44); radius: Style.space(6)
+                color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+                Row {
+                  anchors.centerIn: parent; spacing: Style.space(6)
+                  Rectangle {
+                    width: Style.space(16); height: Style.space(16); radius: Style.space(3)
+                    color: root.activeColorAnalysis ? root.activeColorAnalysis.websafeColor : "#fff"
+                    border.width: 1; border.color: Util.alpha(root.fg, 0.2)
+                  }
+                  Column {
+                    Text { text: "Web-safe (Click)"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(7) }
+                    Text { text: root.activeColorAnalysis ? root.activeColorAnalysis.websafeColor : ""; color: root.fg; font.family: "monospace"; font.pixelSize: Style.space(8); font.bold: true }
+                  }
+                }
+                MouseArea {
+                  anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                  onClicked: if (root.activeColorAnalysis) root.selectColor(root.activeColorAnalysis.websafeColor)
+                }
+              }
+            }
+
+            // Industry Color Matches (Pantone, RAL, NCS)
+            Column {
+              width: parent.width; spacing: Style.space(4)
+              Text { text: "Industry Color Matches"; color: Util.alpha(root.fg, 0.7); font.pixelSize: Style.space(8); font.bold: true }
+              Row {
+                width: parent.width; spacing: Style.space(6)
+                // Pantone
+                Rectangle {
+                  visible: root.activeColorAnalysis && !!root.activeColorAnalysis.pantoneMatch
+                  height: Style.space(28); radius: Style.space(5); width: (parent.width - Style.space(12)) / 3
+                  color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+                  Row {
+                    anchors.centerIn: parent; spacing: Style.space(4)
+                    Rectangle { width: 8; height: 8; radius: 2; color: root.activeColorHex }
+                    Text { text: root.activeColorAnalysis ? root.activeColorAnalysis.pantoneMatch : ""; color: root.fg; font.pixelSize: Style.space(8); font.bold: true }
+                    Text { text: "󰆏"; color: Util.alpha(root.fg, 0.4); font.pixelSize: Style.space(8) }
+                  }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: if (root.activeColorAnalysis) root.copyText(root.activeColorAnalysis.pantoneMatch)
+                  }
+                }
+                // RAL
+                Rectangle {
+                  visible: root.activeColorAnalysis && !!root.activeColorAnalysis.ralMatch
+                  height: Style.space(28); radius: Style.space(5); width: (parent.width - Style.space(12)) / 3
+                  color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+                  Row {
+                    anchors.centerIn: parent; spacing: Style.space(4)
+                    Rectangle { width: 8; height: 8; radius: 2; color: root.activeColorHex }
+                    Text { text: root.activeColorAnalysis ? root.activeColorAnalysis.ralMatch : ""; color: root.fg; font.pixelSize: Style.space(8); font.bold: true }
+                    Text { text: "󰆏"; color: Util.alpha(root.fg, 0.4); font.pixelSize: Style.space(8) }
+                  }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: if (root.activeColorAnalysis) root.copyText(root.activeColorAnalysis.ralMatch)
+                  }
+                }
+                // NCS
+                Rectangle {
+                  visible: root.activeColorAnalysis && !!root.activeColorAnalysis.ncsMatch
+                  height: Style.space(28); radius: Style.space(5); width: (parent.width - Style.space(12)) / 3
+                  color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+                  Row {
+                    anchors.centerIn: parent; spacing: Style.space(4)
+                    Rectangle { width: 8; height: 8; radius: 2; color: root.activeColorHex }
+                    Text { text: root.activeColorAnalysis ? root.activeColorAnalysis.ncsMatch : ""; color: root.fg; font.pixelSize: Style.space(8); font.bold: true }
+                    Text { text: "󰆏"; color: Util.alpha(root.fg, 0.4); font.pixelSize: Style.space(8) }
+                  }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: if (root.activeColorAnalysis) root.copyText(root.activeColorAnalysis.ncsMatch)
+                  }
+                }
+              }
+            }
+
+            // Developer Formats (Collapsible)
+            Column {
+              width: parent.width; spacing: Style.space(6)
+              Rectangle {
+                width: parent.width; height: Style.space(26); radius: Style.space(4)
+                color: Util.alpha(Color.accent, 0.08)
+                Row {
+                  anchors.centerIn: parent; spacing: Style.space(6)
+                  Text { text: root.showDevFormats ? "󰅃" : "󰅀"; color: Color.accent; font.pixelSize: Style.space(10) }
+                  Text { text: (root.showDevFormats ? "Hide" : "Show") + " Developer Formats (Swift, Flutter, Kotlin, C#, XML)"; color: Color.accent; font.pixelSize: Style.space(8); font.bold: true }
+                }
+                MouseArea {
+                  anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.showDevFormats = !root.showDevFormats
+                }
+              }
+
+              Grid {
+                visible: root.showDevFormats
+                columns: 2
+                width: parent.width
+                spacing: Style.space(6)
+
+                Repeater {
+                  model: root.activeColorAnalysis ? root.activeColorAnalysis.devFormats : []
+                  Rectangle {
+                    required property var modelData
+                    width: (parent.width - Style.space(6)) / 2
+                    height: Style.space(44); radius: Style.space(5)
+                    color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.07)
+                    Column {
+                      anchors.fill: parent; anchors.margins: Style.space(6)
+                      spacing: Style.space(2)
+                      Text { text: parent.parent.modelData.label; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(7); font.bold: true }
+                      Text { text: parent.parent.modelData.val; color: root.fg; font.family: "monospace"; font.pixelSize: Style.space(8); elide: Text.ElideRight; width: parent.width }
+                    }
+                    MouseArea {
+                      anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                      onClicked: root.copyText(parent.modelData.val)
+                    }
+                  }
+                }
+              }
+            }
+
+            // Tints & Shades Strips
+            Column {
+              width: parent.width; spacing: Style.space(4)
+              Text { text: "Tints (10 Lighter Steps)"; color: Util.alpha(root.fg, 0.7); font.pixelSize: Style.space(8); font.bold: true }
+              Row {
+                width: parent.width; spacing: Style.space(2)
+                Repeater {
+                  model: root.activeColorAnalysis ? root.activeColorAnalysis.tints : []
+                  Rectangle {
+                    required property string modelData
+                    width: (parent.width - Style.space(18)) / 10
+                    height: Style.space(24); radius: Style.space(3)
+                    color: modelData
+                    border.width: 1; border.color: Util.alpha(root.fg, 0.15)
+                    MouseArea {
+                      anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                      onClicked: { root.selectColor(parent.modelData); root.copyText(parent.modelData) }
+                    }
+                  }
+                }
+              }
+            }
+
+            Column {
+              width: parent.width; spacing: Style.space(4)
+              Text { text: "Shades (10 Darker Steps)"; color: Util.alpha(root.fg, 0.7); font.pixelSize: Style.space(8); font.bold: true }
+              Row {
+                width: parent.width; spacing: Style.space(2)
+                Repeater {
+                  model: root.activeColorAnalysis ? root.activeColorAnalysis.shades : []
+                  Rectangle {
+                    required property string modelData
+                    width: (parent.width - Style.space(18)) / 10
+                    height: Style.space(24); radius: Style.space(3)
+                    color: modelData
+                    border.width: 1; border.color: Util.alpha(root.fg, 0.15)
+                    MouseArea {
+                      anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                      onClicked: { root.selectColor(parent.modelData); root.copyText(parent.modelData) }
+                    }
+                  }
+                }
+              }
+            }
+
+            // Clipboard Palettes
+            Column {
+              width: parent.width; spacing: Style.space(6)
+              Text {
+                text: "Extracted Clipboard Palettes (" + root.colorPalette.length + " colors)"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true
+              }
+              Grid {
+                columns: 5; width: parent.width; spacing: Style.space(6)
+                Repeater {
+                  model: root.colorPalette
+                  Rectangle {
+                    required property var modelData
+                    width: (parent.width - Style.space(24)) / 5
+                    height: Style.space(36); radius: Style.space(4)
+                    color: modelData.hex; border.width: 1; border.color: Util.alpha(root.fg, 0.25)
+                    Text {
+                      text: parent.modelData.hex
+                      color: ColorStudio.getContrastRatio(parent.modelData.hex, "#000000") > 4.5 ? "#000" : "#fff"
+                      font.family: "monospace"; font.pixelSize: Style.space(8); font.bold: true
+                      anchors.centerIn: parent
+                    }
+                    MouseArea {
+                      anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                      onClicked: { root.selectColor(parent.modelData.hex); root.copyText(parent.modelData.hex) }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // =========================================================================
+          // SUB-TAB 1: MIXER
+          // =========================================================================
+          Column {
+            visible: root.colorStudioSubTab === 1
+            width: parent.width
+            spacing: Style.space(12)
+
+            // Mixing Mode Selector
+            Row {
+              width: parent.width; spacing: Style.space(6)
+              Repeater {
+                model: [
+                  { mode: "rgb", label: "RGB (Standard)" },
+                  { mode: "lab", label: "LAB (Perceptual)" },
+                  { mode: "oklch", label: "OKLCH (Modern)" }
+                ]
+                Rectangle {
+                  required property var modelData
+                  width: (parent.width - Style.space(12)) / 3; height: Style.space(28); radius: Style.space(5)
+                  color: root.mixMode === modelData.mode ? Color.accent : Util.alpha(root.fg, 0.05)
+                  border.width: 1; border.color: root.mixMode === modelData.mode ? Color.accent : Util.alpha(root.fg, 0.1)
+                  Text {
+                    text: parent.modelData.label
+                    color: root.mixMode === parent.modelData.mode ? "#fff" : root.fg
+                    font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true
+                    anchors.centerIn: parent
+                  }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.mixMode = parent.modelData.mode
+                  }
+                }
+              }
+            }
+
+            // Blend Mode Chips Row
+            Column {
+              width: parent.width; spacing: Style.space(4)
+              Text { text: "Blend Mode"; color: Util.alpha(root.fg, 0.6); font.pixelSize: Style.space(8); font.bold: true }
+              Row {
+                width: parent.width; spacing: Style.space(4)
+                Repeater {
+                  model: ["normal", "multiply", "screen", "overlay", "soft-light", "hard-light", "difference", "exclusion"]
+                  Rectangle {
+                    required property string modelData
+                    width: (parent.width - Style.space(28)) / 8; height: Style.space(22); radius: Style.space(4)
+                    color: root.blendMode === modelData ? Util.alpha(Color.accent, 0.25) : Util.alpha(root.fg, 0.04)
+                    border.width: 1; border.color: root.blendMode === modelData ? Color.accent : Util.alpha(root.fg, 0.08)
+                    Text {
+                      text: parent.modelData.replace("-", " ")
+                      color: root.blendMode === parent.modelData ? Color.accent : root.fg
+                      font.pixelSize: Style.space(7); font.bold: root.blendMode === parent.modelData
+                      anchors.centerIn: parent; elide: Text.ElideRight
+                    }
+                    MouseArea {
+                      anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                      onClicked: root.blendMode = parent.modelData
+                    }
+                  }
+                }
+              }
+            }
+
+            // Inputs Card (Color 1 + Slider + Color 2)
+            Rectangle {
+              width: parent.width; height: Style.space(90); radius: Style.space(8)
+              color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+
+              Row {
+                anchors.fill: parent; anchors.margins: Style.space(10); spacing: Style.space(12)
+
+                // Color 1
+                Column {
+                  width: Style.space(70); spacing: Style.space(4); anchors.verticalCenter: parent.verticalCenter
+                  Rectangle {
+                    width: Style.space(44); height: Style.space(44); radius: Style.space(6)
+                    color: root.mixColor1; border.width: 1; border.color: Util.alpha(root.fg, 0.25)
+                    anchors.horizontalCenter: parent.horizontalCenter
+                  }
+                  Rectangle {
+                    width: Style.space(70); height: Style.space(20); radius: Style.space(3)
+                    color: Util.alpha(Color.accent, 0.15)
+                    Text { text: "Use Current"; color: Color.accent; font.pixelSize: Style.space(7); font.bold: true; anchors.centerIn: parent }
+                    MouseArea {
+                      anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                      onClicked: root.mixColor1 = root.activeColorHex
+                    }
+                  }
+                }
+
+                // Mix Ratio Slider
+                Column {
+                  width: parent.width - Style.space(164); spacing: Style.space(6); anchors.verticalCenter: parent.verticalCenter
+                  Row {
+                    width: parent.width
+                    Text { text: Math.round((1 - root.mixRatio) * 100) + "%"; color: root.mixColor1; font.pixelSize: Style.space(8); font.bold: true }
+                    Item { Layout.fillWidth: true; width: parent.width - Style.space(60) }
+                    Text { text: Math.round(root.mixRatio * 100) + "%"; color: root.mixColor2; font.pixelSize: Style.space(8); font.bold: true }
+                  }
+
+                  // Slider Bar
+                  Rectangle {
+                    width: parent.width; height: Style.space(12); radius: Style.space(6)
+                    color: Util.alpha(root.fg, 0.1)
+                    Rectangle {
+                      x: 0; width: parent.width * root.mixRatio; height: parent.height; radius: parent.radius
+                      color: Color.accent
+                    }
+                    Rectangle {
+                      x: Math.max(0, Math.min(parent.width - Style.space(16), parent.width * root.mixRatio - Style.space(8)))
+                      y: -Style.space(2); width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                      color: "#fff"; border.width: 2; border.color: Color.accent
+                    }
+                    MouseArea {
+                      anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                      onPositionChanged: function(mouse) {
+                        var ratio = Math.max(0, Math.min(1, mouse.x / width))
+                        root.mixRatio = Math.round(ratio * 100) / 100
+                      }
+                      onClicked: function(mouse) {
+                        var ratio = Math.max(0, Math.min(1, mouse.x / width))
+                        root.mixRatio = Math.round(ratio * 100) / 100
+                      }
+                    }
+                  }
+                }
+
+                // Color 2
+                Column {
+                  width: Style.space(70); spacing: Style.space(4); anchors.verticalCenter: parent.verticalCenter
+                  Rectangle {
+                    width: Style.space(44); height: Style.space(44); radius: Style.space(6)
+                    color: root.mixColor2; border.width: 1; border.color: Util.alpha(root.fg, 0.25)
+                    anchors.horizontalCenter: parent.horizontalCenter
+                  }
+                  Rectangle {
+                    width: Style.space(70); height: Style.space(20); radius: Style.space(3)
+                    color: Util.alpha(Color.accent, 0.15)
+                    Text { text: "Use Current"; color: Color.accent; font.pixelSize: Style.space(7); font.bold: true; anchors.centerIn: parent }
+                    MouseArea {
+                      anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                      onClicked: root.mixColor2 = root.activeColorHex
+                    }
+                  }
+                }
+              }
+            }
+
+            // Mixed Result Section
+            Column {
+              width: parent.width; spacing: Style.space(6)
+              property string mixedHex: {
+                if (root.blendMode !== "normal") return ColorStudio.blendWithStrength(root.mixColor1, root.mixColor2, root.blendMode, root.mixRatio)
+                if (root.mixMode === "lab") return ColorStudio.mixColorsLab(root.mixColor1, root.mixColor2, root.mixRatio)
+                if (root.mixMode === "oklch") return ColorStudio.mixColorsOklch(root.mixColor1, root.mixColor2, root.mixRatio)
+                return ColorStudio.mixColors(root.mixColor1, root.mixColor2, root.mixRatio)
+              }
+
+              Rectangle {
+                width: parent.width; height: Style.space(60); radius: Style.space(8)
+                color: parent.mixedHex; border.width: 1; border.color: Util.alpha(root.fg, 0.2)
+                Text {
+                  text: parent.parent.mixedHex
+                  color: ColorStudio.getContrastRatio(parent.parent.mixedHex, "#000000") > 4.5 ? "#000" : "#fff"
+                  font.family: "monospace"; font.pixelSize: Style.space(14); font.bold: true
+                  anchors.centerIn: parent
+                }
+              }
+
+              Rectangle {
+                width: Style.space(160); height: Style.space(28); radius: Style.space(5)
+                color: Color.accent; anchors.horizontalCenter: parent.horizontalCenter
+                Text { text: "Set as Current Color"; color: "#fff"; font.pixelSize: Style.space(8); font.bold: true; anchors.centerIn: parent }
+                MouseArea {
+                  anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.selectColor(parent.parent.mixedHex)
+                }
+              }
+            }
+
+            // Step Scale Generator
+            Column {
+              width: parent.width; spacing: Style.space(6)
+              Row {
+                width: parent.width
+                Text { text: "Step Scale (" + root.mixSteps + " Steps)"; color: Util.alpha(root.fg, 0.7); font.pixelSize: Style.space(8); font.bold: true }
+                Item { Layout.fillWidth: true; width: parent.width - Style.space(250) }
+                Row {
+                  spacing: Style.space(4)
+                  Rectangle {
+                    width: Style.space(20); height: Style.space(20); radius: Style.space(3); color: Util.alpha(root.fg, 0.08)
+                    Text { text: "-"; color: root.fg; font.pixelSize: Style.space(10); anchors.centerIn: parent }
+                    MouseArea { anchors.fill: parent; onClicked: root.mixSteps = Math.max(3, root.mixSteps - 1) }
+                  }
+                  Rectangle {
+                    width: Style.space(20); height: Style.space(20); radius: Style.space(3); color: Util.alpha(root.fg, 0.08)
+                    Text { text: "+"; color: root.fg; font.pixelSize: Style.space(10); anchors.centerIn: parent }
+                    MouseArea { anchors.fill: parent; onClicked: root.mixSteps = Math.min(30, root.mixSteps + 1) }
+                  }
+                }
+              }
+
+              // Scale Swatch Strip
+              property var currentScale: {
+                if (root.mixMode === "lab") return ColorStudio.generateScaleLab(root.mixColor1, root.mixColor2, root.mixSteps)
+                if (root.mixMode === "oklch") return ColorStudio.generateScaleOklch(root.mixColor1, root.mixColor2, root.mixSteps)
+                return ColorStudio.generateScale(root.mixColor1, root.mixColor2, root.mixSteps)
+              }
+
+              Row {
+                width: parent.width; height: Style.space(36); spacing: 1
+                Repeater {
+                  model: parent.currentScale
+                  Rectangle {
+                    required property string modelData
+                    width: (parent.width - (parent.parent.currentScale.length - 1)) / parent.parent.currentScale.length
+                    height: parent.height; color: modelData
+                    MouseArea {
+                      anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                      onClicked: { root.selectColor(parent.modelData); root.copyText(parent.modelData) }
+                    }
+                  }
+                }
+              }
+
+              Row {
+                spacing: Style.space(6)
+                Rectangle {
+                  height: Style.space(24); radius: Style.space(4); width: Style.space(110)
+                  color: Util.alpha(root.fg, 0.06)
+                  Row {
+                    anchors.centerIn: parent; spacing: Style.space(4)
+                    Text { text: "󰆏"; color: root.fg; font.pixelSize: Style.space(8) }
+                    Text { text: "CSS Variables"; color: root.fg; font.pixelSize: Style.space(8) }
+                  }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.copyText(ColorStudio.exportPaletteAsCSS(parent.parent.parent.currentScale))
+                  }
+                }
+
+                Rectangle {
+                  height: Style.space(24); radius: Style.space(4); width: Style.space(90)
+                  color: Util.alpha(root.fg, 0.06)
+                  Row {
+                    anchors.centerIn: parent; spacing: Style.space(4)
+                    Text { text: "󰆏"; color: root.fg; font.pixelSize: Style.space(8) }
+                    Text { text: "JSON Array"; color: root.fg; font.pixelSize: Style.space(8) }
+                  }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.copyText(ColorStudio.exportPaletteAsJSON(parent.parent.parent.currentScale))
+                  }
+                }
+              }
+            }
+
+            // Gradient Presets for Quick Mixing
+            Column {
+              width: parent.width; spacing: Style.space(6)
+              Text { text: "Presets"; color: Util.alpha(root.fg, 0.7); font.pixelSize: Style.space(8); font.bold: true }
+              Grid {
+                columns: 4; width: parent.width; spacing: Style.space(6)
+                Repeater {
+                  model: ColorStudio.GRADIENT_PRESETS.slice(0, 12)
+                  Rectangle {
+                    required property var modelData
+                    width: (parent.width - Style.space(18)) / 4; height: Style.space(26); radius: Style.space(4)
+                    color: modelData.colors[0]
+                    border.width: 1; border.color: Util.alpha(root.fg, 0.15)
+                    Text {
+                      text: parent.modelData.name
+                      color: "#fff"; font.pixelSize: Style.space(7); font.bold: true
+                      anchors.centerIn: parent
+                    }
+                    MouseArea {
+                      anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                      onClicked: {
+                        root.mixColor1 = parent.modelData.colors[0]
+                        root.mixColor2 = parent.modelData.colors[parent.modelData.colors.length - 1]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // =========================================================================
+          // SUB-TAB 2: HARMONIES
+          // =========================================================================
+          Column {
+            visible: root.colorStudioSubTab === 2
+            width: parent.width
+            spacing: Style.space(12)
+
+            // Controls (Angle Offset + Lock Primary)
+            Rectangle {
+              width: parent.width; height: Style.space(44); radius: Style.space(6)
+              color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+
+              Row {
+                anchors.fill: parent; anchors.margins: Style.space(8); spacing: Style.space(12)
+
+                Text { text: "Angle Offset:"; color: Util.alpha(root.fg, 0.6); font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
+
+                // Angle buttons
+                Row {
+                  spacing: Style.space(4); anchors.verticalCenter: parent.verticalCenter
+                  Rectangle {
+                    width: Style.space(24); height: Style.space(24); radius: Style.space(3); color: Util.alpha(root.fg, 0.08)
+                    Text { text: "-5°"; color: root.fg; font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                    MouseArea { anchors.fill: parent; onClicked: root.harmonyAngleOffset = Math.max(-30, root.harmonyAngleOffset - 5) }
+                  }
+                  Rectangle {
+                    width: Style.space(36); height: Style.space(24); radius: Style.space(3); color: Util.alpha(Color.accent, 0.15)
+                    Text { text: (root.harmonyAngleOffset > 0 ? "+" : "") + root.harmonyAngleOffset + "°"; color: Color.accent; font.pixelSize: Style.space(8); font.bold: true; anchors.centerIn: parent }
+                  }
+                  Rectangle {
+                    width: Style.space(24); height: Style.space(24); radius: Style.space(3); color: Util.alpha(root.fg, 0.08)
+                    Text { text: "+5°"; color: root.fg; font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                    MouseArea { anchors.fill: parent; onClicked: root.harmonyAngleOffset = Math.min(30, root.harmonyAngleOffset + 5) }
+                  }
+                }
+
+                Item { Layout.fillWidth: true; width: parent.width - Style.space(240) }
+
+                Rectangle {
+                  height: Style.space(26); radius: Style.space(4); width: Style.space(100)
+                  color: root.lockHarmonyColor ? Color.accent : Util.alpha(root.fg, 0.08)
+                  anchors.verticalCenter: parent.verticalCenter
+                  Row {
+                    anchors.centerIn: parent; spacing: Style.space(4)
+                    Text { text: root.lockHarmonyColor ? "󰌾" : "󰌿"; color: root.lockHarmonyColor ? "#fff" : root.fg; font.pixelSize: Style.space(9) }
+                    Text { text: root.lockHarmonyColor ? "Locked" : "Lock Primary"; color: root.lockHarmonyColor ? "#fff" : root.fg; font.pixelSize: Style.space(8); font.bold: true }
+                  }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.lockHarmonyColor = !root.lockHarmonyColor
+                  }
+                }
+              }
+            }
+
+            // 7 Harmonies Rows
+            property var advancedHarmoniesMap: ColorStudio.generateHarmoniesAdvanced(root.activeColorHex, root.harmonyAngleOffset)
+
+            Repeater {
+              model: [
+                { name: "Complementary", key: "complementary" },
+                { name: "Analogous", key: "analogous" },
+                { name: "Triadic", key: "triadic" },
+                { name: "Split-Comp", key: "split" },
+                { name: "Tetradic", key: "tetradic" },
+                { name: "Monochromatic", key: "monochromatic" },
+                { name: "Double-Split", key: "doubleSplit" }
+              ]
+
+              Rectangle {
+                required property var modelData
+                property var colorsList: parent.advancedHarmoniesMap[modelData.key] || []
+                width: parent.width; height: Style.space(56); radius: Style.space(6)
+                color: Util.alpha(root.fg, 0.03); border.width: 1; border.color: Util.alpha(root.fg, 0.07)
+
+                Column {
+                  anchors.fill: parent; anchors.margins: Style.space(6); spacing: Style.space(4)
+
+                  Row {
+                    width: parent.width
+                    Text { text: parent.parent.modelData.name; color: Util.alpha(root.fg, 0.75); font.pixelSize: Style.space(8); font.bold: true }
+                    Item { Layout.fillWidth: true; width: parent.width - Style.space(200) }
+                    Row {
+                      spacing: Style.space(4)
+                      Rectangle {
+                        height: Style.space(16); radius: Style.space(3); width: Style.space(40); color: Util.alpha(root.fg, 0.06)
+                        Text { text: "󰆏 CSS"; color: Util.alpha(root.fg, 0.6); font.pixelSize: Style.space(6); anchors.centerIn: parent }
+                        MouseArea {
+                          anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                          onClicked: root.copyText(ColorStudio.exportPaletteAsCSS(parent.parent.parent.parent.parent.colorsList))
+                        }
+                      }
+                      Rectangle {
+                        height: Style.space(16); radius: Style.space(3); width: Style.space(42); color: Util.alpha(root.fg, 0.06)
+                        Text { text: "󰆏 JSON"; color: Util.alpha(root.fg, 0.6); font.pixelSize: Style.space(6); anchors.centerIn: parent }
+                        MouseArea {
+                          anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                          onClicked: root.copyText(ColorStudio.exportPaletteAsJSON(parent.parent.parent.parent.parent.colorsList))
+                        }
+                      }
+                    }
+                  }
+
+                  // Swatches Row
+                  Row {
+                    width: parent.width; height: Style.space(24); spacing: Style.space(4)
                     Repeater {
-                      model: parent.parent.parent.modelData.colors
+                      model: parent.parent.colorsList
                       Rectangle {
                         required property string modelData
-                        width: Style.space(56); height: Style.space(32); radius: Style.space(4)
-                        color: modelData
+                        width: (parent.width - (parent.parent.parent.colorsList.length - 1) * Style.space(4)) / parent.parent.parent.colorsList.length
+                        height: parent.height; radius: Style.space(4); color: modelData
                         border.width: 1; border.color: Util.alpha(root.fg, 0.2)
-
                         Text {
                           text: parent.modelData
                           color: ColorStudio.getContrastRatio(parent.modelData, "#000000") > 4.5 ? "#000" : "#fff"
-                          font.family: "monospace"; font.pixelSize: Style.space(8); font.bold: true
+                          font.family: "monospace"; font.pixelSize: Style.space(7); font.bold: true
                           anchors.centerIn: parent
                         }
-
                         MouseArea {
                           anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                           onClicked: {
-                            root.selectColor(parent.modelData)
+                            if (!root.lockHarmonyColor) root.selectColor(parent.modelData)
                             root.copyText(parent.modelData)
                           }
                         }
@@ -2278,28 +3191,188 @@ Panel {
             }
           }
 
-          // Tints & Shades Strips
+          // =========================================================================
+          // SUB-TAB 3: ACCESSIBILITY (A11y)
+          // =========================================================================
           Column {
+            visible: root.colorStudioSubTab === 3
             width: parent.width
-            spacing: Style.space(6)
+            spacing: Style.space(12)
 
-            Text { text: "Tints (Lighter) & Shades (Darker)"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true }
+            // Contrast Checker Card
+            Rectangle {
+              width: parent.width; height: Style.space(170); radius: Style.space(8)
+              color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.08)
 
-            Row {
-              width: parent.width; spacing: Style.space(2)
-              Repeater {
-                model: root.activeColorAnalysis ? root.activeColorAnalysis.tints.concat(root.activeColorAnalysis.shades) : []
+              Column {
+                anchors.fill: parent; anchors.margins: Style.space(10); spacing: Style.space(8)
+
+                Row {
+                  width: parent.width; spacing: Style.space(12)
+
+                  // Background (Current Color)
+                  Column {
+                    width: (parent.width - Style.space(12)) / 2; spacing: Style.space(3)
+                    Text { text: "Background Color"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(7); font.bold: true }
+                    Row {
+                      spacing: Style.space(6)
+                      Rectangle { width: Style.space(24); height: Style.space(24); radius: Style.space(4); color: root.activeColorHex; border.width: 1; border.color: Util.alpha(root.fg, 0.2) }
+                      Text { text: root.activeColorHex; color: root.fg; font.family: "monospace"; font.pixelSize: Style.space(9); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                    }
+                  }
+
+                  // Foreground / Text Color Input
+                  Column {
+                    width: (parent.width - Style.space(12)) / 2; spacing: Style.space(3)
+                    Text { text: "Foreground / Text Color"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(7); font.bold: true }
+                    Row {
+                      spacing: Style.space(6)
+                      Rectangle { width: Style.space(24); height: Style.space(24); radius: Style.space(4); color: root.contrastColor; border.width: 1; border.color: Util.alpha(root.fg, 0.2) }
+                      Rectangle {
+                        width: Style.space(90); height: Style.space(24); radius: Style.space(3); color: Util.alpha(root.fg, 0.06); border.width: 1; border.color: Util.alpha(root.fg, 0.12)
+                        TextInput {
+                          anchors.fill: parent; anchors.margins: 3; color: root.fg; font.family: "monospace"; font.pixelSize: Style.space(8); font.bold: true
+                          text: root.contrastColor
+                          onAccepted: root.contrastColor = ColorStudio.parseColor(text) || text
+                        }
+                      }
+                    }
+                  }
+                }
+
+                // Auto-suggest Accessible Alternatives if contrast < 4.5
+                property real currentRatio: ColorStudio.getContrastRatio(root.activeColorHex, root.contrastColor)
+                property real currentApca: ColorStudio.getApcaContrast(root.contrastColor, root.activeColorHex)
+
                 Rectangle {
-                  required property string modelData
-                  width: (parent.width - Style.space(22)) / 12
-                  height: Style.space(28); radius: Style.space(3)
-                  color: modelData
-                  border.width: 1; border.color: Util.alpha(root.fg, 0.15)
-                  MouseArea {
-                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                      root.selectColor(parent.modelData)
-                      root.copyText(parent.modelData)
+                  visible: parent.currentRatio < 4.5
+                  width: parent.width; height: Style.space(36); radius: Style.space(5)
+                  color: Util.alpha("#EF4444", 0.12); border.width: 1; border.color: Util.alpha("#EF4444", 0.3)
+                  Row {
+                    anchors.centerIn: parent; spacing: Style.space(8)
+                    Text { text: "󰅙 Contrast Issue (" + parent.parent.currentRatio.toFixed(2) + ":1 < 4.5:1)"; color: "#EF4444"; font.pixelSize: Style.space(8); font.bold: true }
+                    Rectangle {
+                      height: Style.space(20); radius: Style.space(3); width: Style.space(80); color: "#fff"
+                      Text { text: "Suggest Light"; color: "#000"; font.pixelSize: Style.space(7); font.bold: true; anchors.centerIn: parent }
+                      MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: root.contrastColor = ColorStudio.suggestAccessibleColor(root.activeColorHex, root.contrastColor, "lighter")
+                      }
+                    }
+                    Rectangle {
+                      height: Style.space(20); radius: Style.space(3); width: Style.space(80); color: "#000"
+                      Text { text: "Suggest Dark"; color: "#fff"; font.pixelSize: Style.space(7); font.bold: true; anchors.centerIn: parent }
+                      MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: root.contrastColor = ColorStudio.suggestAccessibleColor(root.activeColorHex, root.contrastColor, "darker")
+                      }
+                    }
+                  }
+                }
+
+                // Real UI Previews Box
+                Row {
+                  width: parent.width; spacing: Style.space(6)
+
+                  // Button Example
+                  Rectangle {
+                    width: (parent.width - Style.space(12)) / 3; height: Style.space(32); radius: Style.space(5)
+                    color: root.activeColorHex; border.width: 1; border.color: Util.alpha(root.fg, 0.2)
+                    Text { text: "Button Example"; color: root.contrastColor; font.pixelSize: Style.space(8); font.bold: true; anchors.centerIn: parent }
+                  }
+
+                  // Card Preview
+                  Rectangle {
+                    width: (parent.width - Style.space(12)) / 3; height: Style.space(32); radius: Style.space(5)
+                    color: root.activeColorHex; border.width: 1; border.color: Util.alpha(root.fg, 0.2)
+                    Column {
+                      anchors.centerIn: parent; spacing: 1
+                      Text { text: "Card Title"; color: root.contrastColor; font.pixelSize: Style.space(7); font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
+                      Text { text: "Body text sample"; color: root.contrastColor; font.pixelSize: Style.space(6); anchors.horizontalCenter: parent.horizontalCenter }
+                    }
+                  }
+
+                  // Input Preview
+                  Rectangle {
+                    width: (parent.width - Style.space(12)) / 3; height: Style.space(32); radius: Style.space(5)
+                    color: root.activeColorHex; border.width: 1; border.color: Util.alpha(root.fg, 0.2)
+                    Text { text: "Placeholder..."; color: Util.alpha(root.contrastColor, 0.7); font.pixelSize: Style.space(7); anchors.centerIn: parent }
+                  }
+                }
+
+                // Scores Row
+                Row {
+                  width: parent.width; spacing: Style.space(8)
+                  Rectangle {
+                    width: (parent.width - Style.space(8)) / 2; height: Style.space(32); radius: Style.space(5)
+                    color: Util.alpha(root.fg, 0.05)
+                    Row {
+                      anchors.centerIn: parent; spacing: Style.space(6)
+                      Text { text: "WCAG: " + parent.parent.parent.currentRatio.toFixed(2) + ":1"; color: root.fg; font.pixelSize: Style.space(8); font.bold: true }
+                      Rectangle {
+                        height: Style.space(16); radius: Style.space(3); width: Style.space(44)
+                        color: parent.parent.parent.parent.currentRatio >= 4.5 ? "#10B981" : "#EF4444"
+                        Text { text: parent.parent.parent.parent.parent.currentRatio >= 4.5 ? "AA Pass" : "AA Fail"; color: "#fff"; font.pixelSize: Style.space(6); font.bold: true; anchors.centerIn: parent }
+                      }
+                    }
+                  }
+
+                  Rectangle {
+                    width: (parent.width - Style.space(8)) / 2; height: Style.space(32); radius: Style.space(5)
+                    color: Util.alpha(root.fg, 0.05)
+                    Row {
+                      anchors.centerIn: parent; spacing: Style.space(6)
+                      Text { text: "APCA: " + Math.abs(parent.parent.parent.currentApca).toFixed(1); color: root.fg; font.pixelSize: Style.space(8); font.bold: true }
+                      Text { text: "Min: " + ColorStudio.calculateMinFontSize(parent.parent.parent.currentRatio, false) + "px"; color: Util.alpha(root.fg, 0.6); font.pixelSize: Style.space(7) }
+                    }
+                  }
+                }
+              }
+            }
+
+            // Check Against 12 Standard Backgrounds Grid
+            Column {
+              width: parent.width; spacing: Style.space(4)
+              Text { text: "Check Against Standard Backgrounds"; color: Util.alpha(root.fg, 0.7); font.pixelSize: Style.space(8); font.bold: true }
+              Grid {
+                columns: 4; width: parent.width; spacing: Style.space(6)
+                Repeater {
+                  model: root.activeColorAnalysis ? root.activeColorAnalysis.standardBgResults : []
+                  Rectangle {
+                    required property var modelData
+                    width: (parent.width - Style.space(18)) / 4; height: Style.space(42); radius: Style.space(5)
+                    color: modelData.hex; border.width: 1; border.color: Util.alpha(root.fg, 0.2)
+                    Column {
+                      anchors.centerIn: parent; spacing: 1
+                      Text { text: parent.parent.modelData.name; color: root.activeColorHex; font.pixelSize: Style.space(7); font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
+                      Text { text: parent.parent.modelData.ratio.toFixed(2) + ":1"; color: root.activeColorHex; font.pixelSize: Style.space(8); font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
+                      Text { text: parent.parent.modelData.passAA ? "✓ AA" : "✕ Fail"; color: parent.parent.modelData.passAA ? "#10B981" : "#EF4444"; font.pixelSize: Style.space(6); font.bold: true; anchors.horizontalCenter: parent.horizontalCenter }
+                    }
+                  }
+                }
+              }
+            }
+
+            // Color Blindness Simulation Grid
+            Column {
+              width: parent.width; spacing: Style.space(4)
+              Text { text: "Color Blindness Simulation"; color: Util.alpha(root.fg, 0.7); font.pixelSize: Style.space(8); font.bold: true }
+              Grid {
+                columns: 2; width: parent.width; spacing: Style.space(6)
+                Repeater {
+                  model: root.activeColorAnalysis ? root.activeColorAnalysis.blindnessSim : []
+                  Rectangle {
+                    required property var modelData
+                    width: (parent.width - Style.space(6)) / 2; height: Style.space(38); radius: Style.space(5)
+                    color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+                    Row {
+                      anchors.fill: parent; anchors.margins: Style.space(6); spacing: Style.space(8)
+                      Rectangle { width: Style.space(26); height: Style.space(26); radius: Style.space(4); color: parent.parent.modelData.hex; border.width: 1; border.color: Util.alpha(root.fg, 0.2) }
+                      Column {
+                        anchors.verticalCenter: parent.verticalCenter
+                        Text { text: parent.parent.parent.modelData.label; color: root.fg; font.pixelSize: Style.space(8); font.bold: true }
+                        Text { text: parent.parent.parent.modelData.hex; color: Util.alpha(root.fg, 0.5); font.family: "monospace"; font.pixelSize: Style.space(7) }
+                      }
                     }
                   }
                 }
@@ -2307,41 +3380,383 @@ Panel {
             }
           }
 
-          // Clipboard Extracted Palettes
+          // =========================================================================
+          // SUB-TAB 4: GRADIENT
+          // =========================================================================
           Column {
+            visible: root.colorStudioSubTab === 4
             width: parent.width
-            spacing: Style.space(6)
+            spacing: Style.space(12)
 
-            Text {
-              text: "Extracted Clipboard Palettes (" + root.colorPalette.length + " colors)"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true
+            // Gradient Canvas Preview
+            Rectangle {
+              width: parent.width; height: Style.space(130); radius: Style.space(8)
+              clip: true; border.width: 1; border.color: Util.alpha(root.fg, 0.15)
+
+              Canvas {
+                id: gradCanvas
+                anchors.fill: parent
+                onPaint: {
+                  var ctx = getContext("2d")
+                  var w = width, h = height
+                  ctx.clearRect(0, 0, w, h)
+                  var grad
+                  if (root.gradientType === "radial") {
+                    grad = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, Math.max(w, h)/2)
+                  } else {
+                    var rad = (root.gradientAngle * Math.PI) / 180
+                    var x1 = w/2 - (Math.cos(rad) * w)/2
+                    var y1 = h/2 - (Math.sin(rad) * h)/2
+                    var x2 = w/2 + (Math.cos(rad) * w)/2
+                    var y2 = h/2 + (Math.sin(rad) * h)/2
+                    grad = ctx.createLinearGradient(x1, y1, x2, y2)
+                  }
+                  for (var i = 0; i < root.gradientStops.length; i++) {
+                    var s = root.gradientStops[i]
+                    grad.addColorStop(Math.max(0, Math.min(1, s.position / 100)), s.color)
+                  }
+                  ctx.fillStyle = grad
+                  ctx.fillRect(0, 0, w, h)
+                }
+              }
+
+              Connections {
+                target: root
+                function onGradientAngleChanged() { gradCanvas.requestPaint() }
+                function onGradientTypeChanged() { gradCanvas.requestPaint() }
+                function onGradientStopsChanged() { gradCanvas.requestPaint() }
+              }
             }
 
-            Grid {
-              columns: 5
-              width: parent.width
-              spacing: Style.space(6)
+            // Controls (Type + Angle)
+            Row {
+              width: parent.width; spacing: Style.space(8)
 
-              Repeater {
-                model: root.colorPalette
-                Rectangle {
-                  required property var modelData
-                  width: (parent.width - Style.space(24)) / 5
-                  height: Style.space(40); radius: Style.space(4)
-                  color: modelData.hex
-                  border.width: 1; border.color: Util.alpha(root.fg, 0.25)
-
-                  Text {
-                    text: parent.modelData.hex
-                    color: ColorStudio.getContrastRatio(parent.modelData.hex, "#000000") > 4.5 ? "#000" : "#fff"
-                    font.family: "monospace"; font.pixelSize: Style.space(8); font.bold: true
-                    anchors.centerIn: parent
+              // Type Selector
+              Row {
+                spacing: Style.space(4)
+                Repeater {
+                  model: ["linear", "radial", "conic"]
+                  Rectangle {
+                    required property string modelData
+                    width: Style.space(55); height: Style.space(26); radius: Style.space(4)
+                    color: root.gradientType === modelData ? Color.accent : Util.alpha(root.fg, 0.05)
+                    Text {
+                      text: parent.modelData
+                      color: root.gradientType === parent.modelData ? "#fff" : root.fg
+                      font.pixelSize: Style.space(8); font.bold: true; anchors.centerIn: parent
+                    }
+                    MouseArea {
+                      anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                      onClicked: { root.gradientType = parent.modelData; gradCanvas.requestPaint() }
+                    }
                   }
+                }
+              }
 
+              Item { Layout.fillWidth: true; width: parent.width - Style.space(300) }
+
+              // Angle Controls (Linear)
+              Row {
+                visible: root.gradientType === "linear"
+                spacing: Style.space(4); anchors.verticalCenter: parent.verticalCenter
+                Text { text: "Angle: " + root.gradientAngle + "°"; color: Util.alpha(root.fg, 0.7); font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
+                Rectangle {
+                  width: Style.space(22); height: Style.space(22); radius: Style.space(3); color: Util.alpha(root.fg, 0.08)
+                  Text { text: "-"; color: root.fg; font.pixelSize: Style.space(10); anchors.centerIn: parent }
+                  MouseArea { anchors.fill: parent; onClicked: { root.gradientAngle = (root.gradientAngle - 15 + 360) % 360; gradCanvas.requestPaint() } }
+                }
+                Rectangle {
+                  width: Style.space(22); height: Style.space(22); radius: Style.space(3); color: Util.alpha(root.fg, 0.08)
+                  Text { text: "+"; color: root.fg; font.pixelSize: Style.space(10); anchors.centerIn: parent }
+                  MouseArea { anchors.fill: parent; onClicked: { root.gradientAngle = (root.gradientAngle + 15) % 360; gradCanvas.requestPaint() } }
+                }
+              }
+            }
+
+            // Stops Editor
+            Column {
+              width: parent.width; spacing: Style.space(6)
+              Row {
+                width: parent.width
+                Text { text: "Gradient Stops"; color: Util.alpha(root.fg, 0.7); font.pixelSize: Style.space(8); font.bold: true }
+                Item { Layout.fillWidth: true; width: parent.width - Style.space(150) }
+                Rectangle {
+                  height: Style.space(20); radius: Style.space(3); width: Style.space(65); color: Util.alpha(Color.accent, 0.15)
+                  Text { text: "+ Add Stop"; color: Color.accent; font.pixelSize: Style.space(7); font.bold: true; anchors.centerIn: parent }
                   MouseArea {
                     anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                     onClicked: {
-                      root.selectColor(parent.modelData.hex)
-                      root.copyText(parent.modelData.hex)
+                      var stops = root.gradientStops.slice()
+                      stops.push({ color: root.activeColorHex, position: 50 })
+                      stops.sort(function(a, b) { return a.position - b.position })
+                      root.gradientStops = stops
+                      gradCanvas.requestPaint()
+                    }
+                  }
+                }
+              }
+
+              Repeater {
+                model: root.gradientStops
+                Rectangle {
+                  required property var modelData
+                  required property int index
+                  width: parent.width; height: Style.space(32); radius: Style.space(5)
+                  color: Util.alpha(root.fg, 0.03); border.width: 1; border.color: Util.alpha(root.fg, 0.07)
+
+                  Row {
+                    anchors.fill: parent; anchors.margins: Style.space(6); spacing: Style.space(8)
+                    Rectangle {
+                      width: Style.space(20); height: Style.space(20); radius: Style.space(3)
+                      color: parent.parent.modelData.color; border.width: 1; border.color: Util.alpha(root.fg, 0.2)
+                    }
+                    Text { text: parent.parent.modelData.color; color: root.fg; font.family: "monospace"; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: parent.parent.modelData.position + "%"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
+
+                    Item { Layout.fillWidth: true; width: parent.width - Style.space(200) }
+
+                    // Position adjust buttons
+                    Rectangle {
+                      width: Style.space(18); height: Style.space(18); radius: Style.space(2); color: Util.alpha(root.fg, 0.08)
+                      Text { text: "◀"; color: root.fg; font.pixelSize: Style.space(6); anchors.centerIn: parent }
+                      MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          var stops = root.gradientStops.slice()
+                          stops[parent.parent.parent.index].position = Math.max(0, stops[parent.parent.parent.index].position - 5)
+                          stops.sort(function(a, b) { return a.position - b.position })
+                          root.gradientStops = stops
+                          gradCanvas.requestPaint()
+                        }
+                      }
+                    }
+                    Rectangle {
+                      width: Style.space(18); height: Style.space(18); radius: Style.space(2); color: Util.alpha(root.fg, 0.08)
+                      Text { text: "▶"; color: root.fg; font.pixelSize: Style.space(6); anchors.centerIn: parent }
+                      MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          var stops = root.gradientStops.slice()
+                          stops[parent.parent.parent.index].position = Math.min(100, stops[parent.parent.parent.index].position + 5)
+                          stops.sort(function(a, b) { return a.position - b.position })
+                          root.gradientStops = stops
+                          gradCanvas.requestPaint()
+                        }
+                      }
+                    }
+
+                    // Remove Stop
+                    Rectangle {
+                      visible: root.gradientStops.length > 2
+                      width: Style.space(18); height: Style.space(18); radius: Style.space(2); color: Util.alpha("#EF4444", 0.15)
+                      Text { text: "✕"; color: "#EF4444"; font.pixelSize: Style.space(7); font.bold: true; anchors.centerIn: parent }
+                      MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          var stops = root.gradientStops.slice()
+                          stops.splice(parent.parent.parent.index, 1)
+                          root.gradientStops = stops
+                          gradCanvas.requestPaint()
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
+            // 18 Gradient Presets Grid
+            Column {
+              width: parent.width; spacing: Style.space(6)
+              Text { text: "18 Gradient Presets (Click to Load)"; color: Util.alpha(root.fg, 0.7); font.pixelSize: Style.space(8); font.bold: true }
+              Grid {
+                columns: 3; width: parent.width; spacing: Style.space(6)
+                Repeater {
+                  model: ColorStudio.GRADIENT_PRESETS
+                  Rectangle {
+                    required property var modelData
+                    width: (parent.width - Style.space(12)) / 3; height: Style.space(30); radius: Style.space(4)
+                    color: modelData.colors[0]
+                    border.width: 1; border.color: Util.alpha(root.fg, 0.2)
+                    Text {
+                      text: parent.modelData.name
+                      color: "#fff"; font.pixelSize: Style.space(8); font.bold: true
+                      anchors.centerIn: parent
+                    }
+                    MouseArea {
+                      anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                      onClicked: {
+                        var p = parent.modelData
+                        var stops = []
+                        for (var i = 0; i < p.colors.length; i++) {
+                          stops.push({ color: p.colors[i], position: Math.round((i / (p.colors.length - 1)) * 100) })
+                        }
+                        root.gradientStops = stops
+                        root.gradientAngle = p.angle
+                        root.gradientType = "linear"
+                        gradCanvas.requestPaint()
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
+            // CSS Output Card
+            Rectangle {
+              width: parent.width; height: Style.space(42); radius: Style.space(6)
+              color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+              Row {
+                anchors.fill: parent; anchors.margins: Style.space(8); spacing: Style.space(8)
+                Column {
+                  width: parent.width - Style.space(60); anchors.verticalCenter: parent.verticalCenter
+                  Text { text: "CSS Code"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(7); font.bold: true }
+                  Text {
+                    text: "background: " + ColorStudio.generateGradient(root.gradientType, root.gradientAngle, root.gradientStops) + ";"
+                    color: Color.accent; font.family: "monospace"; font.pixelSize: Style.space(8); elide: Text.ElideRight; width: parent.width
+                  }
+                }
+                Rectangle {
+                  height: Style.space(24); radius: Style.space(4); width: Style.space(50); color: Color.accent
+                  anchors.verticalCenter: parent.verticalCenter
+                  Text { text: "Copy"; color: "#fff"; font.pixelSize: Style.space(7); font.bold: true; anchors.centerIn: parent }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.copyText("background: " + ColorStudio.generateGradient(root.gradientType, root.gradientAngle, root.gradientStops) + ";")
+                  }
+                }
+              }
+            }
+          }
+
+          // =========================================================================
+          // SUB-TAB 5: LIBRARY / SAVED PALETTES
+          // =========================================================================
+          Column {
+            visible: root.colorStudioSubTab === 5
+            width: parent.width
+            spacing: Style.space(12)
+
+            // Import Palette Card
+            Rectangle {
+              width: parent.width; height: Style.space(46); radius: Style.space(6)
+              color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+
+              Row {
+                anchors.fill: parent; anchors.margins: Style.space(6); spacing: Style.space(6)
+                Rectangle {
+                  width: parent.width - Style.space(80); height: Style.space(32); radius: Style.space(4)
+                  color: Util.alpha(root.fg, 0.06); border.width: 1; border.color: Util.alpha(root.fg, 0.12)
+                  TextInput {
+                    anchors.fill: parent; anchors.margins: Style.space(4)
+                    color: root.fg; font.pixelSize: Style.space(8)
+                    text: root.colorImportText
+                    onTextChanged: root.colorImportText = text
+                    onAccepted: root.importPaletteFromText(text)
+                    Text {
+                      visible: !parent.text
+                      text: "Paste JSON array or Hex codes (#FF0000 #00FF00...)"
+                      color: Util.alpha(root.fg, 0.35); font.pixelSize: Style.space(7)
+                      anchors.verticalCenter: parent.verticalCenter; anchors.left: parent.left
+                    }
+                  }
+                }
+                Rectangle {
+                  width: Style.space(70); height: Style.space(32); radius: Style.space(4); color: Color.accent
+                  Text { text: "Import"; color: "#fff"; font.pixelSize: Style.space(8); font.bold: true; anchors.centerIn: parent }
+                  MouseArea {
+                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                    onClicked: root.importPaletteFromText(root.colorImportText)
+                  }
+                }
+              }
+            }
+
+            // Save Current Palette Button
+            Rectangle {
+              width: parent.width; height: Style.space(34); radius: Style.space(6)
+              color: Color.accent
+              Row {
+                anchors.centerIn: parent; spacing: Style.space(6)
+                Text { text: "󰆓"; color: "#fff"; font.pixelSize: Style.space(11) }
+                Text { text: "Save Current Palette to Library"; color: "#fff"; font.pixelSize: Style.space(9); font.bold: true }
+              }
+              MouseArea {
+                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                onClicked: root.saveCurrentPalette()
+              }
+            }
+
+            // Saved Palettes List
+            Text {
+              text: "Saved Palettes (" + root.savedPalettes.length + ")"; color: Util.alpha(root.fg, 0.7); font.pixelSize: Style.space(8); font.bold: true
+            }
+
+            Text {
+              visible: root.savedPalettes.length === 0
+              text: "No saved palettes yet. Click 'Save Current Palette' to store palettes in your library."
+              color: Util.alpha(root.fg, 0.4); font.pixelSize: Style.space(8); font.italic: true
+            }
+
+            Repeater {
+              model: root.savedPalettes
+              Rectangle {
+                required property var modelData
+                width: parent.width; height: Style.space(82); radius: Style.space(6)
+                color: Util.alpha(root.fg, 0.03); border.width: 1; border.color: Util.alpha(root.fg, 0.07)
+
+                Column {
+                  anchors.fill: parent; anchors.margins: Style.space(8); spacing: Style.space(4)
+
+                  Row {
+                    width: parent.width
+                    Column {
+                      Text { text: parent.parent.parent.modelData.name; color: root.fg; font.pixelSize: Style.space(9); font.bold: true }
+                      Text {
+                        text: (parent.parent.parent.modelData.colors ? parent.parent.parent.modelData.colors.length : 0) + " colors • " + new Date(parent.parent.parent.modelData.createdAt).toLocaleDateString()
+                        color: Util.alpha(root.fg, 0.4); font.pixelSize: Style.space(7)
+                      }
+                    }
+
+                    Item { Layout.fillWidth: true; width: parent.width - Style.space(200) }
+
+                    Row {
+                      spacing: Style.space(4)
+                      Rectangle {
+                        width: Style.space(22); height: Style.space(22); radius: Style.space(3); color: Util.alpha(root.fg, 0.06)
+                        Text { text: "󰆏"; color: Util.alpha(root.fg, 0.6); font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                        MouseArea {
+                          anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                          onClicked: root.copyText(ColorStudio.exportPaletteAsJSON(parent.parent.parent.parent.modelData.colors))
+                        }
+                      }
+                      Rectangle {
+                        width: Style.space(22); height: Style.space(22); radius: Style.space(3); color: Util.alpha("#EF4444", 0.12)
+                        Text { text: "✕"; color: "#EF4444"; font.pixelSize: Style.space(8); font.bold: true; anchors.centerIn: parent }
+                        MouseArea {
+                          anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                          onClicked: root.deleteSavedPalette(parent.parent.parent.parent.modelData.id)
+                        }
+                      }
+                    }
+                  }
+
+                  // Swatches Row
+                  Row {
+                    width: parent.width; height: Style.space(24); spacing: Style.space(3)
+                    Repeater {
+                      model: parent.parent.modelData.colors || []
+                      Rectangle {
+                        required property string modelData
+                        width: (parent.width - (parent.parent.parent.modelData.colors.length - 1) * Style.space(3)) / parent.parent.parent.modelData.colors.length
+                        height: parent.height; radius: Style.space(3); color: modelData
+                        border.width: 1; border.color: Util.alpha(root.fg, 0.2)
+                        MouseArea {
+                          anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                          onClicked: { root.selectColor(parent.modelData); root.copyText(parent.modelData) }
+                        }
+                      }
                     }
                   }
                 }
