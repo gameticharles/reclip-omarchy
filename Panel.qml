@@ -3671,7 +3671,7 @@ Panel {
                     anchors.fill: parent; anchors.margins: Style.space(4)
                     color: root.fg; font.pixelSize: Style.space(8)
                     text: root.colorImportText
-                    onTextChanged: root.colorImportText = text
+                    onTextEdited: root.colorImportText = text
                     onAccepted: root.importPaletteFromText(text)
                     Text {
                       visible: !parent.text
@@ -3867,10 +3867,12 @@ Panel {
               }
             }
 
+            // 1. Left Group: Bulk Checkbox + Swatch / Thumbnail
             Row {
-              anchors.fill: parent
-              anchors.margins: Style.space(8)
+              id: leftGroup
+              anchors.left: parent.left
               anchors.leftMargin: (cardItem.isSelected || cardItem.isBulkChecked) ? Style.space(12) : Style.space(8)
+              anchors.verticalCenter: parent.verticalCenter
               spacing: Style.space(10)
 
               // Bulk Selection Checkbox (Visible in bulk mode)
@@ -3930,226 +3932,234 @@ Panel {
                   onClicked: root.openImageZoom(cardItem.path)
                 }
               }
+            }
 
-              // Metadata & Content Details
-              Column {
-                width: parent.width - Style.space(130) - (root.bulkMode ? Style.space(26) : 0)
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: Style.space(2)
+            // 2. Compact Trailing Controls (Quick Actions + Dropdown) - Anchored firmly to right edge
+            Row {
+              id: trailingControls
+              anchors.right: parent.right
+              anchors.rightMargin: Style.space(8)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(4)
 
-                // Meta Row (Index badge, Pin, Tag, Time Ago)
-                Row {
-                  spacing: Style.space(6)
-
-                  // 1-9 Quick paste badge
-                  Rectangle {
-                    visible: cardItem.index < 9 && root.activeTab === 0 && !root.bulkMode
-                    width: Style.space(14); height: Style.space(14)
-                    radius: Style.space(3)
-                    color: Util.alpha(root.fg, 0.12)
-                    Text {
-                      text: String(cardItem.index + 1)
-                      color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true
-                      anchors.centerIn: parent
-                    }
-                  }
-
-                  // Pinned indicator
-                  Text {
-                    visible: cardItem.isPinned
-                    text: "󰐃"
-                    color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(10)
-                    anchors.verticalCenter: parent.verticalCenter
-                  }
-
-                  // Favorite indicator
-                  Text {
-                    visible: cardItem.isFavorite
-                    text: "⭐"
-                    font.pixelSize: Style.space(8)
-                    anchors.verticalCenter: parent.verticalCenter
-                  }
-
-                  // Type Tag / Language
-                  Rectangle {
-                    visible: cardItem.kind === "code" || cardItem.kind === "color"
-                    width: tagTxt.implicitWidth + Style.space(8); height: Style.space(14)
-                    radius: Style.space(3)
-                    color: cardItem.kind === "color" ? Util.alpha(root.fg, 0.1) : Util.alpha(Color.accent, 0.2)
-                    Text {
-                      id: tagTxt
-                      text: cardItem.kind === "color" ? cardItem.colorValue : (cardItem.codeLang || "CODE")
-                      color: cardItem.kind === "color" ? root.fg : Color.accent
-                      font.pixelSize: Style.space(9); font.bold: true
-                      anchors.centerIn: parent
-                    }
-                  }
-
-                  // URL Domain Badge (e.g. github.com)
-                  Rectangle {
-                    visible: cardItem.urlDomain !== ""
-                    height: Style.space(14)
-                    width: domainBadgeContent.implicitWidth + Style.space(8)
-                    radius: Style.space(3)
-                    color: Util.alpha(Color.accent, 0.15)
-                    Row {
-                      id: domainBadgeContent
-                      anchors.centerIn: parent
-                      spacing: Style.space(3)
-                      Text { text: "󰌹"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(8) }
-                      Text { text: cardItem.urlDomain; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true }
-                    }
-                  }
-
-                  // Collection / Custom Tags Badges
-                  Repeater {
-                    model: cardItem.tags ? cardItem.tags.split(",").filter(function(t) { return t.trim() !== "" }) : []
-                    Rectangle {
-                      required property string modelData
-                      height: Style.space(14)
-                      width: tagBadgeTxt.implicitWidth + Style.space(8)
-                      radius: Style.space(3)
-                      color: Util.alpha(root.fg, 0.1)
-                      Text {
-                        id: tagBadgeTxt
-                        text: "#" + parent.modelData
-                        color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true
-                        anchors.centerIn: parent
-                      }
-                      MouseArea {
-                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                          root.categoryFilter = "tag:" + parent.modelData.toLowerCase()
-                          root.rebuildDisplay()
-                        }
-                      }
-                    }
-                  }
-
-                  // Title (for Snippets)
-                  Text {
-                    visible: cardItem.title !== ""
-                    text: cardItem.title
-                    color: cardItem.isSelected ? root.selFg : root.fg
-                    font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
-                  }
-
-                  // Time ago
-                  Text {
-                    visible: cardItem.timeAgo !== ""
-                    text: cardItem.timeAgo
-                    color: Util.alpha(root.fg, 0.45)
-                    font.family: root.fontFamily; font.pixelSize: Style.space(9)
-                    anchors.verticalCenter: parent.verticalCenter
-                  }
-                }
-
-                // Preview Content
+              // Quick Open in Browser (for links)
+              Rectangle {
+                visible: cardItem.kind === "link" || cardItem.urlDomain !== ""
+                width: Style.space(28); height: Style.space(28); radius: Style.space(5)
+                color: urlMouse.containsMouse ? Util.alpha(Color.accent, 0.2) : Util.alpha(root.fg, 0.08)
+                border.width: 1; border.color: urlMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.1)
                 Text {
-                  width: parent.width
-                  text: cardItem.previewText
-                  color: cardItem.isSelected ? root.selFg : Util.alpha(root.fg, 0.9)
-                  font.family: cardItem.kind === "code" ? "monospace" : root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  elide: Text.ElideRight
-                  maximumLineCount: cardItem.kind === "code" ? 2 : 1
-                  wrapMode: Text.WrapAnywhere
+                  text: "󰌹"
+                  color: urlMouse.containsMouse ? Color.accent : (cardItem.isSelected ? root.selFg : root.fg)
+                  font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                  anchors.centerIn: parent
                 }
-
-                // Stats (lines / characters)
-                Text {
-                  visible: cardItem.entryType === "text" && cardItem.fullText.length > 0
-                  text: cardItem.lineCount + " lines • " + cardItem.charCount + " chars"
-                  color: Util.alpha(root.fg, 0.4)
-                  font.family: root.fontFamily; font.pixelSize: Style.space(9)
+                MouseArea {
+                  id: urlMouse
+                  anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.openUrlInBrowser(cardItem.fullText)
                 }
               }
 
-              // ==========================================
-              // COMPACT TRAILING CONTROLS (Quick Actions + Dropdown)
-              // ==========================================
+              // Quick OCR Extract (for image clips)
+              Rectangle {
+                visible: cardItem.entryType === "image"
+                width: Style.space(28); height: Style.space(28); radius: Style.space(5)
+                color: ocrMouse.containsMouse ? Util.alpha(Color.accent, 0.2) : Util.alpha(root.fg, 0.08)
+                border.width: 1; border.color: ocrMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.1)
+                Text {
+                  text: "󰐳"
+                  color: ocrMouse.containsMouse ? Color.accent : (cardItem.isSelected ? root.selFg : root.fg)
+                  font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                  anchors.centerIn: parent
+                }
+                MouseArea {
+                  id: ocrMouse
+                  anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.runOcrOnImage(cardItem.path)
+                }
+              }
+
+              // Quick Copy
+              Rectangle {
+                width: Style.space(28); height: Style.space(28); radius: Style.space(5)
+                color: copyMouse.containsMouse ? Util.alpha(Color.accent, 0.2) : Util.alpha(root.fg, 0.08)
+                border.width: 1
+                border.color: copyMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.1)
+
+                Text {
+                  text: "󰆏"
+                  color: copyMouse.containsMouse ? Color.accent : (cardItem.isSelected ? root.selFg : root.fg)
+                  font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                  anchors.centerIn: parent
+                }
+                MouseArea {
+                  id: copyMouse
+                  anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.copyRow(displayModel.get(cardItem.index))
+                }
+              }
+
+              // Dropdown Menu Button (Three Dots)
+              Rectangle {
+                id: menuBtn
+                width: Style.space(28); height: Style.space(28); radius: Style.space(5)
+                color: (root.activeMenuClipIndex === cardItem.index || menuMouse.containsMouse) ? Color.accent : Util.alpha(root.fg, 0.08)
+                border.width: 1
+                border.color: (root.activeMenuClipIndex === cardItem.index || menuMouse.containsMouse) ? Color.accent : Util.alpha(root.fg, 0.1)
+
+                Text {
+                  text: "󰇙"
+                  color: (root.activeMenuClipIndex === cardItem.index || menuMouse.containsMouse) ? "#fff" : (cardItem.isSelected ? root.selFg : root.fg)
+                  font.family: root.fontFamily; font.pixelSize: Style.font.heading; font.bold: true
+                  anchors.centerIn: parent
+                }
+                MouseArea {
+                  id: menuMouse
+                  anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.openClipMenu(cardItem.index, menuBtn)
+                }
+              }
+            }
+
+            // 3. Middle Column: Metadata & Content Details (Dynamically fills remaining space)
+            Column {
+              id: midContentCol
+              anchors.left: leftGroup.right
+              anchors.leftMargin: Style.space(10)
+              anchors.right: trailingControls.left
+              anchors.rightMargin: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(2)
+              clip: true
+
+              // Meta Row (Index badge, Pin, Tag, Time Ago)
               Row {
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: Style.space(4)
+                width: parent.width
+                spacing: Style.space(6)
+                clip: true
 
-                // Quick Open in Browser (for links)
+                // 1-9 Quick paste badge
                 Rectangle {
-                  visible: cardItem.kind === "link" || cardItem.urlDomain !== ""
-                  width: Style.space(28); height: Style.space(28); radius: Style.space(5)
-                  color: urlMouse.containsMouse ? Util.alpha(Color.accent, 0.2) : Util.alpha(root.fg, 0.08)
-                  border.width: 1; border.color: urlMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.1)
+                  visible: cardItem.index < 9 && root.activeTab === 0 && !root.bulkMode
+                  width: Style.space(14); height: Style.space(14)
+                  radius: Style.space(3)
+                  color: Util.alpha(root.fg, 0.12)
                   Text {
-                    text: "󰌹"
-                    color: urlMouse.containsMouse ? Color.accent : (cardItem.isSelected ? root.selFg : root.fg)
-                    font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                    text: String(cardItem.index + 1)
+                    color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true
                     anchors.centerIn: parent
-                  }
-                  MouseArea {
-                    id: urlMouse
-                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.openUrlInBrowser(cardItem.fullText)
                   }
                 }
 
-                // Quick OCR Extract (for image clips)
+                // Pinned indicator
+                Text {
+                  visible: cardItem.isPinned
+                  text: "󰐃"
+                  color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(10)
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+
+                // Favorite indicator
+                Text {
+                  visible: cardItem.isFavorite
+                  text: "⭐"
+                  font.pixelSize: Style.space(8)
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+
+                // Type Tag / Language
                 Rectangle {
-                  visible: cardItem.entryType === "image"
-                  width: Style.space(28); height: Style.space(28); radius: Style.space(5)
-                  color: ocrMouse.containsMouse ? Util.alpha(Color.accent, 0.2) : Util.alpha(root.fg, 0.08)
-                  border.width: 1; border.color: ocrMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.1)
+                  visible: cardItem.kind === "code" || cardItem.kind === "color"
+                  width: tagTxt.implicitWidth + Style.space(8); height: Style.space(14)
+                  radius: Style.space(3)
+                  color: cardItem.kind === "color" ? Util.alpha(root.fg, 0.1) : Util.alpha(Color.accent, 0.2)
                   Text {
-                    text: "󰐳"
-                    color: ocrMouse.containsMouse ? Color.accent : (cardItem.isSelected ? root.selFg : root.fg)
-                    font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                    id: tagTxt
+                    text: cardItem.kind === "color" ? cardItem.colorValue : (cardItem.codeLang || "CODE")
+                    color: cardItem.kind === "color" ? root.fg : Color.accent
+                    font.pixelSize: Style.space(9); font.bold: true
                     anchors.centerIn: parent
-                  }
-                  MouseArea {
-                    id: ocrMouse
-                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.runOcrOnImage(cardItem.path)
                   }
                 }
 
-                // Quick Copy
+                // URL Domain Badge (e.g. github.com)
                 Rectangle {
-                  width: Style.space(28); height: Style.space(28); radius: Style.space(5)
-                  color: copyMouse.containsMouse ? Util.alpha(Color.accent, 0.2) : Util.alpha(root.fg, 0.08)
-                  border.width: 1
-                  border.color: copyMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.1)
-
-                  Text {
-                    text: "󰆏"
-                    color: copyMouse.containsMouse ? Color.accent : (cardItem.isSelected ? root.selFg : root.fg)
-                    font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                  visible: cardItem.urlDomain !== ""
+                  height: Style.space(14)
+                  width: domainBadgeContent.implicitWidth + Style.space(8)
+                  radius: Style.space(3)
+                  color: Util.alpha(Color.accent, 0.15)
+                  Row {
+                    id: domainBadgeContent
                     anchors.centerIn: parent
-                  }
-                  MouseArea {
-                    id: copyMouse
-                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.copyRow(displayModel.get(cardItem.index))
+                    spacing: Style.space(3)
+                    Text { text: "󰌹"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(8) }
+                    Text { text: cardItem.urlDomain; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true }
                   }
                 }
 
-                // Dropdown Menu Button (Three Dots)
-                Rectangle {
-                  id: menuBtn
-                  width: Style.space(28); height: Style.space(28); radius: Style.space(5)
-                  color: (root.activeMenuClipIndex === cardItem.index || menuMouse.containsMouse) ? Color.accent : Util.alpha(root.fg, 0.08)
-                  border.width: 1
-                  border.color: (root.activeMenuClipIndex === cardItem.index || menuMouse.containsMouse) ? Color.accent : Util.alpha(root.fg, 0.1)
-
-                  Text {
-                    text: "󰇙"
-                    color: (root.activeMenuClipIndex === cardItem.index || menuMouse.containsMouse) ? "#fff" : (cardItem.isSelected ? root.selFg : root.fg)
-                    font.family: root.fontFamily; font.pixelSize: Style.font.heading; font.bold: true
-                    anchors.centerIn: parent
-                  }
-                  MouseArea {
-                    id: menuMouse
-                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.openClipMenu(cardItem.index, menuBtn)
+                // Collection / Custom Tags Badges
+                Repeater {
+                  model: cardItem.tags ? cardItem.tags.split(",").filter(function(t) { return t.trim() !== "" }) : []
+                  Rectangle {
+                    required property string modelData
+                    height: Style.space(14)
+                    width: tagBadgeTxt.implicitWidth + Style.space(8)
+                    radius: Style.space(3)
+                    color: Util.alpha(root.fg, 0.1)
+                    Text {
+                      id: tagBadgeTxt
+                      text: "#" + parent.modelData
+                      color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true
+                      anchors.centerIn: parent
+                    }
+                    MouseArea {
+                      anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                      onClicked: {
+                        root.categoryFilter = "tag:" + parent.modelData.toLowerCase()
+                        root.rebuildDisplay()
+                      }
+                    }
                   }
                 }
+
+                // Title (for Snippets)
+                Text {
+                  visible: cardItem.title !== ""
+                  text: cardItem.title
+                  color: cardItem.isSelected ? root.selFg : root.fg
+                  font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
+                }
+
+                // Time ago
+                Text {
+                  visible: cardItem.timeAgo !== ""
+                  text: cardItem.timeAgo
+                  color: Util.alpha(root.fg, 0.45)
+                  font.family: root.fontFamily; font.pixelSize: Style.space(9)
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+              }
+
+              // Preview Content
+              Text {
+                width: parent.width
+                text: cardItem.previewText
+                color: cardItem.isSelected ? root.selFg : Util.alpha(root.fg, 0.9)
+                font.family: cardItem.kind === "code" ? "monospace" : root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+                maximumLineCount: cardItem.kind === "code" ? 2 : 1
+                wrapMode: Text.WrapAnywhere
+              }
+
+              // Stats (lines / characters)
+              Text {
+                visible: cardItem.entryType === "text" && cardItem.fullText.length > 0
+                text: cardItem.lineCount + " lines • " + cardItem.charCount + " chars"
+                color: Util.alpha(root.fg, 0.4)
+                font.family: root.fontFamily; font.pixelSize: Style.space(9)
               }
             }
           }
@@ -4719,7 +4729,7 @@ Panel {
                 color: root.fg; font.family: "monospace"; font.pixelSize: Style.font.body
                 wrapMode: TextEdit.Wrap
                 text: root.clipEditContent
-                onTextChanged: root.clipEditContent = text
+                onTextEdited: root.clipEditContent = text
               }
             }
           }
@@ -4895,7 +4905,7 @@ Panel {
                 id: edTitle
                 anchors.fill: parent; anchors.margins: Style.space(4)
                 color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body
-                text: root.snippetEditTitle; onTextChanged: root.snippetEditTitle = text
+                text: root.snippetEditTitle; onTextEdited: root.snippetEditTitle = text
               }
             }
           }
@@ -4910,7 +4920,7 @@ Panel {
                 id: edLang
                 anchors.fill: parent; anchors.margins: Style.space(4)
                 color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body
-                text: root.snippetEditLang; onTextChanged: root.snippetEditLang = text
+                text: root.snippetEditLang; onTextEdited: root.snippetEditLang = text
               }
             }
             Text { text: "Folder:"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
@@ -4921,7 +4931,7 @@ Panel {
                 id: edFolder
                 anchors.fill: parent; anchors.margins: Style.space(4)
                 color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body
-                text: root.snippetEditFolder; onTextChanged: root.snippetEditFolder = text
+                text: root.snippetEditFolder; onTextEdited: root.snippetEditFolder = text
               }
             }
           }
@@ -4939,7 +4949,7 @@ Panel {
                 width: parent.width
                 color: root.fg; font.family: "monospace"; font.pixelSize: Style.font.caption
                 wrapMode: TextEdit.Wrap
-                text: root.snippetEditContent; onTextChanged: root.snippetEditContent = text
+                text: root.snippetEditContent; onTextEdited: root.snippetEditContent = text
               }
             }
           }
@@ -5763,7 +5773,7 @@ Panel {
                 anchors.fill: parent; anchors.margins: Style.space(6)
                 color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body
                 text: root.tagModalInputText
-                onTextChanged: root.tagModalInputText = text
+                onTextEdited: root.tagModalInputText = text
                 onAccepted: {
                   root.addTagToClipModal(text)
                   text = ""
