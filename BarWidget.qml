@@ -58,16 +58,16 @@ BarWidget {
   IpcHandler {
     target: "reclip"
 
-    function open(payloadJson: string): void {
+    function open(payloadJson: string) {
       var p = {}
       try { if (payloadJson) p = JSON.parse(payloadJson) } catch (e) {}
       root.open(p)
     }
-    function close(): void { root.close() }
-    function show(payloadJson: string): void { open(payloadJson) }
-    function hide(): void { root.close() }
-    function toggle(): void { root.toggle() }
-    function colorStudio(subTabStr: string): void {
+    function close() { root.close() }
+    function show(payloadJson: string) { open(payloadJson) }
+    function hide() { root.close() }
+    function toggle() { root.toggle() }
+    function colorStudio(subTabStr: string) {
       var sTab = 0
       if (subTabStr) {
         var n = parseInt(subTabStr)
@@ -75,7 +75,7 @@ BarWidget {
       }
       root.open({ tab: 3, subTab: sTab })
     }
-    function incognito(): void {
+    function incognito() {
       if (panelLoader.item) panelLoader.item.toggleIncognito()
     }
   }

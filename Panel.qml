@@ -11,6 +11,8 @@ import "lib/SnippetLibrary.js" as SnippetLib
 import "lib/SyntaxHighlight.js" as Syntax
 import "lib/ColorStudio.js" as ColorStudio
 import "lib/TimelineStudio.js" as TimelineStudio
+import "lib/TemplateEngine.js" as TemplateEngine
+import "lib/AutomationRules.js" as AutomationRules
 
 Panel {
   id: root
@@ -32,6 +34,8 @@ Panel {
   property string captureScript: pluginDir + "/capture.sh"
   property string ocrScript: pluginDir + "/ocr-capture.sh"
   property string settingsPath: stateDir + "/settings.json"
+  property string templatesPath: stateDir + "/templates.json"
+  property string automationsPath: stateDir + "/automations.json"
 
   property bool incognito: false
   // Tabs: 0: History, 1: Pinned/Favs, 2: Snippets, 3: Color Studio, 4: Queue
@@ -43,9 +47,31 @@ Panel {
 
   // Settings & Privacy State
   property bool settingsOpen: false
+  property int settingsActiveSection: 0 // 0: Retention, 1: Privacy, 2: Automations, 3: Templates, 4: Backup
   property int settingsMaxClips: 500
   property int settingsRetainDays: 30
   property bool settingsIgnoreSensitive: true
+
+  // Automations & Regex Rules State
+  property var automationRules: []
+  property bool automationsLoaded: false
+  property string newRuleName: ""
+  property string newRulePattern: ""
+  property string newRuleAction: "tag"
+  property string newRulePayload: ""
+
+  // Dynamic Templates State
+  property var templates: []
+  property bool templatesLoaded: false
+  property string tplEditId: ""
+  property string tplEditName: ""
+  property string tplEditLang: "markdown"
+  property string tplEditContent: ""
+  property bool tplEditorVisible: false
+  property bool snippetTemplatePickerOpen: false
+
+  // Image Annotation Studio State
+  property bool imageEditorOpen: false
 
   // Image Zoom Modal State
   property bool imageZoomOpen: false
@@ -175,6 +201,9 @@ Panel {
     root.activeMenuClipIndex = -1
     if (payload && payload.tab !== undefined) root.activeTab = payload.tab
     if (payload && payload.subTab !== undefined) root.colorStudioSubTab = payload.subTab
+    if (payload && payload.settingsOpen !== undefined) root.settingsOpen = payload.settingsOpen
+    if (payload && payload.settingsSection !== undefined) root.settingsActiveSection = payload.settingsSection
+    if (payload && payload.annotatePath) root.openImageAnnotation(payload.annotatePath)
     root.rebuildDisplay()
     if (root.activeTab !== 3) {
       Qt.callLater(function() { searchInput.forceActiveFocus() })
@@ -239,6 +268,25 @@ Panel {
     if (root.incognito) return
     var normalized = ClipboardHistory.normalizeEntry(entry)
     if (!normalized) return
+
+    // Evaluate Automation & Regex Rules
+    if (normalized.type === "text" && normalized.text) {
+      var autoResult = AutomationRules.evaluateClip(root.automationRules, normalized.text, normalized.tags)
+      if (autoResult.ignored) {
+        console.log("ReClip: Clip dropped by privacy/ignore rule: " + autoResult.reason)
+        return
+      }
+      normalized.tags = autoResult.tags
+      for (var a = 0; a < autoResult.actions.length; a++) {
+        var act = autoResult.actions[a]
+        if (act.type === "open_url" && act.url) {
+          root.openUrlInBrowser(act.url)
+        } else if (act.type === "notify" && act.message) {
+          Quickshell.execDetached(["notify-send", "-a", "ReClip", act.title || "ReClip Automation", act.message])
+        }
+      }
+    }
+
     root.history = ClipboardHistory.addEntry(root.history, normalized, root.historyLimit)
     root.saveHistory()
     if (normalized.type === "text" && ClipboardHistory.isHexColor(normalized.text)) {
@@ -263,6 +311,29 @@ Panel {
       snippets: root.snippets,
       folders: root.folders
     }, null, 2) + "\n")
+  }
+
+  function loadTemplates(raw) {
+    root.templates = TemplateEngine.parseTemplates(raw)
+    root.templatesLoaded = true
+  }
+
+  function saveTemplates() {
+    templatesFile.setText(JSON.stringify(root.templates, null, 2) + "\n")
+  }
+
+  function loadAutomations(raw) {
+    root.automationRules = AutomationRules.parseRules(raw)
+    root.automationsLoaded = true
+  }
+
+  function saveAutomations() {
+    automationsFile.setText(JSON.stringify(root.automationRules, null, 2) + "\n")
+  }
+
+  function openImageAnnotation(path) {
+    if (!path) return
+    imageEditorModal.open(path)
   }
 
   function selectColor(hex) {
@@ -774,7 +845,8 @@ Panel {
     if (row.entryType === "image" && row.path) {
       Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-clipboard-paste-file", row.mime || "image/png", row.path])
     } else if (row.fullText) {
-      Quickshell.execDetached(["bash", "-c", "printf '%s' " + Util.shellQuote(row.fullText) + " | wl-copy && sleep 0.15 && wtype -M shift -k Insert -m shift"])
+      var textToPaste = row.itemType === "snippet" ? TemplateEngine.expand(row.fullText, {}, "") : row.fullText
+      Quickshell.execDetached(["bash", "-c", "printf '%s' " + Util.shellQuote(textToPaste) + " | wl-copy && sleep 0.15 && wtype -M shift -k Insert -m shift"])
     }
   }
 
@@ -783,7 +855,8 @@ Panel {
     if (row.entryType === "image" && row.path) {
       Quickshell.execDetached(["bash", "-c", "wl-copy --type " + Util.shellQuote(row.mime || "image/png") + " < " + Util.shellQuote(row.path)])
     } else if (row.fullText) {
-      root.copyText(row.fullText)
+      var textToCopy = row.itemType === "snippet" ? TemplateEngine.expand(row.fullText, {}, "") : row.fullText
+      root.copyText(textToCopy)
     }
   }
 
@@ -946,6 +1019,28 @@ Panel {
     printErrors: false
     onLoaded: root.loadSavedPalettes(text())
     onLoadFailed: root.loadSavedPalettes("[]")
+    onFileChanged: reload()
+  }
+
+  FileView {
+    id: templatesFile
+    path: root.templatesPath
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    onLoaded: root.loadTemplates(text())
+    onLoadFailed: root.loadTemplates("[]")
+    onFileChanged: reload()
+  }
+
+  FileView {
+    id: automationsFile
+    path: root.automationsPath
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    onLoaded: root.loadAutomations(text())
+    onLoadFailed: root.loadAutomations("[]")
     onFileChanged: reload()
   }
 
@@ -2104,6 +2199,30 @@ Panel {
               spacing: Style.space(4)
               Text { text: "󰐃"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
               Text { text: "Pinned & Starred"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+            }
+          }
+
+          // TAB 2: Templates Picker Button
+          Rectangle {
+            visible: root.activeTab === 2
+            height: Style.space(26)
+            width: tplBtnContent.implicitWidth + Style.space(16)
+            radius: Style.space(5)
+            color: Util.alpha(Color.accent, 0.2)
+            border.width: 1
+            border.color: Color.accent
+            anchors.verticalCenter: parent.verticalCenter
+
+            Row {
+              id: tplBtnContent
+              anchors.centerIn: parent
+              spacing: Style.space(4)
+              Text { text: "󰏫"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+              Text { text: "Templates"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: root.snippetTemplatePickerOpen = true
             }
           }
 
@@ -4464,6 +4583,28 @@ Panel {
               }
             }
 
+            // Image: Annotate & Edit
+            Rectangle {
+              visible: menuDropdownCard.clipRow && menuDropdownCard.clipRow.entryType === "image"
+              width: parent.width; height: Style.space(28); radius: Style.space(5)
+              color: annotateItemMouse.containsMouse ? Util.alpha(Color.accent, 0.15) : "transparent"
+              Row {
+                anchors.fill: parent; anchors.leftMargin: Style.space(8); anchors.rightMargin: Style.space(8)
+                spacing: Style.space(8)
+                Text { text: "󰏫"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "Annotate Image…"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                id: annotateItemMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  var p = menuDropdownCard.clipRow ? menuDropdownCard.clipRow.path : ""
+                  root.activeMenuClipIndex = -1
+                  if (p) root.openImageAnnotation(p)
+                }
+              }
+            }
+
             // Tags: Manage Tags / Collections
             Rectangle {
               visible: menuDropdownCard.isHistoryClip
@@ -4936,9 +5077,52 @@ Panel {
             }
           }
 
+          // Dynamic Variable Insert Helpers
+          Row {
+            spacing: Style.space(6)
+            Text {
+              text: "Insert Variable:"
+              color: Util.alpha(root.fg, 0.6)
+              font.family: root.fontFamily
+              font.pixelSize: Style.space(9)
+              anchors.verticalCenter: parent.verticalCenter
+            }
+            Repeater {
+              model: ["{{date}}", "{{time}}", "{{datetime}}", "{{clipboard}}", "{{uuid}}"]
+              Rectangle {
+                required property string modelData
+                height: Style.space(20)
+                width: varPillTxt.implicitWidth + Style.space(12)
+                radius: Style.space(4)
+                color: Util.alpha(Color.accent, 0.15)
+                border.width: 1
+                border.color: Util.alpha(Color.accent, 0.4)
+
+                Text {
+                  id: varPillTxt
+                  text: parent.modelData
+                  color: Color.accent
+                  font.family: "monospace"
+                  font.pixelSize: Style.space(8)
+                  font.bold: true
+                  anchors.centerIn: parent
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    edBody.insert(edBody.cursorPosition, parent.modelData)
+                    root.snippetEditContent = edBody.text
+                  }
+                }
+              }
+            }
+          }
+
           Rectangle {
             width: parent.width
-            height: parent.height - Style.space(130)
+            height: parent.height - Style.space(155)
             radius: Style.space(4)
             color: Util.alpha(root.fg, 0.05); border.width: 1; border.color: Util.alpha(root.fg, 0.12)
             Flickable {
@@ -5316,6 +5500,27 @@ Panel {
             }
           }
 
+          // Annotate Image Studio
+          Rectangle {
+            height: Style.space(28); width: annotateZoomTxt.implicitWidth + Style.space(16); radius: Style.space(14)
+            color: Util.alpha(Color.accent, 0.2)
+            border.width: 1; border.color: Color.accent
+            Row {
+              id: annotateZoomTxt
+              anchors.centerIn: parent; spacing: Style.space(4)
+              Text { text: "󰏫"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+              Text { text: "Annotate Image"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+            }
+            MouseArea {
+              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                var p = root.imageZoomPath
+                root.closeImageZoom()
+                if (p) root.openImageAnnotation(p)
+              }
+            }
+          }
+
           // Open in Viewer
           Rectangle {
             height: Style.space(28); width: openExtTxt.implicitWidth + Style.space(14); radius: Style.space(14)
@@ -5393,10 +5598,58 @@ Panel {
             }
           }
 
+          // Section Navigation Tabs
+          Row {
+            spacing: Style.space(6)
+            Repeater {
+              model: [
+                { id: 0, icon: "📋", name: "Retention" },
+                { id: 1, icon: "🛡", name: "Privacy" },
+                { id: 2, icon: "⚡", name: "Automations" },
+                { id: 3, icon: "📑", name: "Templates" },
+                { id: 4, icon: "💾", name: "Backup" }
+              ]
+              Rectangle {
+                required property var modelData
+                height: Style.space(26)
+                width: secTabTxt.implicitWidth + Style.space(16)
+                radius: Style.space(5)
+                color: root.settingsActiveSection === modelData.id ? Color.accent : Util.alpha(root.fg, 0.07)
+                border.width: 1
+                border.color: root.settingsActiveSection === modelData.id ? Color.accent : Util.alpha(root.fg, 0.1)
+
+                Row {
+                  id: secTabTxt
+                  anchors.centerIn: parent
+                  spacing: Style.space(4)
+                  Text {
+                    text: parent.parent.modelData.icon
+                    font.pixelSize: Style.space(9)
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+                  Text {
+                    text: parent.parent.modelData.name
+                    color: root.settingsActiveSection === parent.parent.modelData.id ? "#FFFFFF" : root.fg
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.space(9)
+                    font.bold: root.settingsActiveSection === parent.parent.modelData.id
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.settingsActiveSection = parent.modelData.id
+                }
+              }
+            }
+          }
+
           // Scrollable Settings Body
           Flickable {
             width: parent.width
-            height: parent.height - Style.space(90)
+            height: parent.height - Style.space(130)
             contentWidth: width
             contentHeight: settingsBodyCol.implicitHeight + Style.space(20)
             clip: true
@@ -5409,6 +5662,7 @@ Panel {
 
               // SECTION 1: CLIPBOARD HISTORY & RETENTION LIMITS
               Rectangle {
+                visible: root.settingsActiveSection === 0
                 width: parent.width
                 height: sec1Col.implicitHeight + Style.space(20)
                 radius: Style.space(8)
@@ -5515,6 +5769,7 @@ Panel {
 
               // SECTION 2: PRIVACY & SECURITY
               Rectangle {
+                visible: root.settingsActiveSection === 1
                 width: parent.width
                 height: sec2Col.implicitHeight + Style.space(20)
                 radius: Style.space(8)
@@ -5603,8 +5858,614 @@ Panel {
                 }
               }
 
-              // SECTION 3: BACKUP & EXPORT
+              // SECTION 3: AUTOMATIONS & REGEX RULES
               Rectangle {
+                visible: root.settingsActiveSection === 2
+                width: parent.width
+                height: secAutoCol.implicitHeight + Style.space(20)
+                radius: Style.space(8)
+                color: Util.alpha(root.fg, 0.03)
+                border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+
+                Column {
+                  id: secAutoCol
+                  anchors.fill: parent; anchors.margins: Style.space(12)
+                  spacing: Style.space(12)
+
+                  Column {
+                    width: parent.width; spacing: 2
+                    Text { text: "⚡ Automations & Regex Pattern Rules"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                    Text { text: "Automatically trigger actions (tag clips, open URLs, notify, or ignore sensitive data) when copied text matches a pattern."; color: Util.alpha(root.fg, 0.6); font.pixelSize: Style.space(8) }
+                  }
+
+                  // Quick Presets
+                  Column {
+                    width: parent.width; spacing: Style.space(4)
+                    Text { text: "Quick presets:"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(8) }
+                    Flow {
+                      width: parent.width; spacing: Style.space(6)
+                      Repeater {
+                        model: [
+                          { label: "+ Password Filter", pattern: "^(?:password|secret|passwd|api[_-]?key)\\s*[:=]\\s*.+", act: "ignore", payload: "", name: "Privacy: Ignore Passwords" },
+                          { label: "+ Credit Card Filter", pattern: "\\b(?:\\d{4}[- ]?){3}\\d{4}\\b", act: "ignore", payload: "", name: "Privacy: Ignore Credit Cards" },
+                          { label: "+ Email Auto-tag", pattern: "\\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\b", act: "tag", payload: "email", name: "Auto-tag Email" },
+                          { label: "+ JWT Token Auto-tag", pattern: "eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}", act: "tag", payload: "jwt", name: "Auto-tag JWT" },
+                          { label: "+ IPv4 Auto-tag", pattern: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b", act: "tag", payload: "ip", name: "Auto-tag IP" },
+                          { label: "+ GitHub Issue", pattern: "(?:GH-|gh-|#)(\\d{1,6})", act: "open_url", payload: "https://github.com/issues?q=$1", name: "Open GitHub Issue" }
+                        ]
+                        Rectangle {
+                          required property var modelData
+                          height: Style.space(22); width: presetChipTxt.implicitWidth + Style.space(12); radius: Style.space(4)
+                          color: Util.alpha(root.fg, 0.08)
+                          Text {
+                            id: presetChipTxt
+                            text: parent.modelData.label
+                            color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(8)
+                            anchors.centerIn: parent
+                          }
+                          MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.newRuleName = parent.modelData.name
+                              root.newRulePattern = parent.modelData.pattern
+                              root.newRuleAction = parent.modelData.act
+                              root.newRulePayload = parent.modelData.payload
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  // New Rule Form Card
+                  Rectangle {
+                    width: parent.width; height: newRuleFormCol.implicitHeight + Style.space(16); radius: Style.space(6)
+                    color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.1)
+
+                    Column {
+                      id: newRuleFormCol
+                      anchors.fill: parent; anchors.margins: Style.space(10); spacing: Style.space(8)
+
+                      Text { text: "Add New Automation Rule"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true }
+
+                      // Rule Name
+                      Rectangle {
+                        width: parent.width; height: Style.space(28); radius: Style.space(4)
+                        color: Util.alpha(root.fg, 0.06); border.width: 1; border.color: ruleNameIn.activeFocus ? Color.accent : Util.alpha(root.fg, 0.12)
+                        TextInput {
+                          id: ruleNameIn
+                          anchors.fill: parent; anchors.margins: Style.space(4)
+                          color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(9)
+                          text: root.newRuleName
+                          onTextEdited: root.newRuleName = text
+                          Text {
+                            visible: ruleNameIn.text === "" && !ruleNameIn.activeFocus
+                            text: "Rule name (e.g. GitHub Issue Opener)"
+                            color: Util.alpha(root.fg, 0.4); font.family: root.fontFamily; font.pixelSize: Style.space(8)
+                            anchors.verticalCenter: parent.verticalCenter
+                          }
+                        }
+                      }
+
+                      // Pattern
+                      Rectangle {
+                        width: parent.width; height: Style.space(28); radius: Style.space(4)
+                        color: Util.alpha(root.fg, 0.06); border.width: 1; border.color: rulePatternIn.activeFocus ? Color.accent : Util.alpha(root.fg, 0.12)
+                        TextInput {
+                          id: rulePatternIn
+                          anchors.fill: parent; anchors.margins: Style.space(4)
+                          color: root.fg; font.family: "monospace"; font.pixelSize: Style.space(9)
+                          text: root.newRulePattern
+                          onTextEdited: root.newRulePattern = text
+                          Text {
+                            visible: rulePatternIn.text === "" && !rulePatternIn.activeFocus
+                            text: "Regex pattern (e.g. (?:GH-|#)(\\d+))"
+                            color: Util.alpha(root.fg, 0.4); font.family: "monospace"; font.pixelSize: Style.space(8)
+                            anchors.verticalCenter: parent.verticalCenter
+                          }
+                        }
+                      }
+
+                      // Action Type Selector + Payload
+                      Row {
+                        width: parent.width; spacing: Style.space(8)
+
+                        // Action selector
+                        Row {
+                          spacing: Style.space(4)
+                          Repeater {
+                            model: [
+                              { id: "tag", label: "Tag" },
+                              { id: "open_url", label: "Open URL" },
+                              { id: "notify", label: "Notify" },
+                              { id: "ignore", label: "Ignore" }
+                            ]
+                            Rectangle {
+                              required property var modelData
+                              height: Style.space(26); width: actBtnTxt.implicitWidth + Style.space(12); radius: Style.space(4)
+                              color: root.newRuleAction === modelData.id ? Color.accent : Util.alpha(root.fg, 0.08)
+                              border.width: 1
+                              border.color: root.newRuleAction === modelData.id ? Color.accent : Util.alpha(root.fg, 0.12)
+                              Text {
+                                id: actBtnTxt
+                                text: parent.modelData.label
+                                color: root.newRuleAction === parent.modelData.id ? "#FFFFFF" : root.fg
+                                font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true
+                                anchors.centerIn: parent
+                              }
+                              MouseArea {
+                                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                onClicked: root.newRuleAction = parent.modelData.id
+                              }
+                            }
+                          }
+                        }
+
+                        // Payload input
+                        Rectangle {
+                          visible: root.newRuleAction !== "ignore"
+                          width: parent.width - Style.space(240); height: Style.space(26); radius: Style.space(4)
+                          color: Util.alpha(root.fg, 0.06); border.width: 1; border.color: rulePayloadIn.activeFocus ? Color.accent : Util.alpha(root.fg, 0.12)
+                          TextInput {
+                            id: rulePayloadIn
+                            anchors.fill: parent; anchors.margins: Style.space(4)
+                            color: root.fg; font.family: root.newRuleAction === "open_url" ? "monospace" : root.fontFamily; font.pixelSize: Style.space(8)
+                            text: root.newRulePayload
+                            onTextEdited: root.newRulePayload = text
+                            Text {
+                              visible: rulePayloadIn.text === "" && !rulePayloadIn.activeFocus
+                              text: root.newRuleAction === "open_url" ? "Target URL (e.g. https://github.com/issues/$1)" : (root.newRuleAction === "tag" ? "Tag name (e.g. email)" : "Notification text ($1, $2)")
+                              color: Util.alpha(root.fg, 0.4); font.family: root.fontFamily; font.pixelSize: Style.space(8)
+                              anchors.verticalCenter: parent.verticalCenter
+                            }
+                          }
+                        }
+
+                        Item { Layout.fillWidth: true }
+
+                        // Add Rule Button
+                        Rectangle {
+                          height: Style.space(26); width: addRuleTxt.implicitWidth + Style.space(16); radius: Style.space(4)
+                          color: Color.accent
+                          Row {
+                            id: addRuleTxt
+                            anchors.centerIn: parent; spacing: Style.space(4)
+                            Text { text: "+"; color: "#FFFFFF"; font.pixelSize: Style.font.caption; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: "Add Rule"; color: "#FFFFFF"; font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                          }
+                          MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              if (!root.newRulePattern.trim()) return
+                              root.automationRules = AutomationRules.addRule(root.automationRules, {
+                                name: root.newRuleName || "Rule #" + (root.automationRules.length + 1),
+                                pattern: root.newRulePattern,
+                                action: root.newRuleAction,
+                                payload: root.newRulePayload,
+                                enabled: true
+                              })
+                              root.saveAutomations()
+                              root.newRuleName = ""
+                              root.newRulePattern = ""
+                              root.newRulePayload = ""
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  // Existing Rules List
+                  Column {
+                    width: parent.width; spacing: Style.space(6)
+                    Text { text: "Active Rules (" + root.automationRules.length + "):"; color: Util.alpha(root.fg, 0.7); font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true }
+
+                    Repeater {
+                      model: root.automationRules
+                      Rectangle {
+                        id: ruleRowDelegate
+                        required property var modelData
+                        readonly property var ruleItem: modelData || {}
+                        width: parent.width; height: Style.space(44); radius: Style.space(6)
+                        color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+
+                        Row {
+                          anchors.fill: parent; anchors.margins: Style.space(8); spacing: Style.space(10)
+
+                          // Action Badge
+                          Rectangle {
+                            height: Style.space(20); width: ruleBadgeTxt.implicitWidth + Style.space(10); radius: Style.space(3)
+                            color: ruleRowDelegate.ruleItem.action === "ignore" ? Util.alpha(Color.urgent, 0.2) : Util.alpha(Color.accent, 0.2)
+                            border.width: 1
+                            border.color: ruleRowDelegate.ruleItem.action === "ignore" ? Color.urgent : Color.accent
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text {
+                              id: ruleBadgeTxt
+                              text: (ruleRowDelegate.ruleItem.action || "").toUpperCase().replace("_", " ")
+                              color: ruleRowDelegate.ruleItem.action === "ignore" ? Color.urgent : Color.accent
+                              font.family: root.fontFamily; font.pixelSize: Style.space(7); font.bold: true
+                              anchors.centerIn: parent
+                            }
+                          }
+
+                          // Name & Pattern
+                          Column {
+                            anchors.verticalCenter: parent.verticalCenter; spacing: 1
+                            Row {
+                              spacing: Style.space(6)
+                              Text {
+                                text: ruleRowDelegate.ruleItem.name || ""
+                                color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true
+                              }
+                              Text {
+                                visible: !!ruleRowDelegate.ruleItem.payload
+                                text: "→ " + (ruleRowDelegate.ruleItem.payload || "")
+                                color: Util.alpha(root.fg, 0.6); font.family: "monospace"; font.pixelSize: Style.space(8)
+                              }
+                            }
+                            Text {
+                              text: ruleRowDelegate.ruleItem.pattern || ""
+                              color: Color.accent; font.family: "monospace"; font.pixelSize: Style.space(8)
+                            }
+                          }
+
+                          Item { Layout.fillWidth: true }
+
+                          // Enable/Disable Toggle
+                          Rectangle {
+                            height: Style.space(22); width: Style.space(56); radius: Style.space(11)
+                            color: ruleRowDelegate.ruleItem.enabled ? Color.accent : Util.alpha(root.fg, 0.12)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text {
+                              text: ruleRowDelegate.ruleItem.enabled ? "Enabled" : "Off"
+                              color: ruleRowDelegate.ruleItem.enabled ? "#FFFFFF" : root.fg
+                              font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true
+                              anchors.centerIn: parent
+                            }
+                            MouseArea {
+                              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.automationRules = AutomationRules.toggleRule(root.automationRules, ruleRowDelegate.ruleItem.id)
+                                root.saveAutomations()
+                              }
+                            }
+                          }
+
+                          // Delete Rule Button
+                          Rectangle {
+                            height: Style.space(22); width: Style.space(22); radius: Style.space(4)
+                            color: Util.alpha(Color.urgent, 0.12)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "🗑"; font.pixelSize: Style.space(9); anchors.centerIn: parent }
+                            MouseArea {
+                              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.automationRules = AutomationRules.deleteRule(root.automationRules, ruleRowDelegate.ruleItem.id)
+                                root.saveAutomations()
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                    Text {
+                      visible: root.automationRules.length === 0
+                      text: "No automation rules defined yet. Use quick presets above or add a custom rule."
+                      color: Util.alpha(root.fg, 0.4); font.family: root.fontFamily; font.pixelSize: Style.space(8)
+                    }
+                  }
+                }
+              }
+
+              // SECTION 4: DYNAMIC TEMPLATES & SNIPPET VARIABLES
+              Rectangle {
+                visible: root.settingsActiveSection === 3
+                width: parent.width
+                height: secTplCol.implicitHeight + Style.space(20)
+                radius: Style.space(8)
+                color: Util.alpha(root.fg, 0.03)
+                border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+
+                Column {
+                  id: secTplCol
+                  anchors.fill: parent; anchors.margins: Style.space(12)
+                  spacing: Style.space(12)
+
+                  Column {
+                    width: parent.width; spacing: 2
+                    Text { text: "📑 Dynamic Templates & Snippet Variables"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                    Text { text: "Reusable templates with dynamic placeholders like {{date}}, {{time}}, {{clipboard}}, and {{uuid}}."; color: Util.alpha(root.fg, 0.6); font.pixelSize: Style.space(8) }
+                  }
+
+                  // Variable Helper Pills Row
+                  Column {
+                    width: parent.width; spacing: Style.space(4)
+                    Text { text: "Click variable to insert into template:"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(8) }
+                    Flow {
+                      width: parent.width; spacing: Style.space(6)
+                      Repeater {
+                        model: ["{{date}}", "{{time}}", "{{datetime}}", "{{clipboard}}", "{{uuid}}", "{{timestamp}}", "{{year}}", "{{month}}"]
+                        Rectangle {
+                          required property string modelData
+                          height: Style.space(22); width: varChipTxt.implicitWidth + Style.space(12); radius: Style.space(4)
+                          color: Util.alpha(Color.accent, 0.15); border.width: 1; border.color: Util.alpha(Color.accent, 0.4)
+                          Text {
+                            id: varChipTxt
+                            text: parent.modelData
+                            color: Color.accent; font.family: "monospace"; font.pixelSize: Style.space(8); font.bold: true
+                            anchors.centerIn: parent
+                          }
+                          MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              tplContentIn.insert(tplContentIn.cursorPosition, parent.modelData)
+                              root.tplEditContent = tplContentIn.text
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  // Template Editor Form Card
+                  Rectangle {
+                    width: parent.width; height: tplFormCol.implicitHeight + Style.space(16); radius: Style.space(6)
+                    color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.1)
+
+                    Column {
+                      id: tplFormCol
+                      anchors.fill: parent; anchors.margins: Style.space(10); spacing: Style.space(8)
+
+                      Text {
+                        text: root.tplEditId !== "" ? "Edit Template" : "New Template"
+                        color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true
+                      }
+
+                      Row {
+                        width: parent.width; spacing: Style.space(8)
+                        Rectangle {
+                          width: parent.width - Style.space(120); height: Style.space(28); radius: Style.space(4)
+                          color: Util.alpha(root.fg, 0.06); border.width: 1; border.color: tplNameIn.activeFocus ? Color.accent : Util.alpha(root.fg, 0.12)
+                          TextInput {
+                            id: tplNameIn
+                            anchors.fill: parent; anchors.margins: Style.space(4)
+                            color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(9)
+                            text: root.tplEditName
+                            onTextEdited: root.tplEditName = text
+                            Text {
+                              visible: tplNameIn.text === "" && !tplNameIn.activeFocus
+                              text: "Template Name (e.g. Meeting Notes)"
+                              color: Util.alpha(root.fg, 0.4); font.family: root.fontFamily; font.pixelSize: Style.space(8)
+                              anchors.verticalCenter: parent.verticalCenter
+                            }
+                          }
+                        }
+
+                        Rectangle {
+                          width: Style.space(110); height: Style.space(28); radius: Style.space(4)
+                          color: Util.alpha(root.fg, 0.06); border.width: 1; border.color: tplLangIn.activeFocus ? Color.accent : Util.alpha(root.fg, 0.12)
+                          TextInput {
+                            id: tplLangIn
+                            anchors.fill: parent; anchors.margins: Style.space(4)
+                            color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(9)
+                            text: root.tplEditLang
+                            onTextEdited: root.tplEditLang = text
+                            Text {
+                              visible: tplLangIn.text === "" && !tplLangIn.activeFocus
+                              text: "Language"
+                              color: Util.alpha(root.fg, 0.4); font.family: root.fontFamily; font.pixelSize: Style.space(8)
+                              anchors.verticalCenter: parent.verticalCenter
+                            }
+                          }
+                        }
+                      }
+
+                      // Content
+                      Rectangle {
+                        width: parent.width; height: Style.space(80); radius: Style.space(4)
+                        color: Util.alpha(root.fg, 0.06); border.width: 1; border.color: Util.alpha(root.fg, 0.12)
+                        Flickable {
+                          anchors.fill: parent; anchors.margins: Style.space(4); contentWidth: width; clip: true
+                          TextEdit {
+                            id: tplContentIn
+                            width: parent.width
+                            color: root.fg; font.family: "monospace"; font.pixelSize: Style.space(8)
+                            wrapMode: TextEdit.Wrap
+                            text: root.tplEditContent
+                            onTextEdited: root.tplEditContent = text
+                          }
+                        }
+                      }
+
+                      Row {
+                        spacing: Style.space(8)
+                        Rectangle {
+                          height: Style.space(26); width: saveTplTxt.implicitWidth + Style.space(16); radius: Style.space(4)
+                          color: Color.accent
+                          Row {
+                            id: saveTplTxt
+                            anchors.centerIn: parent; spacing: Style.space(4)
+                            Text { text: root.tplEditId !== "" ? "Update" : "Add Template"; color: "#FFFFFF"; font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                          }
+                          MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              if (!root.tplEditName.trim() || !root.tplEditContent.trim()) return
+                              if (root.tplEditId !== "") {
+                                root.templates = TemplateEngine.updateTemplate(root.templates, root.tplEditId, {
+                                  name: root.tplEditName,
+                                  language: root.tplEditLang,
+                                  content: root.tplEditContent
+                                })
+                              } else {
+                                root.templates = TemplateEngine.addTemplate(root.templates, {
+                                  name: root.tplEditName,
+                                  language: root.tplEditLang,
+                                  content: root.tplEditContent
+                                })
+                              }
+                              root.saveTemplates()
+                              root.tplEditId = ""
+                              root.tplEditName = ""
+                              root.tplEditContent = ""
+                            }
+                          }
+                        }
+
+                        Rectangle {
+                          visible: root.tplEditId !== ""
+                          height: Style.space(26); width: Style.space(60); radius: Style.space(4)
+                          color: Util.alpha(root.fg, 0.08)
+                          Text { text: "Cancel"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                          MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.tplEditId = ""
+                              root.tplEditName = ""
+                              root.tplEditContent = ""
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  // Existing Templates List
+                  Column {
+                    width: parent.width; spacing: Style.space(6)
+                    Text { text: "Available Templates (" + root.templates.length + "):"; color: Util.alpha(root.fg, 0.7); font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true }
+
+                    Repeater {
+                      model: root.templates
+                      Rectangle {
+                        id: tplRowDelegate
+                        required property var modelData
+                        readonly property var tplItem: modelData || {}
+                        width: parent.width; height: Style.space(52); radius: Style.space(6)
+                        color: Util.alpha(root.fg, 0.04); border.width: 1; border.color: Util.alpha(root.fg, 0.08)
+
+                        Row {
+                          anchors.fill: parent; anchors.margins: Style.space(8); spacing: Style.space(10)
+
+                          Column {
+                            anchors.verticalCenter: parent.verticalCenter; spacing: 2
+                            Row {
+                              spacing: Style.space(6)
+                              Text {
+                                text: tplRowDelegate.tplItem.name || ""
+                                color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true
+                              }
+                              Rectangle {
+                                height: Style.space(14); width: tplBadgeTxt.implicitWidth + Style.space(6); radius: Style.space(3)
+                                color: Util.alpha(Color.accent, 0.15)
+                                anchors.verticalCenter: parent.verticalCenter
+                                Text {
+                                  id: tplBadgeTxt
+                                  text: tplRowDelegate.tplItem.language || "text"
+                                  color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(7); font.bold: true
+                                  anchors.centerIn: parent
+                                }
+                              }
+                            }
+                            Text {
+                              text: (tplRowDelegate.tplItem.content || "").replace(/\n/g, " ")
+                              color: Util.alpha(root.fg, 0.5); font.family: "monospace"; font.pixelSize: Style.space(8)
+                              elide: Text.ElideRight; width: Style.space(260)
+                            }
+                          }
+
+                          Item { Layout.fillWidth: true }
+
+                          // Copy Expanded Button
+                          Rectangle {
+                            height: Style.space(24); width: copyTplTxt.implicitWidth + Style.space(12); radius: Style.space(4)
+                            color: Util.alpha(Color.accent, 0.15); border.width: 1; border.color: Color.accent
+                            anchors.verticalCenter: parent.verticalCenter
+                            Row {
+                              id: copyTplTxt
+                              anchors.centerIn: parent; spacing: Style.space(3)
+                              Text { text: "󰆏"; color: Color.accent; font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
+                              Text { text: "Copy Expanded"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                            }
+                            MouseArea {
+                              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                var expanded = TemplateEngine.expand(tplRowDelegate.tplItem.content || "", {}, "")
+                                root.copyText(expanded)
+                              }
+                            }
+                          }
+
+                          // Instantiate as Snippet
+                          Rectangle {
+                            height: Style.space(24); width: makeSnipTxt.implicitWidth + Style.space(10); radius: Style.space(4)
+                            color: Util.alpha(root.fg, 0.08)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text {
+                              id: makeSnipTxt
+                              text: "󰅩 +Snippet"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(8)
+                              anchors.centerIn: parent
+                            }
+                            MouseArea {
+                              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                var t = tplRowDelegate.tplItem
+                                root.snippets = SnippetLib.addSnippet(root.snippets, {
+                                  title: t.name,
+                                  language: t.language || "text",
+                                  content: t.content,
+                                  folder: "Templates"
+                                })
+                                root.saveSnippets()
+                                root.rebuildDisplay()
+                                Quickshell.execDetached(["notify-send", "-a", "ReClip", "Snippet Created", "Added '" + t.name + "' to Snippets"])
+                              }
+                            }
+                          }
+
+                          // Edit Button
+                          Rectangle {
+                            height: Style.space(22); width: Style.space(22); radius: Style.space(4)
+                            color: Util.alpha(root.fg, 0.08)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "✏"; font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                            MouseArea {
+                              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                var t2 = tplRowDelegate.tplItem
+                                root.tplEditId = t2.id
+                                root.tplEditName = t2.name
+                                root.tplEditLang = t2.language || "markdown"
+                                root.tplEditContent = t2.content
+                              }
+                            }
+                          }
+
+                          // Delete Button
+                          Rectangle {
+                            height: Style.space(22); width: Style.space(22); radius: Style.space(4)
+                            color: Util.alpha(Color.urgent, 0.12)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "🗑"; font.pixelSize: Style.space(9); anchors.centerIn: parent }
+                            MouseArea {
+                              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.templates = TemplateEngine.deleteTemplate(root.templates, tplRowDelegate.tplItem.id)
+                                root.saveTemplates()
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+
+              // SECTION 5: BACKUP & EXPORT
+              Rectangle {
+                visible: root.settingsActiveSection === 4
                 width: parent.width
                 height: sec3Col.implicitHeight + Style.space(20)
                 radius: Style.space(8)
@@ -5638,8 +6499,9 @@ Panel {
                 }
               }
 
-              // SECTION 4: ABOUT & PARITY
+              // SECTION 6: ABOUT & PARITY
               Rectangle {
+                visible: root.settingsActiveSection === 4
                 width: parent.width
                 height: Style.space(48)
                 radius: Style.space(8)
@@ -5652,7 +6514,7 @@ Panel {
                   Text { text: "󰅍"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.heading; anchors.verticalCenter: parent.verticalCenter }
                   Column {
                     anchors.verticalCenter: parent.verticalCenter; spacing: 1
-                    Text { text: "ReClip Omarchy Edition • v1.0"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true }
+                    Text { text: "ReClip Omarchy Edition • v1.1"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true }
                     Text { text: "Native Quickshell integration with 100% ReClip feature parity"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.space(8) }
                   }
                 }
@@ -5846,6 +6708,211 @@ Panel {
             }
           }
         }
+      }
+    }
+
+    // ==========================================
+    // MODAL: SNIPPET TEMPLATE PICKER
+    // ==========================================
+    Rectangle {
+      id: snippetTemplatePickerModal
+      visible: root.snippetTemplatePickerOpen
+      anchors.fill: parent
+      color: root.scrimCol
+      radius: Style.cornerRadius
+      z: 95
+
+      Rectangle {
+        width: parent.width * 0.88
+        height: parent.height * 0.80
+        radius: Style.cornerRadius
+        color: root.bg
+        border.width: 1
+        border.color: root.borderCol
+        anchors.centerIn: parent
+
+        Column {
+          anchors.fill: parent
+          anchors.margins: Style.space(16)
+          spacing: Style.space(12)
+
+          // Header
+          Row {
+            width: parent.width
+            Row {
+              spacing: Style.space(8)
+              anchors.verticalCenter: parent.verticalCenter
+              Rectangle {
+                width: Style.space(28); height: Style.space(28); radius: Style.space(6)
+                color: Util.alpha(Color.accent, 0.2)
+                Text { text: "📑"; font.pixelSize: Style.font.body; anchors.centerIn: parent }
+              }
+              Column {
+                anchors.verticalCenter: parent.verticalCenter; spacing: 1
+                Text { text: "Templates Library"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.title; font.bold: true }
+                Text { text: "Instantiate templates or copy directly with expanded variables"; color: Util.alpha(root.fg, 0.5); font.pixelSize: Style.font.caption }
+              }
+            }
+
+            Item { Layout.fillWidth: true }
+
+            Rectangle {
+              width: Style.space(28); height: Style.space(28); radius: Style.space(6)
+              color: Util.alpha(root.fg, 0.08)
+              Text { text: "✕"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+              MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.snippetTemplatePickerOpen = false }
+            }
+          }
+
+          // Template Cards Scroll Area
+          Flickable {
+            width: parent.width
+            height: parent.height - Style.space(80)
+            contentWidth: width
+            contentHeight: tplPickerListCol.implicitHeight + Style.space(20)
+            clip: true
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+            Column {
+              id: tplPickerListCol
+              width: parent.width
+              spacing: Style.space(8)
+
+              Repeater {
+                model: root.templates
+                Rectangle {
+                  id: tplPickerRowDelegate
+                  required property var modelData
+                  readonly property var tplPickerItem: modelData || {}
+                  width: parent.width
+                  height: Style.space(64)
+                  radius: Style.space(6)
+                  color: Util.alpha(root.fg, 0.04)
+                  border.width: 1
+                  border.color: Util.alpha(root.fg, 0.08)
+
+                  Row {
+                    anchors.fill: parent
+                    anchors.margins: Style.space(10)
+                    spacing: Style.space(10)
+
+                    Column {
+                      anchors.verticalCenter: parent.verticalCenter
+                      spacing: 3
+                      Row {
+                        spacing: Style.space(6)
+                        Text {
+                          text: tplPickerRowDelegate.tplPickerItem.name || ""
+                          color: root.fg
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.space(10)
+                          font.bold: true
+                        }
+                        Rectangle {
+                          height: Style.space(14); width: tplBadgeTxt2.implicitWidth + Style.space(6); radius: Style.space(3)
+                          color: Util.alpha(Color.accent, 0.15)
+                          anchors.verticalCenter: parent.verticalCenter
+                          Text {
+                            id: tplBadgeTxt2
+                            text: tplPickerRowDelegate.tplPickerItem.language || "text"
+                            color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(7); font.bold: true
+                            anchors.centerIn: parent
+                          }
+                        }
+                      }
+                      Text {
+                        text: (tplPickerRowDelegate.tplPickerItem.content || "").replace(/\n/g, " ")
+                        color: Util.alpha(root.fg, 0.5)
+                        font.family: "monospace"
+                        font.pixelSize: Style.space(8)
+                        elide: Text.ElideRight
+                        width: Style.space(340)
+                      }
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    // Use as New Snippet
+                    Rectangle {
+                      height: Style.space(26); width: useTplTxt.implicitWidth + Style.space(14); radius: Style.space(4)
+                      color: Color.accent
+                      anchors.verticalCenter: parent.verticalCenter
+                      Row {
+                        id: useTplTxt
+                        anchors.centerIn: parent; spacing: Style.space(4)
+                        Text { text: "+"; color: "#fff"; font.pixelSize: Style.font.caption; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                        Text { text: "Use Template"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                      }
+                      MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          var t = tplPickerRowDelegate.tplPickerItem
+                          root.snippetTemplatePickerOpen = false
+                          root.snippetEditIndex = -1
+                          root.snippetEditTitle = t.name || ""
+                          root.snippetEditLang = t.language || "markdown"
+                          root.snippetEditFolder = "Templates"
+                          root.snippetEditContent = t.content || ""
+                          root.snippetEditOpen = true
+                        }
+                      }
+                    }
+
+                    // Copy Expanded
+                    Rectangle {
+                      height: Style.space(26); width: copyExpTxt.implicitWidth + Style.space(12); radius: Style.space(4)
+                      color: Util.alpha(root.fg, 0.08)
+                      anchors.verticalCenter: parent.verticalCenter
+                      Row {
+                        id: copyExpTxt
+                        anchors.centerIn: parent; spacing: Style.space(3)
+                        Text { text: "󰆏"; color: root.fg; font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
+                        Text { text: "Copy Expanded"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
+                      }
+                      MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          var expanded2 = TemplateEngine.expand(tplPickerRowDelegate.tplPickerItem.content || "", {}, "")
+                          root.copyText(expanded2)
+                          root.snippetTemplatePickerOpen = false
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // ==========================================
+    // MODAL: SCREENSHOT & IMAGE ANNOTATION STUDIO
+    // ==========================================
+    ImageEditorModal {
+      id: imageEditorModal
+      onSavedToClipboard: function(path) {
+        root.addClipboardEntry({
+          type: "image",
+          path: path,
+          mime: "image/png",
+          pinned: false,
+          favorite: false,
+          capturedAt: new Date().toISOString(),
+          tags: ["annotated"]
+        })
+      }
+      onSavedToHistory: function(path) {
+        root.addClipboardEntry({
+          type: "image",
+          path: path,
+          mime: "image/png",
+          pinned: false,
+          favorite: false,
+          capturedAt: new Date().toISOString(),
+          tags: ["annotated"]
+        })
       }
     }
   }
