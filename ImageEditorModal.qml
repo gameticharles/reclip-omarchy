@@ -36,7 +36,9 @@ Rectangle {
   // Properties
   property string imagePath: ""
   property string originalImagePath: ""
-  property string currentTool: "pan" // "pan", "pen", "highlighter", "arrow", "rect", "circle", "line", "blur", "text", "stamp", "eraser", "crop", "block_highlight", "pixelate"
+  property string currentTool: "select" // "select", "pan", "pen", "highlighter", "arrow", "rect", "circle", "line", "blur", "text", "stamp", "eraser", "crop", "block_highlight", "pixelate"
+  property int selectedActionIndex: -1
+  property bool isExporting: false
   property color currentColor: "#EF4444"
   property int strokeWidth: 4
   property bool fillShape: false
@@ -131,9 +133,60 @@ Rectangle {
 
   // Annotation stacks
   property var actions: []
+  property var undoStack: []
   property var redoStack: []
   property var currentAction: null
   property bool isDrawing: false
+
+  onCurrentColorChanged: {
+    if (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) {
+      var act = root.actions[root.selectedActionIndex]
+      if (act && String(act.color) !== String(root.currentColor)) {
+        root.pushUndoState()
+        var next = root.actions.slice()
+        var cloned = JSON.parse(JSON.stringify(act))
+        cloned.color = String(root.currentColor)
+        next[root.selectedActionIndex] = cloned
+        root.actions = next
+        annotationCanvas.requestPaint()
+      }
+    }
+  }
+
+  onStrokeWidthChanged: {
+    if (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) {
+      var act = root.actions[root.selectedActionIndex]
+      if (act) {
+        var newSz = act.tool === "text" ? Math.max(14, root.strokeWidth * 4) : root.strokeWidth
+        var curSz = act.tool === "text" ? act.size : act.width
+        if (newSz !== curSz) {
+          root.pushUndoState()
+          var next = root.actions.slice()
+          var cloned = JSON.parse(JSON.stringify(act))
+          if (act.tool === "text") cloned.size = newSz
+          else cloned.width = newSz
+          next[root.selectedActionIndex] = cloned
+          root.actions = next
+          annotationCanvas.requestPaint()
+        }
+      }
+    }
+  }
+
+  onTextBoxChanged: {
+    if (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) {
+      var act = root.actions[root.selectedActionIndex]
+      if (act && act.tool === "text" && Boolean(act.box) !== Boolean(root.textBox)) {
+        root.pushUndoState()
+        var next = root.actions.slice()
+        var cloned = JSON.parse(JSON.stringify(act))
+        cloned.box = Boolean(root.textBox)
+        next[root.selectedActionIndex] = cloned
+        root.actions = next
+        annotationCanvas.requestPaint()
+      }
+    }
+  }
 
   // Text input state
   property bool textInputActive: false
@@ -171,6 +224,7 @@ Rectangle {
     root.imagePath = path || ""
     root.originalImagePath = path || ""
     root.actions = []
+    root.undoStack = []
     root.redoStack = []
     root.imageHistory = []
     root.imageRedoStack = []
@@ -182,7 +236,8 @@ Rectangle {
     root.stampCounter = 1
     root.cropRatio = "free"
     root.textBox = false
-    root.currentTool = "pan"
+    root.selectedActionIndex = -1
+    root.currentTool = "select"
     root.zoomScale = 1.0
     root.actionFeedback = ""
     root.visible = true
@@ -225,18 +280,52 @@ Rectangle {
   }
 
   // History operations
+  function pushUndoState() {
+    var hist = root.undoStack.slice()
+    hist.push(JSON.parse(JSON.stringify(root.actions)))
+    if (hist.length > 50) hist.shift()
+    root.undoStack = hist
+    root.redoStack = []
+  }
+
+  function pushSpecificUndoState(preActionSnapshot, index) {
+    var preActions = root.actions.slice()
+    if (index >= 0 && index < preActions.length) {
+      preActions[index] = preActionSnapshot
+    }
+    var hist = root.undoStack.slice()
+    hist.push(JSON.parse(JSON.stringify(preActions)))
+    if (hist.length > 50) hist.shift()
+    root.undoStack = hist
+    root.redoStack = []
+  }
+
   function undo() {
-    if (root.actions.length > 0) {
+    if (root.undoStack.length > 0) {
+      var nextRedo = root.redoStack.slice()
+      nextRedo.push(JSON.parse(JSON.stringify(root.actions)))
+      root.redoStack = nextRedo
+
+      var hist = root.undoStack.slice()
+      var prevState = hist.pop()
+      root.undoStack = hist
+      root.actions = prevState
+      root.selectedActionIndex = -1
+      annotationCanvas.requestPaint()
+      root.showFeedback("↺ Undo")
+    } else if (root.actions.length > 0) {
       var nextActions = root.actions.slice()
       var popped = nextActions.pop()
       if (popped && popped.tool === "stamp" && popped.stampType === "number" && root.stampCounter > 1) {
         root.stampCounter--
       }
-      var nextRedo = root.redoStack.slice()
-      nextRedo.push(popped)
+      var nextR = root.redoStack.slice()
+      nextR.push([popped])
       root.actions = nextActions
-      root.redoStack = nextRedo
+      root.redoStack = nextR
+      root.selectedActionIndex = -1
       annotationCanvas.requestPaint()
+      root.showFeedback("↺ Undo")
     } else if (root.imageHistory && root.imageHistory.length > 0) {
       var hist = root.imageHistory.slice()
       var prev = hist.pop()
@@ -251,7 +340,9 @@ Rectangle {
       baseImage.source = ""
       baseImage.source = "file://" + prev.imagePath + "?t=" + Date.now()
       root.actions = prev.actions ? prev.actions.slice() : []
+      root.undoStack = []
       root.redoStack = []
+      root.selectedActionIndex = -1
       root.cropRect = null
       root.fitZoom()
       root.showFeedback("↺ Undo transform")
@@ -261,15 +352,23 @@ Rectangle {
   function redo() {
     if (root.redoStack.length > 0) {
       var nextRedo = root.redoStack.slice()
-      var popped = nextRedo.pop()
-      if (popped && popped.tool === "stamp" && popped.stampType === "number") {
-        root.stampCounter++
-      }
-      var nextActions = root.actions.slice()
-      nextActions.push(popped)
-      root.actions = nextActions
+      var nxtState = nextRedo.pop()
       root.redoStack = nextRedo
+
+      var hist = root.undoStack.slice()
+      hist.push(JSON.parse(JSON.stringify(root.actions)))
+      root.undoStack = hist
+
+      if (Array.isArray(nxtState)) {
+        root.actions = nxtState
+      } else {
+        var nextActions = root.actions.slice()
+        nextActions.push(nxtState)
+        root.actions = nextActions
+      }
+      root.selectedActionIndex = -1
       annotationCanvas.requestPaint()
+      root.showFeedback("↷ Redo")
     } else if (root.imageRedoStack && root.imageRedoStack.length > 0) {
       var rHist = root.imageRedoStack.slice()
       var nxt = rHist.pop()
@@ -284,7 +383,9 @@ Rectangle {
       baseImage.source = ""
       baseImage.source = "file://" + nxt.imagePath + "?t=" + Date.now()
       root.actions = nxt.actions ? nxt.actions.slice() : []
+      root.undoStack = []
       root.redoStack = []
+      root.selectedActionIndex = -1
       root.cropRect = null
       root.fitZoom()
       root.showFeedback("↷ Redo transform")
@@ -293,7 +394,8 @@ Rectangle {
 
   function clearAll() {
     if (root.actions.length === 0) return
-    root.redoStack = root.actions.slice()
+    root.pushUndoState()
+    root.selectedActionIndex = -1
     root.actions = []
     annotationCanvas.requestPaint()
   }
@@ -305,13 +407,331 @@ Rectangle {
       baseImage.source = "file://" + root.originalImagePath + "?t=" + Date.now()
     }
     root.actions = []
+    root.undoStack = []
     root.redoStack = []
     root.imageHistory = []
     root.imageRedoStack = []
+    root.selectedActionIndex = -1
     root.cropRect = null
     annotationCanvas.requestPaint()
     root.fitZoom()
     root.showFeedback("↺ Reverted to original")
+  }
+
+  // ==========================================
+  // SELECTION & TRANSFORM HELPERS
+  // ==========================================
+  function getActionLabel(act) {
+    if (!act) return ""
+    var map = {
+      "pen": "✏ Pen",
+      "highlighter": "🖍 Highlighter",
+      "arrow": "↗ Arrow",
+      "rect": "□ Rectangle",
+      "circle": "○ Circle",
+      "line": "— Line",
+      "blur": "▒ Blur",
+      "block_highlight": "█ Highlight",
+      "pixelate": "░ Pixelate",
+      "text": "🔤 Text",
+      "stamp": "① Stamp"
+    }
+    return map[act.tool] || act.tool
+  }
+
+  function getActionBounds(act) {
+    if (!act) return { x: 0, y: 0, width: 0, height: 0 }
+    if (act.start && act.end) {
+      var minX = Math.min(act.start.x, act.end.x)
+      var minY = Math.min(act.start.y, act.end.y)
+      var maxX = Math.max(act.start.x, act.end.x)
+      var maxY = Math.max(act.start.y, act.end.y)
+      if (act.tool === "line" || act.tool === "arrow") {
+        var pad = Math.max(8, (act.width || 4) * 2)
+        return {
+          x: minX - pad,
+          y: minY - pad,
+          width: Math.max(16, maxX - minX + pad * 2),
+          height: Math.max(16, maxY - minY + pad * 2)
+        }
+      }
+      return {
+        x: minX,
+        y: minY,
+        width: Math.max(10, maxX - minX),
+        height: Math.max(10, maxY - minY)
+      }
+    } else if (act.tool === "text" && act.pos) {
+      var fs = act.size || 18
+      var padX = act.box ? Math.round(fs * 0.45) : 4
+      var padY = act.box ? Math.round(fs * 0.25) : 2
+      var txtLen = act.text ? act.text.length : 1
+      var estWidth = Math.max(30, txtLen * (fs * 0.65) + padX * 2)
+      var estHeight = fs * 1.35 + padY * 2
+      return {
+        x: act.pos.x - padX,
+        y: act.pos.y - padY,
+        width: estWidth,
+        height: estHeight
+      }
+    } else if (act.tool === "stamp" && act.pos) {
+      var sr = Math.max(14, (act.width || 4) * 3)
+      return {
+        x: act.pos.x - sr,
+        y: act.pos.y - sr,
+        width: sr * 2,
+        height: sr * 2
+      }
+    } else if (act.points && act.points.length > 0) {
+      var pMinX = act.points[0].x
+      var pMaxX = act.points[0].x
+      var pMinY = act.points[0].y
+      var pMaxY = act.points[0].y
+      for (var i = 1; i < act.points.length; i++) {
+        pMinX = Math.min(pMinX, act.points[i].x)
+        pMaxX = Math.max(pMaxX, act.points[i].x)
+        pMinY = Math.min(pMinY, act.points[i].y)
+        pMaxY = Math.max(pMaxY, act.points[i].y)
+      }
+      var sw = (act.width || 4) * (act.tool === "highlighter" ? 3 : 1)
+      return {
+        x: pMinX - sw / 2,
+        y: pMinY - sw / 2,
+        width: Math.max(12, pMaxX - pMinX + sw),
+        height: Math.max(12, pMaxY - pMinY + sw)
+      }
+    }
+    return { x: 0, y: 0, width: 0, height: 0 }
+  }
+
+  function findActionAt(pt) {
+    if (!root.actions || root.actions.length === 0) return -1
+    for (var i = root.actions.length - 1; i >= 0; i--) {
+      var act = root.actions[i]
+      if (!act) continue
+
+      if (act.tool === "text" && act.pos) {
+        var tb = root.getActionBounds(act)
+        if (pt.x >= tb.x - 4 && pt.x <= tb.x + tb.width + 4 && pt.y >= tb.y - 4 && pt.y <= tb.y + tb.height + 4) {
+          return i
+        }
+      } else if (act.tool === "stamp" && act.pos) {
+        var sr = Math.max(14, (act.width || 4) * 3) + 6
+        if (Math.hypot(act.pos.x - pt.x, act.pos.y - pt.y) <= sr) {
+          return i
+        }
+      } else if ((act.tool === "line" || act.tool === "arrow") && act.start && act.end) {
+        var l2 = Math.pow(act.end.x - act.start.x, 2) + Math.pow(act.end.y - act.start.y, 2)
+        if (l2 === 0) {
+          if (Math.hypot(act.start.x - pt.x, act.start.y - pt.y) <= 16) return i
+        } else {
+          var t = Math.max(0, Math.min(1, ((pt.x - act.start.x) * (act.end.x - act.start.x) + (pt.y - act.start.y) * (act.end.y - act.start.y)) / l2))
+          var projX = act.start.x + t * (act.end.x - act.start.x)
+          var projY = act.start.y + t * (act.end.y - act.start.y)
+          if (Math.hypot(pt.x - projX, pt.y - projY) <= Math.max(12, (act.width || 4) + 6)) return i
+        }
+      } else if (act.start && act.end) {
+        var bb = root.getActionBounds(act)
+        var isSolid = act.filled || act.tool === "blur" || act.tool === "pixelate" || act.tool === "block_highlight"
+        if (isSolid) {
+          if (pt.x >= bb.x - 4 && pt.x <= bb.x + bb.width + 4 && pt.y >= bb.y - 4 && pt.y <= bb.y + bb.height + 4) {
+            return i
+          }
+        } else {
+          if (pt.x >= bb.x - 10 && pt.x <= bb.x + bb.width + 10 && pt.y >= bb.y - 10 && pt.y <= bb.y + bb.height + 10) {
+            if (bb.width <= 30 || bb.height <= 30) return i
+            var dL = Math.abs(pt.x - bb.x)
+            var dR = Math.abs(pt.x - (bb.x + bb.width))
+            var dT = Math.abs(pt.y - bb.y)
+            var dB = Math.abs(pt.y - (bb.y + bb.height))
+            var minD = Math.min(Math.min(dL, dR), Math.min(dT, dB))
+            if (minD <= 12) return i
+          }
+        }
+      } else if (act.points && act.points.length > 0) {
+        var thresh = Math.max(12, (act.width || 4) * (act.tool === "highlighter" ? 2 : 1) + 4)
+        for (var p = 0; p < act.points.length; p++) {
+          if (Math.hypot(act.points[p].x - pt.x, act.points[p].y - pt.y) <= thresh) {
+            return i
+          }
+        }
+      }
+    }
+    return -1
+  }
+
+  function selectAction(index) {
+    if (index >= 0 && index < root.actions.length) {
+      root.selectedActionIndex = index
+      var act = root.actions[index]
+      if (act.color) root.currentColor = act.color
+      if (act.width) root.strokeWidth = act.width
+      if (act.size && act.tool === "text") {
+        if (act.size <= 16) root.strokeWidth = 2
+        else if (act.size <= 22) root.strokeWidth = 4
+        else if (act.size <= 32) root.strokeWidth = 8
+        else root.strokeWidth = 14
+      }
+      if (typeof act.box !== "undefined") root.textBox = Boolean(act.box)
+    } else {
+      root.selectedActionIndex = -1
+    }
+    annotationCanvas.requestPaint()
+  }
+
+  function deleteSelectedAction() {
+    if (root.selectedActionIndex < 0 || root.selectedActionIndex >= root.actions.length) return
+    root.pushUndoState()
+    var next = root.actions.slice()
+    next.splice(root.selectedActionIndex, 1)
+    root.selectedActionIndex = -1
+    root.actions = next
+    annotationCanvas.requestPaint()
+    root.showFeedback("🗑 Deleted element")
+  }
+
+  function duplicateSelectedAction() {
+    if (root.selectedActionIndex < 0 || root.selectedActionIndex >= root.actions.length) return
+    root.pushUndoState()
+    var act = root.actions[root.selectedActionIndex]
+    var cloned = root.moveAction(act, 20, 20)
+    var next = root.actions.slice()
+    next.push(cloned)
+    root.actions = next
+    root.selectedActionIndex = next.length - 1
+    annotationCanvas.requestPaint()
+    root.showFeedback("⧉ Duplicated element")
+  }
+
+  function bringSelectedToFront() {
+    if (root.selectedActionIndex < 0 || root.selectedActionIndex >= root.actions.length - 1) return
+    root.pushUndoState()
+    var next = root.actions.slice()
+    var act = next.splice(root.selectedActionIndex, 1)[0]
+    next.push(act)
+    root.actions = next
+    root.selectedActionIndex = next.length - 1
+    annotationCanvas.requestPaint()
+    root.showFeedback("▲ Brought to front")
+  }
+
+  function sendSelectedToBack() {
+    if (root.selectedActionIndex <= 0 || root.selectedActionIndex >= root.actions.length) return
+    root.pushUndoState()
+    var next = root.actions.slice()
+    var act = next.splice(root.selectedActionIndex, 1)[0]
+    next.unshift(act)
+    root.actions = next
+    root.selectedActionIndex = 0
+    annotationCanvas.requestPaint()
+    root.showFeedback("▼ Sent to back")
+  }
+
+  function nudgeSelected(dx, dy) {
+    if (root.selectedActionIndex < 0 || root.selectedActionIndex >= root.actions.length) return
+    root.pushUndoState()
+    var act = root.actions[root.selectedActionIndex]
+    var next = root.actions.slice()
+    next[root.selectedActionIndex] = root.moveAction(act, dx, dy)
+    root.actions = next
+    annotationCanvas.requestPaint()
+  }
+
+  function moveAction(act, dx, dy) {
+    var res = JSON.parse(JSON.stringify(act))
+    if (res.start && res.end) {
+      res.start.x += dx
+      res.start.y += dy
+      res.end.x += dx
+      res.end.y += dy
+    }
+    if (res.pos) {
+      res.pos.x += dx
+      res.pos.y += dy
+    }
+    if (res.points && res.points.length > 0) {
+      for (var i = 0; i < res.points.length; i++) {
+        res.points[i].x += dx
+        res.points[i].y += dy
+      }
+    }
+    return res
+  }
+
+  function computeNewBounds(startBounds, handle, dx, dy) {
+    var minW = 10, minH = 10
+    var nx = startBounds.x
+    var ny = startBounds.y
+    var nw = startBounds.width
+    var nh = startBounds.height
+
+    if (handle === "r" || handle === "tr" || handle === "br") {
+      nw = Math.max(minW, startBounds.width + dx)
+    }
+    if (handle === "b" || handle === "bl" || handle === "br") {
+      nh = Math.max(minH, startBounds.height + dy)
+    }
+    if (handle === "l" || handle === "tl" || handle === "bl") {
+      var proposedW = Math.max(minW, startBounds.width - dx)
+      nx = startBounds.x + (startBounds.width - proposedW)
+      nw = proposedW
+    }
+    if (handle === "t" || handle === "tl" || handle === "tr") {
+      var proposedH = Math.max(minH, startBounds.height - dy)
+      ny = startBounds.y + (startBounds.height - proposedH)
+      nh = proposedH
+    }
+
+    return { x: nx, y: ny, width: nw, height: nh }
+  }
+
+  function scaleAction(origAct, startBounds, newBounds) {
+    var res = JSON.parse(JSON.stringify(origAct))
+    var scaleX = startBounds.width > 0 ? (newBounds.width / startBounds.width) : 1
+    var scaleY = startBounds.height > 0 ? (newBounds.height / startBounds.height) : 1
+
+    if (res.start && res.end) {
+      if (res.tool === "line" || res.tool === "arrow") {
+        res.start.x = newBounds.x + (origAct.start.x - startBounds.x) * scaleX
+        res.start.y = newBounds.y + (origAct.start.y - startBounds.y) * scaleY
+        res.end.x = newBounds.x + (origAct.end.x - startBounds.x) * scaleX
+        res.end.y = newBounds.y + (origAct.end.y - startBounds.y) * scaleY
+      } else {
+        var flipX = origAct.start.x > origAct.end.x
+        var flipY = origAct.start.y > origAct.end.y
+        var sx = flipX ? (newBounds.x + newBounds.width) : newBounds.x
+        var ex = flipX ? newBounds.x : (newBounds.x + newBounds.width)
+        var sy = flipY ? (newBounds.y + newBounds.height) : newBounds.y
+        var ey = flipY ? newBounds.y : (newBounds.y + newBounds.height)
+        res.start = { x: sx, y: sy }
+        res.end = { x: ex, y: ey }
+      }
+    }
+
+    if (res.tool === "text" && res.pos) {
+      var avgScale = (scaleX + scaleY) / 2
+      var origSize = origAct.size || 18
+      res.size = Math.max(10, Math.min(120, Math.round(origSize * avgScale)))
+      var padX = res.box ? Math.round(res.size * 0.45) : 4
+      var padY = res.box ? Math.round(res.size * 0.25) : 2
+      res.pos = { x: newBounds.x + padX, y: newBounds.y + padY }
+    }
+
+    if (res.tool === "stamp" && res.pos) {
+      var avgScaleS = (scaleX + scaleY) / 2
+      var origW = origAct.width || 4
+      res.width = Math.max(1, Math.min(30, Math.round(origW * avgScaleS)))
+      res.pos = { x: newBounds.x + newBounds.width / 2, y: newBounds.y + newBounds.height / 2 }
+    }
+
+    if (res.points && res.points.length > 0) {
+      for (var p = 0; p < res.points.length; p++) {
+        res.points[p].x = newBounds.x + (origAct.points[p].x - startBounds.x) * scaleX
+        res.points[p].y = newBounds.y + (origAct.points[p].y - startBounds.y) * scaleY
+      }
+    }
+
+    return res
   }
 
   function initCropRect() {
@@ -378,11 +798,13 @@ Rectangle {
     }
 
     if (root.actions.length > 0) {
+      root.isExporting = true
       var prevZoom = root.zoomScale
       root.zoomScale = 1.0
       annotationCanvas.requestPaint()
       Qt.callLater(function() {
         compositeContainer.grabToImage(function(result) {
+          root.isExporting = false
           root.zoomScale = prevZoom
           annotationCanvas.requestPaint()
           if (!result) return
@@ -400,6 +822,7 @@ Rectangle {
     if (!root.textInputActive) return
     var str = root.textInputDraft.trim()
     if (str.length > 0) {
+      root.pushUndoState()
       var act = {
         tool: "text",
         text: str,
@@ -411,7 +834,7 @@ Rectangle {
       var next = root.actions.slice()
       next.push(act)
       root.actions = next
-      root.redoStack = []
+      root.selectedActionIndex = next.length - 1
       annotationCanvas.requestPaint()
     }
     root.textInputActive = false
@@ -429,12 +852,14 @@ Rectangle {
       targetFile = homeDir + "/Pictures/Screenshots/reclip_annotated_" + timeStr + ".png"
     }
 
+    root.isExporting = true
     var prevZoom = root.zoomScale
     root.zoomScale = 1.0
     annotationCanvas.requestPaint()
 
     Qt.callLater(function() {
       compositeContainer.grabToImage(function(result) {
+        root.isExporting = false
         root.zoomScale = prevZoom
         annotationCanvas.requestPaint()
 
@@ -477,6 +902,47 @@ Rectangle {
       }
     }
 
+    // Selection-specific shortcuts
+    if (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) {
+      if (event.key === Qt.Key_Escape) {
+        root.selectedActionIndex = -1
+        event.accepted = true
+        return
+      } else if (event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) {
+        root.deleteSelectedAction()
+        event.accepted = true
+        return
+      } else if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_D) {
+        root.duplicateSelectedAction()
+        event.accepted = true
+        return
+      } else if (event.key === Qt.Key_BracketRight) {
+        root.bringSelectedToFront()
+        event.accepted = true
+        return
+      } else if (event.key === Qt.Key_BracketLeft) {
+        root.sendSelectedToBack()
+        event.accepted = true
+        return
+      } else if (event.key === Qt.Key_Left) {
+        root.nudgeSelected((event.modifiers & Qt.ShiftModifier) ? -10 : -1, 0)
+        event.accepted = true
+        return
+      } else if (event.key === Qt.Key_Right) {
+        root.nudgeSelected((event.modifiers & Qt.ShiftModifier) ? 10 : 1, 0)
+        event.accepted = true
+        return
+      } else if (event.key === Qt.Key_Up) {
+        root.nudgeSelected(0, (event.modifiers & Qt.ShiftModifier) ? -10 : -1)
+        event.accepted = true
+        return
+      } else if (event.key === Qt.Key_Down) {
+        root.nudgeSelected(0, (event.modifiers & Qt.ShiftModifier) ? 10 : 1)
+        event.accepted = true
+        return
+      }
+    }
+
     if (event.key === Qt.Key_Escape) {
       root.close()
       event.accepted = true
@@ -505,52 +971,68 @@ Rectangle {
       root.resetZoom()
       event.accepted = true
     } else if (event.key === Qt.Key_V) {
+      root.currentTool = "select"
+      event.accepted = true
+    } else if (event.key === Qt.Key_Space) {
       root.currentTool = "pan"
       event.accepted = true
     } else if (event.key === Qt.Key_P) {
       root.currentTool = "pen"
+      root.selectedActionIndex = -1
       event.accepted = true
     } else if (event.key === Qt.Key_H) {
       root.currentTool = "highlighter"
+      root.selectedActionIndex = -1
       event.accepted = true
     } else if (event.key === Qt.Key_A) {
       root.currentTool = "arrow"
+      root.selectedActionIndex = -1
       event.accepted = true
     } else if (event.key === Qt.Key_R) {
       root.currentTool = "rect"
+      root.selectedActionIndex = -1
       event.accepted = true
     } else if (event.key === Qt.Key_C) {
       root.currentTool = "circle"
+      root.selectedActionIndex = -1
       event.accepted = true
     } else if (event.key === Qt.Key_L) {
       root.currentTool = "line"
+      root.selectedActionIndex = -1
       event.accepted = true
     } else if (event.key === Qt.Key_B) {
       root.currentTool = "blur"
+      root.selectedActionIndex = -1
       event.accepted = true
     } else if (event.key === Qt.Key_T) {
       root.currentTool = "text"
+      root.selectedActionIndex = -1
       event.accepted = true
     } else if (event.key === Qt.Key_S) {
       root.currentTool = "stamp"
+      root.selectedActionIndex = -1
       event.accepted = true
     } else if (event.key === Qt.Key_E) {
       root.currentTool = "eraser"
+      root.selectedActionIndex = -1
       event.accepted = true
     } else if (event.key === Qt.Key_X) {
       if (root.currentTool === "crop") {
-        root.currentTool = "pan"
+        root.currentTool = "select"
         root.cropRect = null
       } else {
         root.currentTool = "crop"
+        root.selectedActionIndex = -1
         if (!root.cropRect) root.initCropRect()
       }
       event.accepted = true
     } else if (event.key === Qt.Key_M) {
       root.currentTool = "pixelate"
+      root.selectedActionIndex = -1
       event.accepted = true
     } else if (event.key === Qt.Key_K) {
       root.currentTool = "block_highlight"
+      root.selectedActionIndex = -1
       event.accepted = true
     }
   }
@@ -718,15 +1200,19 @@ Rectangle {
 
         // Undo
         Rectangle {
+          id: undoBtn
+          readonly property bool canUndo: root.actions.length > 0 || root.undoStack.length > 0 || (root.imageHistory && root.imageHistory.length > 0)
           width: Style.space(24); height: Style.space(24); radius: Style.space(4)
-          color: (root.actions.length > 0 || root.imageHistory.length > 0) ? (undoMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.03)
-          opacity: (root.actions.length > 0 || root.imageHistory.length > 0) ? 1.0 : 0.4
+          color: canUndo ? (undoMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.03)
+          opacity: canUndo ? 1.0 : 0.4
           Text { text: "󰕌"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(11); anchors.centerIn: parent }
           MouseArea {
             id: undoMouse
             anchors.fill: parent; hoverEnabled: true
-            cursorShape: (root.actions.length > 0 || root.imageHistory.length > 0) ? Qt.PointingHandCursor : Qt.ArrowCursor
-            onClicked: root.undo()
+            cursorShape: undoBtn.canUndo ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: {
+              if (undoBtn.canUndo) root.undo()
+            }
           }
           PanelToolTip { visible: undoMouse.containsMouse; text: "Undo (Ctrl+Z)" }
         }
@@ -830,7 +1316,8 @@ Rectangle {
           // 1. Tool Buttons
           Repeater {
             model: [
-              { id: "pan", label: "✋", name: "Pan / View (V)" },
+              { id: "select", label: "↖", name: "Select / Transform (V)" },
+              { id: "pan", label: "✋", name: "Pan / Hand (Space)" },
               { id: "pen", label: "✏", name: "Pen (P)" },
               { id: "highlighter", label: "🖍", name: "Highlighter (H)" },
               { id: "arrow", label: "↗", name: "Arrow (A)" },
@@ -866,6 +1353,9 @@ Rectangle {
                 onClicked: {
                   root.currentTool = parent.modelData.id
                   if (root.textInputActive) root.commitText()
+                  if (parent.modelData.id !== "select" && parent.modelData.id !== "pan") {
+                    root.selectedActionIndex = -1
+                  }
                 }
               }
               PanelToolTip { visible: tMouse.containsMouse; text: parent.modelData.name }
@@ -1662,14 +2152,21 @@ Rectangle {
             id: drawMouseArea
             anchors.fill: parent
             hoverEnabled: true
-            preventStealing: root.currentTool !== "pan"
-            cursorShape: root.currentTool === "pan" ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : (root.currentTool === "crop" ? Qt.CrossCursor : (root.currentTool === "eraser" ? Qt.ForbiddenCursor : (root.currentTool === "text" ? Qt.IBeamCursor : Qt.CrossCursor)))
+            preventStealing: root.currentTool !== "pan" && root.currentTool !== "select"
+            cursorShape: root.currentTool === "pan" ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : (root.currentTool === "select" ? (hoverActionIdx >= 0 ? Qt.PointingHandCursor : (pressed ? Qt.ClosedHandCursor : Qt.ArrowCursor)) : (root.currentTool === "crop" ? Qt.CrossCursor : (root.currentTool === "eraser" ? Qt.ForbiddenCursor : (root.currentTool === "text" ? Qt.IBeamCursor : Qt.CrossCursor))))
 
             property real lastPanX: 0
             property real lastPanY: 0
+            property int hoverActionIdx: -1
+            property bool isBgPanning: false
 
             onPressed: function(mouse) {
-              if (root.currentTool === "pan" || mouse.button === Qt.MiddleButton) {
+              var z = root.zoomScale > 0 ? root.zoomScale : 1.0
+              var pt = { x: mouse.x / z, y: mouse.y / z }
+              var actColor = String(root.currentColor)
+
+              if (mouse.button === Qt.MiddleButton) {
+                isBgPanning = true
                 lastPanX = mouse.x
                 lastPanY = mouse.y
                 mouse.accepted = true
@@ -1681,13 +2178,41 @@ Rectangle {
                 return
               }
 
-              // Store unscaled coordinates on base image
-              var z = root.zoomScale > 0 ? root.zoomScale : 1.0
-              var pt = { x: mouse.x / z, y: mouse.y / z }
-              var actColor = String(root.currentColor)
-
               // Crop tool is handled entirely by cropOverlay
               if (root.currentTool === "crop") {
+                mouse.accepted = true
+                return
+              }
+
+              // Select tool
+              if (root.currentTool === "select") {
+                var hitIdx = root.findActionAt(pt)
+                if (hitIdx >= 0) {
+                  root.selectAction(hitIdx)
+                  selectionOverlay.startDrag("move", drawMouseArea, mouse.x, mouse.y)
+                } else {
+                  root.selectedActionIndex = -1
+                  isBgPanning = true
+                  lastPanX = mouse.x
+                  lastPanY = mouse.y
+                }
+                mouse.accepted = true
+                return
+              }
+
+              // Pan tool: if an element is clicked, select it and switch to select tool! Otherwise pan.
+              if (root.currentTool === "pan") {
+                var panHit = root.findActionAt(pt)
+                if (panHit >= 0) {
+                  root.currentTool = "select"
+                  root.selectAction(panHit)
+                  selectionOverlay.startDrag("move", drawMouseArea, mouse.x, mouse.y)
+                  mouse.accepted = true
+                  return
+                }
+                isBgPanning = true
+                lastPanX = mouse.x
+                lastPanY = mouse.y
                 mouse.accepted = true
                 return
               }
@@ -1702,6 +2227,7 @@ Rectangle {
 
               // Stamp tool
               if (root.currentTool === "stamp") {
+                root.pushUndoState()
                 var stampAct = {
                   tool: "stamp",
                   stampType: root.currentStamp,
@@ -1716,7 +2242,7 @@ Rectangle {
                 var nextActs = root.actions.slice()
                 nextActs.push(stampAct)
                 root.actions = nextActs
-                root.redoStack = []
+                root.selectedActionIndex = nextActs.length - 1
                 annotationCanvas.requestPaint()
                 return
               }
@@ -1729,7 +2255,6 @@ Rectangle {
 
               // Freehand / shape tools
               root.isDrawing = true
-              root.redoStack = []
 
               if (root.currentTool === "pen" || root.currentTool === "highlighter") {
                 root.currentAction = {
@@ -1754,7 +2279,14 @@ Rectangle {
             onPositionChanged: function(mouse) {
               if (root.currentTool === "crop") return
 
-              if ((root.currentTool === "pan" || (mouse.buttons & Qt.MiddleButton)) && pressed) {
+              var z = root.zoomScale > 0 ? root.zoomScale : 1.0
+              var pt = { x: mouse.x / z, y: mouse.y / z }
+
+              if (root.currentTool === "select" && !pressed) {
+                hoverActionIdx = root.findActionAt(pt)
+              }
+
+              if (isBgPanning && pressed) {
                 var dx = mouse.x - lastPanX
                 var dy = mouse.y - lastPanY
                 var maxX = Math.max(0, canvasFlickable.contentWidth - canvasFlickable.width)
@@ -1766,8 +2298,10 @@ Rectangle {
                 return
               }
 
-              var z = root.zoomScale > 0 ? root.zoomScale : 1.0
-              var pt = { x: mouse.x / z, y: mouse.y / z }
+              if (selectionOverlay.activeHandle !== "") {
+                selectionOverlay.updateDrag(drawMouseArea, mouse.x, mouse.y)
+                return
+              }
 
               if (root.currentTool === "eraser" && pressed) {
                 root.eraseNearPoint(pt)
@@ -1785,6 +2319,14 @@ Rectangle {
             }
 
             onReleased: function(mouse) {
+              if (isBgPanning) {
+                isBgPanning = false
+              }
+
+              if (selectionOverlay.activeHandle !== "") {
+                selectionOverlay.endDrag()
+              }
+
               if (root.isDrawing && root.currentAction) {
                 var act = root.currentAction
                 var valid = true
@@ -1794,9 +2336,11 @@ Rectangle {
                   if (Math.abs(act.end.x - act.start.x) <= 4 || Math.abs(act.end.y - act.start.y) <= 4) valid = false
                 }
                 if (valid) {
+                  root.pushUndoState()
                   var finalActs = root.actions.slice()
                   finalActs.push(act)
                   root.actions = finalActs
+                  root.selectedActionIndex = finalActs.length - 1
                 }
                 root.currentAction = null
                 root.isDrawing = false
@@ -1810,6 +2354,10 @@ Rectangle {
             }
 
             onCanceled: function() {
+              isBgPanning = false
+              if (selectionOverlay.activeHandle !== "") {
+                selectionOverlay.endDrag()
+              }
               if (root.isDrawing && root.currentAction) {
                 var act = root.currentAction
                 var valid = true
@@ -1819,9 +2367,11 @@ Rectangle {
                   if (Math.abs(act.end.x - act.start.x) <= 4 || Math.abs(act.end.y - act.start.y) <= 4) valid = false
                 }
                 if (valid) {
+                  root.pushUndoState()
                   var finalActs = root.actions.slice()
                   finalActs.push(act)
                   root.actions = finalActs
+                  root.selectedActionIndex = finalActs.length - 1
                 }
                 root.currentAction = null
                 root.isDrawing = false
@@ -2249,6 +2799,309 @@ Rectangle {
               CropHandle { handleName: "b"; cursor: Qt.SizeVerCursor; width: Style.space(16); height: Style.space(7); anchors.horizontalCenter: parent.horizontalCenter; anchors.verticalCenter: parent.bottom }
               CropHandle { handleName: "bl"; cursor: Qt.SizeBDiagCursor; anchors.horizontalCenter: parent.left; anchors.verticalCenter: parent.bottom }
               CropHandle { handleName: "l"; cursor: Qt.SizeHorCursor; width: Style.space(7); height: Style.space(16); anchors.horizontalCenter: parent.left; anchors.verticalCenter: parent.verticalCenter }
+            }
+          }
+
+          // Selection & Transform Overlay
+          Item {
+            id: selectionOverlay
+            anchors.fill: parent
+            z: 30
+            visible: root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length && !root.isExporting && root.currentTool !== "crop"
+
+            property var curAct: (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) ? root.actions[root.selectedActionIndex] : null
+            property var selBounds: curAct ? root.getActionBounds(curAct) : null
+
+            readonly property real boxX: selBounds ? selBounds.x * root.zoomScale : 0
+            readonly property real boxY: selBounds ? selBounds.y * root.zoomScale : 0
+            readonly property real boxW: selBounds ? selBounds.width * root.zoomScale : 0
+            readonly property real boxH: selBounds ? selBounds.height * root.zoomScale : 0
+
+            property string activeHandle: ""
+            property real startMouseX: 0
+            property real startMouseY: 0
+            property var dragStartAct: null
+            property var dragStartB: null
+
+            function startDrag(handle, mouseItem, mouseX, mouseY) {
+              if (!curAct || !selBounds) return
+              var pt = mouseItem.mapToItem(selectionOverlay, mouseX, mouseY)
+              activeHandle = handle
+              startMouseX = pt.x
+              startMouseY = pt.y
+              dragStartAct = JSON.parse(JSON.stringify(curAct))
+              dragStartB = {
+                x: selBounds.x,
+                y: selBounds.y,
+                width: selBounds.width,
+                height: selBounds.height
+              }
+            }
+
+            function updateDrag(mouseItem, mouseX, mouseY) {
+              if (!dragStartAct || !dragStartB || !activeHandle) return
+              var pt = mouseItem.mapToItem(selectionOverlay, mouseX, mouseY)
+              var z = root.zoomScale > 0 ? root.zoomScale : 1.0
+              var dx = (pt.x - startMouseX) / z
+              var dy = (pt.y - startMouseY) / z
+
+              var updated = null
+              if (activeHandle === "move") {
+                updated = root.moveAction(dragStartAct, dx, dy)
+              } else if (activeHandle === "start_pt") {
+                updated = JSON.parse(JSON.stringify(dragStartAct))
+                updated.start = { x: dragStartAct.start.x + dx, y: dragStartAct.start.y + dy }
+              } else if (activeHandle === "end_pt") {
+                updated = JSON.parse(JSON.stringify(dragStartAct))
+                updated.end = { x: dragStartAct.end.x + dx, y: dragStartAct.end.y + dy }
+              } else {
+                var nb = root.computeNewBounds(dragStartB, activeHandle, dx, dy)
+                updated = root.scaleAction(dragStartAct, dragStartB, nb)
+              }
+
+              if (updated) {
+                var next = root.actions.slice()
+                next[root.selectedActionIndex] = updated
+                root.actions = next
+                annotationCanvas.requestPaint()
+              }
+            }
+
+            function endDrag() {
+              if (dragStartAct && activeHandle) {
+                var cur = (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) ? root.actions[root.selectedActionIndex] : null
+                if (cur && JSON.stringify(cur) !== JSON.stringify(dragStartAct)) {
+                  root.pushSpecificUndoState(dragStartAct, root.selectedActionIndex)
+                  root.showFeedback(activeHandle === "move" ? "Moved element" : "Resized element")
+                }
+              }
+              activeHandle = ""
+              dragStartAct = null
+              dragStartB = null
+            }
+
+            // Selection Bounding Box
+            Rectangle {
+              id: selectionBoundingBox
+              visible: Boolean(selectionOverlay.selBounds && selectionOverlay.boxW > 0 && selectionOverlay.boxH > 0)
+              x: selectionOverlay.boxX
+              y: selectionOverlay.boxY
+              width: selectionOverlay.boxW
+              height: selectionOverlay.boxH
+              color: Util.alpha(Color.accent, 0.08)
+              border.width: 1.5
+              border.color: Color.accent
+              z: 10
+
+              // Move MouseArea inside box
+              MouseArea {
+                id: selMoveArea
+                anchors.fill: parent
+                cursorShape: Qt.SizeAllCursor
+                hoverEnabled: true
+
+                onPressed: function(mouse) {
+                  selectionOverlay.startDrag("move", selMoveArea, mouse.x, mouse.y)
+                }
+                onPositionChanged: function(mouse) {
+                  if (pressed) selectionOverlay.updateDrag(selMoveArea, mouse.x, mouse.y)
+                }
+                onReleased: function() {
+                  selectionOverlay.endDrag()
+                }
+              }
+
+              // Floating Actions Bar
+              Rectangle {
+                id: selFloatingActions
+                z: 35
+                x: Math.max(-selectionBoundingBox.x, Math.min(selectionOverlay.width - selectionBoundingBox.x - width, parent.width / 2 - width / 2))
+                y: (selectionBoundingBox.y - height - Style.space(8) >= 0) ? (-height - Style.space(8)) : (parent.height + Style.space(8))
+                width: selFloatRow.implicitWidth + Style.space(12)
+                height: Style.space(26)
+                radius: Style.space(13)
+                color: Util.alpha(Color.popups.background || Color.background, 0.96)
+                border.width: 1
+                border.color: Util.alpha(Color.popups.border || Color.border, 0.6)
+
+                Row {
+                  id: selFloatRow
+                  anchors.centerIn: parent
+                  spacing: Style.space(5)
+
+                  // Tool Type Badge
+                  Text {
+                    text: root.getActionLabel(selectionOverlay.curAct)
+                    color: Color.accent
+                    font.family: Style.font.menuFamily
+                    font.pixelSize: Style.space(8)
+                    font.bold: true
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+
+                  // Separator
+                  Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.2); anchors.verticalCenter: parent.verticalCenter }
+
+                  // Duplicate Button
+                  Rectangle {
+                    width: Style.space(20); height: Style.space(20); radius: Style.space(4)
+                    color: dupMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
+                    anchors.verticalCenter: parent.verticalCenter
+                    Text { text: "⧉"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(9); anchors.centerIn: parent }
+                    MouseArea {
+                      id: dupMouse
+                      anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                      onClicked: root.duplicateSelectedAction()
+                    }
+                    PanelToolTip { visible: dupMouse.containsMouse; text: "Duplicate element (Ctrl+D)" }
+                  }
+
+                  // Bring to Front Button
+                  Rectangle {
+                    width: Style.space(20); height: Style.space(20); radius: Style.space(4)
+                    color: frontMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
+                    anchors.verticalCenter: parent.verticalCenter
+                    Text { text: "▲"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
+                    MouseArea {
+                      id: frontMouse
+                      anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                      onClicked: root.bringSelectedToFront()
+                    }
+                    PanelToolTip { visible: frontMouse.containsMouse; text: "Bring to Front (])" }
+                  }
+
+                  // Send to Back Button
+                  Rectangle {
+                    width: Style.space(20); height: Style.space(20); radius: Style.space(4)
+                    color: backMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
+                    anchors.verticalCenter: parent.verticalCenter
+                    Text { text: "▼"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
+                    MouseArea {
+                      id: backMouse
+                      anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                      onClicked: root.sendSelectedToBack()
+                    }
+                    PanelToolTip { visible: backMouse.containsMouse; text: "Send to Back ([)" }
+                  }
+
+                  // Separator
+                  Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.2); anchors.verticalCenter: parent.verticalCenter }
+
+                  // Delete Button
+                  Rectangle {
+                    width: Style.space(20); height: Style.space(20); radius: Style.space(4)
+                    color: delMouse.containsMouse ? Util.alpha("#EF4444", 0.3) : Util.alpha("#EF4444", 0.12)
+                    border.width: 1; border.color: Util.alpha("#EF4444", 0.3)
+                    anchors.verticalCenter: parent.verticalCenter
+                    Text { text: "🗑"; color: "#EF4444"; font.pixelSize: Style.space(8.5); anchors.centerIn: parent }
+                    MouseArea {
+                      id: delMouse
+                      anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                      onClicked: root.deleteSelectedAction()
+                    }
+                    PanelToolTip { visible: delMouse.containsMouse; text: "Delete element (Del)" }
+                  }
+
+                  // Close / Deselect Button
+                  Rectangle {
+                    width: Style.space(20); height: Style.space(20); radius: Style.space(4)
+                    color: deselMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : "transparent"
+                    anchors.verticalCenter: parent.verticalCenter
+                    Text { text: "✕"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                    MouseArea {
+                      id: deselMouse
+                      anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                      onClicked: root.selectedActionIndex = -1
+                    }
+                    PanelToolTip { visible: deselMouse.containsMouse; text: "Deselect (Esc)" }
+                  }
+                }
+              }
+
+              // Reusable Handle Component
+              component SelHandle: Rectangle {
+                id: sHandleRoot
+                property string handleName: ""
+                property int cursor: Qt.ArrowCursor
+                width: Style.space(9)
+                height: Style.space(9)
+                radius: Style.space(2)
+                color: (shMouse.containsMouse || (selectionOverlay.activeHandle === sHandleRoot.handleName)) ? Color.accent : "#FFFFFF"
+                border.width: 1.5
+                border.color: Color.accent
+                z: 20
+
+                MouseArea {
+                  id: shMouse
+                  anchors.fill: parent
+                  anchors.margins: -Style.space(6)
+                  hoverEnabled: true
+                  cursorShape: sHandleRoot.cursor
+
+                  onPressed: function(mouse) {
+                    selectionOverlay.startDrag(sHandleRoot.handleName, shMouse, mouse.x, mouse.y)
+                  }
+                  onPositionChanged: function(mouse) {
+                    if (pressed) selectionOverlay.updateDrag(shMouse, mouse.x, mouse.y)
+                  }
+                  onReleased: function() {
+                    selectionOverlay.endDrag()
+                  }
+                }
+              }
+
+              // 8 Resizing Handles
+              SelHandle { handleName: "tl"; cursor: Qt.SizeFDiagCursor; anchors.horizontalCenter: parent.left; anchors.verticalCenter: parent.top }
+              SelHandle { handleName: "t"; cursor: Qt.SizeVerCursor; width: Style.space(14); height: Style.space(6); anchors.horizontalCenter: parent.horizontalCenter; anchors.verticalCenter: parent.top }
+              SelHandle { handleName: "tr"; cursor: Qt.SizeBDiagCursor; anchors.horizontalCenter: parent.right; anchors.verticalCenter: parent.top }
+              SelHandle { handleName: "r"; cursor: Qt.SizeHorCursor; width: Style.space(6); height: Style.space(14); anchors.horizontalCenter: parent.right; anchors.verticalCenter: parent.verticalCenter }
+              SelHandle { handleName: "br"; cursor: Qt.SizeFDiagCursor; anchors.horizontalCenter: parent.right; anchors.verticalCenter: parent.bottom }
+              SelHandle { handleName: "b"; cursor: Qt.SizeVerCursor; width: Style.space(14); height: Style.space(6); anchors.horizontalCenter: parent.horizontalCenter; anchors.verticalCenter: parent.bottom }
+              SelHandle { handleName: "bl"; cursor: Qt.SizeBDiagCursor; anchors.horizontalCenter: parent.left; anchors.verticalCenter: parent.bottom }
+              SelHandle { handleName: "l"; cursor: Qt.SizeHorCursor; width: Style.space(6); height: Style.space(14); anchors.horizontalCenter: parent.left; anchors.verticalCenter: parent.verticalCenter }
+            }
+
+            // Direct Endpoint Handles for Line and Arrow
+            Item {
+              visible: Boolean(selectionOverlay.curAct && (selectionOverlay.curAct.tool === "line" || selectionOverlay.curAct.tool === "arrow") && selectionOverlay.curAct.start && selectionOverlay.curAct.end)
+              anchors.fill: parent
+              z: 25
+
+              // Start Point Handle
+              Rectangle {
+                x: selectionOverlay.curAct ? (selectionOverlay.curAct.start.x * root.zoomScale - width / 2) : 0
+                y: selectionOverlay.curAct ? (selectionOverlay.curAct.start.y * root.zoomScale - height / 2) : 0
+                width: Style.space(12); height: Style.space(12); radius: Style.space(6)
+                color: (ptStartMouse.containsMouse || (selectionOverlay.activeHandle === "start_pt")) ? Color.accent : "#FFFFFF"
+                border.width: 1.5; border.color: Color.accent
+
+                MouseArea {
+                  id: ptStartMouse
+                  anchors.fill: parent; anchors.margins: -Style.space(6); hoverEnabled: true; cursorShape: Qt.CrossCursor
+                  onPressed: function(mouse) { selectionOverlay.startDrag("start_pt", ptStartMouse, mouse.x, mouse.y) }
+                  onPositionChanged: function(mouse) { if (pressed) selectionOverlay.updateDrag(ptStartMouse, mouse.x, mouse.y) }
+                  onReleased: function() { selectionOverlay.endDrag() }
+                }
+                PanelToolTip { visible: ptStartMouse.containsMouse; text: "Tail / Start Point" }
+              }
+
+              // End Point Handle
+              Rectangle {
+                x: selectionOverlay.curAct ? (selectionOverlay.curAct.end.x * root.zoomScale - width / 2) : 0
+                y: selectionOverlay.curAct ? (selectionOverlay.curAct.end.y * root.zoomScale - height / 2) : 0
+                width: Style.space(12); height: Style.space(12); radius: Style.space(6)
+                color: (ptEndMouse.containsMouse || (selectionOverlay.activeHandle === "end_pt")) ? Color.accent : "#FFFFFF"
+                border.width: 1.5; border.color: Color.accent
+
+                MouseArea {
+                  id: ptEndMouse
+                  anchors.fill: parent; anchors.margins: -Style.space(6); hoverEnabled: true; cursorShape: Qt.CrossCursor
+                  onPressed: function(mouse) { selectionOverlay.startDrag("end_pt", ptEndMouse, mouse.x, mouse.y) }
+                  onPositionChanged: function(mouse) { if (pressed) selectionOverlay.updateDrag(ptEndMouse, mouse.x, mouse.y) }
+                  onReleased: function() { selectionOverlay.endDrag() }
+                }
+                PanelToolTip { visible: ptEndMouse.containsMouse; text: "Head / End Point" }
+              }
             }
           }
         }
