@@ -4058,7 +4058,7 @@ Rectangle {
               Rectangle {
                 id: selFloatingActions
                 z: 35
-                readonly property real naturalWidth: Math.max(Style.space(340), Math.max(leftInfoRow.implicitWidth + rightActionsRow.implicitWidth + Style.space(20), Math.max(selRow2Flick.contentWidth, selRow3Flick.contentWidth)) + Style.space(20))
+                readonly property real naturalWidth: Math.max(Style.space(340), Math.max(leftInfoRow.implicitWidth + rightActionsRow.implicitWidth + Style.space(20), Math.max(selRow2Flick.contentWidth, Math.max(selRowFillFlick.visible ? selRowFillFlick.contentWidth : 0, selRowShadowFlick.visible ? selRowShadowFlick.contentWidth : 0))) + Style.space(20))
                 width: Math.min(selectionOverlay.width - Style.space(8), naturalWidth)
                 height: selInspectorCol.implicitHeight + Style.space(10)
                 x: Math.max(-selectionBoundingBox.x + Style.space(4), Math.min(selectionOverlay.width - selectionBoundingBox.x - width - Style.space(4), parent.width / 2 - width / 2))
@@ -4321,130 +4321,15 @@ Rectangle {
                           }
                         }
 
-                        // Separator after stroke
-                        Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
                       }
 
-                      // 2. FILL SECTION (INTELLIGENTLY VISIBLE ONLY FOR RECT & CIRCLE)
-                      Row {
-                        visible: Boolean(selectionOverlay.curAct && (selectionOverlay.curAct.tool === "rect" || selectionOverlay.curAct.tool === "circle"))
-                        spacing: Style.space(3)
-                        anchors.verticalCenter: parent.verticalCenter
-
-                        Text {
-                          text: "Fill:"
-                          color: Util.alpha(Color.popups.text || Color.text, 0.6)
-                          font.family: Style.font.menuFamily
-                          font.pixelSize: Style.space(7.5)
-                          font.bold: true
-                          anchors.verticalCenter: parent.verticalCenter
-                        }
-
-                        // Fill Mode pills
-                        Repeater {
-                          model: [
-                            { id: "none", label: "None", icon: "□", tip: "No fill (outline only)" },
-                            { id: "semi", label: "Tint", icon: "▦", tip: "Tinted translucent fill (25%)" },
-                            { id: "solid", label: "Solid", icon: "⬛", tip: "Solid opaque fill (100%)" }
-                          ]
-                          Rectangle {
-                            required property var modelData
-                            property bool isAct: {
-                              if (!selectionOverlay.curAct) return false
-                              var fm = selectionOverlay.curAct.fillMode || (selectionOverlay.curAct.filled ? "semi" : "none")
-                              return fm === modelData.id
-                            }
-                            width: fModeRow.implicitWidth + Style.space(6); height: Style.space(18); radius: Style.space(3)
-                            color: isAct ? Color.accent : (fmMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                            border.width: 1
-                            border.color: isAct ? Color.accent : "transparent"
-                            anchors.verticalCenter: parent.verticalCenter
-
-                            Row {
-                              id: fModeRow
-                              anchors.centerIn: parent
-                              spacing: Style.space(2)
-                              Text {
-                                text: parent.parent.modelData.icon
-                                font.pixelSize: Style.space(6.5)
-                                color: parent.parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
-                                anchors.verticalCenter: parent.verticalCenter
-                              }
-                              Text {
-                                text: parent.parent.modelData.label
-                                font.family: Style.font.menuFamily
-                                font.pixelSize: Style.space(7)
-                                font.bold: true
-                                color: parent.parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
-                                anchors.verticalCenter: parent.verticalCenter
-                              }
-                            }
-                            MouseArea {
-                              id: fmMouse
-                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: root.setSelectedFillMode(parent.modelData.id)
-                            }
-                            PanelToolTip { visible: fmMouse.containsMouse; text: parent.modelData.tip }
-                          }
-                        }
-
-                        // Fill Color Swatches (INTELLIGENTLY VISIBLE ONLY WHEN FILL MODE IS NOT "none")
-                        Row {
-                          visible: Boolean(selectionOverlay.curAct && (
-                            (selectionOverlay.curAct.fillMode && selectionOverlay.curAct.fillMode !== "none") ||
-                            (selectionOverlay.curAct.filled && (!selectionOverlay.curAct.fillMode || selectionOverlay.curAct.fillMode !== "none"))
-                          ))
-                          spacing: Style.space(2)
-                          anchors.verticalCenter: parent.verticalCenter
-
-                          Repeater {
-                            model: ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
-                            Rectangle {
-                              required property string modelData
-                              property string curFillCol: (selectionOverlay.curAct && (selectionOverlay.curAct.fillColor || selectionOverlay.curAct.color)) || ""
-                              width: Style.space(12); height: Style.space(12); radius: Style.space(6)
-                              color: modelData
-                              border.width: String(curFillCol).toLowerCase() === String(modelData).toLowerCase() ? 2 : 1
-                              border.color: String(curFillCol).toLowerCase() === String(modelData).toLowerCase() ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.25)
-                              scale: String(curFillCol).toLowerCase() === String(modelData).toLowerCase() ? 1.25 : 1.0
-                              anchors.verticalCenter: parent.verticalCenter
-
-                              MouseArea {
-                                id: fcMouse
-                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                onClicked: root.setSelectedFillColor(parent.modelData)
-                              }
-                              PanelToolTip { visible: fcMouse.containsMouse; text: "Fill: " + parent.modelData }
-                            }
-                          }
-
-                          // Fill Eyedropper
-                          Rectangle {
-                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
-                            color: fedMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
-                            anchors.verticalCenter: parent.verticalCenter
-                            Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
-                            MouseArea {
-                              id: fedMouse
-                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: {
-                                root.activeColorTarget = "fill"
-                                root.requestScreenPick()
-                              }
-                            }
-                            PanelToolTip { visible: fedMouse.containsMouse; text: "Pick fill color from screen" }
-                          }
-                        }
-
-                        // Separator after fill
-                        Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
-                      }
-
-                      // 3. FLIP DIRECTION BUTTON (for arrow & line)
+                      // 2. FLIP DIRECTION BUTTON (for arrow & line)
                       Row {
                         visible: Boolean(selectionOverlay.curAct && (selectionOverlay.curAct.tool === "arrow" || selectionOverlay.curAct.tool === "line"))
                         spacing: Style.space(4)
                         anchors.verticalCenter: parent.verticalCenter
+
+                        Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
 
                         Rectangle {
                           width: flipArrowTxt.implicitWidth + Style.space(8); height: Style.space(18); radius: Style.space(3)
@@ -4465,8 +4350,6 @@ Rectangle {
                           }
                           PanelToolTip { visible: flipArrowMouse.containsMouse; text: "Reverse direction (swap head and tail)" }
                         }
-
-                        Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
                       }
 
                       // 4. TEXT CONTROLS (for text)
@@ -4713,10 +4596,161 @@ Rectangle {
                   }
 
                   // ==========================================
-                  // ROW 3: DROP SHADOW ENGINE
+                  // ROW 3: DEDICATED FILL ROW (RECT & CIRCLE)
+                  // ==========================================
+                  Rectangle {
+                    visible: selRowFillFlick.visible
+                    width: parent.width
+                    height: 1
+                    color: Util.alpha(Color.popups.border || Color.border, 0.18)
+                  }
+
+                  Flickable {
+                    id: selRowFillFlick
+                    visible: Boolean(selectionOverlay.curAct && (
+                      selectionOverlay.curAct.tool === "rect" ||
+                      selectionOverlay.curAct.tool === "circle"
+                    ))
+                    width: parent.width
+                    height: visible ? Style.space(20) : 0
+                    contentWidth: selRowFillContent.implicitWidth + Style.space(8)
+                    contentHeight: height
+                    boundsBehavior: Flickable.StopAtBounds
+                    flickableDirection: Flickable.HorizontalFlick
+                    clip: true
+
+                    Row {
+                      id: selRowFillContent
+                      anchors.verticalCenter: parent.verticalCenter
+                      spacing: Style.space(4)
+
+                      Text {
+                        text: "Fill:"
+                        color: Util.alpha(Color.popups.text || Color.text, 0.6)
+                        font.family: Style.font.menuFamily
+                        font.pixelSize: Style.space(7.5)
+                        font.bold: true
+                        anchors.verticalCenter: parent.verticalCenter
+                      }
+
+                      // Fill Mode pills
+                      Repeater {
+                        model: [
+                          { id: "none", label: "None", icon: "□", tip: "No fill (outline only)" },
+                          { id: "semi", label: "Tint", icon: "▦", tip: "Tinted translucent fill (25%)" },
+                          { id: "solid", label: "Solid", icon: "⬛", tip: "Solid opaque fill (100%)" }
+                        ]
+                        Rectangle {
+                          required property var modelData
+                          property bool isAct: {
+                            if (!selectionOverlay.curAct) return false
+                            var fm = selectionOverlay.curAct.fillMode || (selectionOverlay.curAct.filled ? "semi" : "none")
+                            return fm === modelData.id
+                          }
+                          width: fModeRow.implicitWidth + Style.space(6); height: Style.space(18); radius: Style.space(3)
+                          color: isAct ? Color.accent : (fmMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
+                          border.width: 1
+                          border.color: isAct ? Color.accent : "transparent"
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          Row {
+                            id: fModeRow
+                            anchors.centerIn: parent
+                            spacing: Style.space(2)
+                            Text {
+                              text: parent.parent.modelData.icon
+                              font.pixelSize: Style.space(6.5)
+                              color: parent.parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
+                              anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                              text: parent.parent.modelData.label
+                              font.family: Style.font.menuFamily
+                              font.pixelSize: Style.space(7)
+                              font.bold: true
+                              color: parent.parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
+                              anchors.verticalCenter: parent.verticalCenter
+                            }
+                          }
+                          MouseArea {
+                            id: fmMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: root.setSelectedFillMode(parent.modelData.id)
+                          }
+                          PanelToolTip { visible: fmMouse.containsMouse; text: parent.modelData.tip }
+                        }
+                      }
+
+                      // Fill Color Swatches (INTELLIGENTLY VISIBLE ONLY WHEN FILL MODE IS NOT "none")
+                      Row {
+                        visible: Boolean(selectionOverlay.curAct && (
+                          (selectionOverlay.curAct.fillMode && selectionOverlay.curAct.fillMode !== "none") ||
+                          (selectionOverlay.curAct.filled && (!selectionOverlay.curAct.fillMode || selectionOverlay.curAct.fillMode !== "none"))
+                        ))
+                        spacing: Style.space(2)
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Rectangle {
+                          width: 1
+                          height: Style.space(12)
+                          color: Util.alpha(Color.popups.text || Color.text, 0.15)
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        Repeater {
+                          model: ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                          Rectangle {
+                            required property string modelData
+                            property string curFillCol: (selectionOverlay.curAct && (selectionOverlay.curAct.fillColor || selectionOverlay.curAct.color)) || ""
+                            width: Style.space(12); height: Style.space(12); radius: Style.space(6)
+                            color: modelData
+                            border.width: String(curFillCol).toLowerCase() === String(modelData).toLowerCase() ? 2 : 1
+                            border.color: String(curFillCol).toLowerCase() === String(modelData).toLowerCase() ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.25)
+                            scale: String(curFillCol).toLowerCase() === String(modelData).toLowerCase() ? 1.25 : 1.0
+                            anchors.verticalCenter: parent.verticalCenter
+
+                            MouseArea {
+                              id: fcMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: root.setSelectedFillColor(parent.modelData)
+                            }
+                            PanelToolTip { visible: fcMouse.containsMouse; text: "Fill: " + parent.modelData }
+                          }
+                        }
+
+                        // Fill Eyedropper
+                        Rectangle {
+                          width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                          color: fedMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                          anchors.verticalCenter: parent.verticalCenter
+                          Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
+                          MouseArea {
+                            id: fedMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.activeColorTarget = "fill"
+                              root.requestScreenPick()
+                            }
+                          }
+                          PanelToolTip { visible: fedMouse.containsMouse; text: "Pick fill color from screen" }
+                        }
+                      }
+                    }
+                  }
+
+                  // Separator Line before Drop Shadow Row
+                  Rectangle {
+                    visible: selRowShadowFlick.visible
+                    width: parent.width
+                    height: 1
+                    color: Util.alpha(Color.popups.border || Color.border, 0.18)
+                  }
+
+                  // ==========================================
+                  // ROW 4: DROP SHADOW ENGINE
                   // ==========================================
                   Flickable {
-                    id: selRow3Flick
+                    id: selRowShadowFlick
                     visible: Boolean(selectionOverlay.curAct && (
                       selectionOverlay.curAct.tool === "rect" ||
                       selectionOverlay.curAct.tool === "circle" ||
@@ -4728,14 +4762,14 @@ Rectangle {
                     ))
                     width: parent.width
                     height: visible ? Style.space(20) : 0
-                    contentWidth: selRow3Content.implicitWidth + Style.space(8)
+                    contentWidth: selRowShadowContent.implicitWidth + Style.space(8)
                     contentHeight: height
                     boundsBehavior: Flickable.StopAtBounds
                     flickableDirection: Flickable.HorizontalFlick
                     clip: true
 
                     Row {
-                      id: selRow3Content
+                      id: selRowShadowContent
                       anchors.verticalCenter: parent.verticalCenter
                       spacing: Style.space(4)
 
