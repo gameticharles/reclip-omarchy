@@ -1597,7 +1597,7 @@ Rectangle {
               x: 0; y: 0
               width: parent.width
               height: root.cropRect ? Math.max(0, root.cropRect.y * root.zoomScale) : parent.height
-              color: "rgba(0, 0, 0, 0.55)"
+              color: Qt.rgba(0, 0, 0, 0.55)
             }
             Rectangle {
               // Bottom scrim
@@ -1606,7 +1606,7 @@ Rectangle {
               y: root.cropRect ? (root.cropRect.y + root.cropRect.height) * root.zoomScale : parent.height
               width: parent.width
               height: root.cropRect ? Math.max(0, parent.height - y) : 0
-              color: "rgba(0, 0, 0, 0.55)"
+              color: Qt.rgba(0, 0, 0, 0.55)
             }
             Rectangle {
               // Left scrim
@@ -1615,7 +1615,7 @@ Rectangle {
               y: root.cropRect ? root.cropRect.y * root.zoomScale : 0
               width: root.cropRect ? Math.max(0, root.cropRect.x * root.zoomScale) : 0
               height: root.cropRect ? root.cropRect.height * root.zoomScale : 0
-              color: "rgba(0, 0, 0, 0.55)"
+              color: Qt.rgba(0, 0, 0, 0.55)
             }
             Rectangle {
               // Right scrim
@@ -1624,7 +1624,7 @@ Rectangle {
               y: root.cropRect ? root.cropRect.y * root.zoomScale : 0
               width: root.cropRect ? Math.max(0, parent.width - x) : 0
               height: root.cropRect ? root.cropRect.height * root.zoomScale : 0
-              color: "rgba(0, 0, 0, 0.55)"
+              color: Qt.rgba(0, 0, 0, 0.55)
             }
 
             // Crop boundary box
