@@ -42,6 +42,7 @@ Rectangle {
   property int stampCounter: 1
   property string actionFeedback: ""
   property var imageHistory: []
+  property var imageRedoStack: []
   property var cropRect: null
   property var cropStartPt: null
 
@@ -50,6 +51,25 @@ Rectangle {
     interval: 2200
     repeat: false
     onTriggered: root.actionFeedback = ""
+  }
+
+  Process {
+    id: transformProc
+    property string targetPath: ""
+    property string feedbackLabel: ""
+    command: []
+    onExited: function(code) {
+      if (code === 0 && targetPath !== "") {
+        root.actions = []
+        root.redoStack = []
+        root.imagePath = targetPath
+        baseImage.source = ""
+        baseImage.source = "file://" + targetPath + "?t=" + Date.now()
+        root.showFeedback(feedbackLabel)
+      } else {
+        root.showFeedback("⚠ Transform failed")
+      }
+    }
   }
 
   function showFeedback(msg) {
@@ -104,6 +124,7 @@ Rectangle {
     root.actions = []
     root.redoStack = []
     root.imageHistory = []
+    root.imageRedoStack = []
     root.cropRect = null
     root.cropStartPt = null
     root.currentAction = null
@@ -168,6 +189,12 @@ Rectangle {
     } else if (root.imageHistory && root.imageHistory.length > 0) {
       var hist = root.imageHistory.slice()
       var prev = hist.pop()
+      var rHist = root.imageRedoStack ? root.imageRedoStack.slice() : []
+      rHist.push({
+        imagePath: root.imagePath,
+        actions: root.actions.slice()
+      })
+      root.imageRedoStack = rHist
       root.imageHistory = hist
       root.imagePath = prev.imagePath
       baseImage.source = ""
@@ -176,22 +203,41 @@ Rectangle {
       root.redoStack = []
       root.cropRect = null
       root.fitZoom()
-      root.showFeedback("Undo transform")
+      root.showFeedback("↺ Undo transform")
     }
   }
 
   function redo() {
-    if (root.redoStack.length === 0) return
-    var nextRedo = root.redoStack.slice()
-    var popped = nextRedo.pop()
-    if (popped && popped.tool === "stamp" && popped.stampType === "number") {
-      root.stampCounter++
+    if (root.redoStack.length > 0) {
+      var nextRedo = root.redoStack.slice()
+      var popped = nextRedo.pop()
+      if (popped && popped.tool === "stamp" && popped.stampType === "number") {
+        root.stampCounter++
+      }
+      var nextActions = root.actions.slice()
+      nextActions.push(popped)
+      root.actions = nextActions
+      root.redoStack = nextRedo
+      annotationCanvas.requestPaint()
+    } else if (root.imageRedoStack && root.imageRedoStack.length > 0) {
+      var rHist = root.imageRedoStack.slice()
+      var nxt = rHist.pop()
+      var hist = root.imageHistory.slice()
+      hist.push({
+        imagePath: root.imagePath,
+        actions: root.actions.slice()
+      })
+      root.imageHistory = hist
+      root.imageRedoStack = rHist
+      root.imagePath = nxt.imagePath
+      baseImage.source = ""
+      baseImage.source = "file://" + nxt.imagePath + "?t=" + Date.now()
+      root.actions = nxt.actions ? nxt.actions.slice() : []
+      root.redoStack = []
+      root.cropRect = null
+      root.fitZoom()
+      root.showFeedback("↷ Redo transform")
     }
-    var nextActions = root.actions.slice()
-    nextActions.push(popped)
-    root.actions = nextActions
-    root.redoStack = nextRedo
-    annotationCanvas.requestPaint()
   }
 
   function clearAll() {
@@ -205,15 +251,26 @@ Rectangle {
     if (root.originalImagePath) {
       root.imagePath = root.originalImagePath
       baseImage.source = ""
-      baseImage.source = "file://" + root.originalImagePath
+      baseImage.source = "file://" + root.originalImagePath + "?t=" + Date.now()
     }
     root.actions = []
     root.redoStack = []
     root.imageHistory = []
+    root.imageRedoStack = []
     root.cropRect = null
     annotationCanvas.requestPaint()
     root.fitZoom()
     root.showFeedback("↺ Reverted to original")
+  }
+
+  function initCropRect() {
+    var imgW = (baseImage.implicitWidth > 0 ? baseImage.implicitWidth : 800)
+    var imgH = (baseImage.implicitHeight > 0 ? baseImage.implicitHeight : 600)
+    var cw = Math.round(imgW * 0.8)
+    var ch = Math.round(imgH * 0.8)
+    var cx = Math.round((imgW - cw) / 2)
+    var cy = Math.round((imgH - ch) / 2)
+    root.cropRect = { x: cx, y: cy, width: cw, height: ch }
   }
 
   function applyCrop() {
@@ -231,6 +288,7 @@ Rectangle {
 
   function applyImageTransform(magickArgs, label) {
     if (!root.imagePath) return
+    if (transformProc.running) return
     var homeDir = Quickshell.env("HOME")
     var stateDir = homeDir + "/.local/state/reclip"
     var timeStr = Date.now()
@@ -242,22 +300,14 @@ Rectangle {
       actions: root.actions.slice()
     })
     root.imageHistory = hist
+    root.imageRedoStack = []
 
     var runTransformOn = function(inputFile) {
+      transformProc.targetPath = targetFile
+      transformProc.feedbackLabel = label
       var cmd = "magick " + Util.shellQuote(inputFile) + " " + magickArgs + " " + Util.shellQuote(targetFile)
-      Quickshell.execDetached(["bash", "-c", cmd])
-
-      var checkTimer = Qt.createQmlObject('import QtQuick 2.15; Timer { interval: 90; repeat: false }', root)
-      checkTimer.triggered.connect(function() {
-        root.actions = []
-        root.redoStack = []
-        root.imagePath = targetFile
-        baseImage.source = ""
-        baseImage.source = "file://" + targetFile + "?t=" + Date.now()
-        root.showFeedback(label)
-        checkTimer.destroy()
-      })
-      checkTimer.start()
+      transformProc.command = ["sh", "-c", cmd]
+      transformProc.running = true
     }
 
     if (root.actions.length > 0) {
@@ -414,8 +464,19 @@ Rectangle {
       root.currentTool = "eraser"
       event.accepted = true
     } else if (event.key === Qt.Key_X) {
-      root.currentTool = root.currentTool === "crop" ? "pan" : "crop"
-      root.cropRect = null
+      if (root.currentTool === "crop") {
+        root.currentTool = "pan"
+        root.cropRect = null
+      } else {
+        root.currentTool = "crop"
+        if (!root.cropRect) root.initCropRect()
+      }
+      event.accepted = true
+    } else if (event.key === Qt.Key_M) {
+      root.currentTool = "pixelate"
+      event.accepted = true
+    } else if (event.key === Qt.Key_K) {
+      root.currentTool = "block_highlight"
       event.accepted = true
     }
   }
@@ -598,15 +659,19 @@ Rectangle {
 
         // Redo
         Rectangle {
+          id: redoBtn
+          readonly property bool canRedo: root.redoStack.length > 0 || (root.imageRedoStack && root.imageRedoStack.length > 0)
           width: Style.space(24); height: Style.space(24); radius: Style.space(4)
-          color: root.redoStack.length > 0 ? (redoMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.03)
-          opacity: root.redoStack.length > 0 ? 1.0 : 0.4
+          color: canRedo ? (redoMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.03)
+          opacity: canRedo ? 1.0 : 0.4
           Text { text: "󰑎"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(11); anchors.centerIn: parent }
           MouseArea {
             id: redoMouse
             anchors.fill: parent; hoverEnabled: true
-            cursorShape: root.redoStack.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
-            onClicked: root.redo()
+            cursorShape: redoBtn.canRedo ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: {
+              if (redoBtn.canRedo) root.redo()
+            }
           }
           PanelToolTip { visible: redoMouse.containsMouse; text: "Redo (Ctrl+Y)" }
         }
@@ -627,14 +692,19 @@ Rectangle {
 
         // Revert to Original
         Rectangle {
+          id: revertBtn
+          readonly property bool hasChanges: root.actions.length > 0 || (root.imageHistory && root.imageHistory.length > 0) || (root.originalImagePath !== "" && root.imagePath !== root.originalImagePath)
           width: Style.space(24); height: Style.space(24); radius: Style.space(4)
-          color: revertMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.08)
+          color: hasChanges ? (revertMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.03)
+          opacity: hasChanges ? 1.0 : 0.4
           Text { text: "↺"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(11); font.bold: true; anchors.centerIn: parent }
           MouseArea {
             id: revertMouse
             anchors.fill: parent; hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.revertToOriginal()
+            cursorShape: revertBtn.hasChanges ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: {
+              if (revertBtn.hasChanges) root.revertToOriginal()
+            }
           }
           PanelToolTip { visible: revertMouse.containsMouse; text: "Revert all changes to original file" }
         }
@@ -1035,8 +1105,7 @@ Rectangle {
                   root.cropRect = null
                 } else {
                   root.currentTool = "crop"
-                  root.cropRect = null
-                  root.showFeedback("Drag on image to select crop area")
+                  if (!root.cropRect) root.initCropRect()
                 }
               }
             }
@@ -1410,10 +1479,9 @@ Rectangle {
               var pt = { x: mouse.x / z, y: mouse.y / z }
               var actColor = String(root.currentColor)
 
-              // Crop tool
+              // Crop tool is handled entirely by cropOverlay
               if (root.currentTool === "crop") {
-                root.cropStartPt = pt
-                root.cropRect = { x: pt.x, y: pt.y, width: 0, height: 0 }
+                mouse.accepted = true
                 return
               }
 
@@ -1477,6 +1545,8 @@ Rectangle {
             }
 
             onPositionChanged: function(mouse) {
+              if (root.currentTool === "crop") return
+
               if ((root.currentTool === "pan" || (mouse.buttons & Qt.MiddleButton)) && pressed) {
                 var dx = mouse.x - lastPanX
                 var dy = mouse.y - lastPanY
@@ -1491,17 +1561,6 @@ Rectangle {
 
               var z = root.zoomScale > 0 ? root.zoomScale : 1.0
               var pt = { x: mouse.x / z, y: mouse.y / z }
-
-              if (root.currentTool === "crop" && pressed && root.cropStartPt) {
-                var maxW = baseImage.implicitWidth > 0 ? baseImage.implicitWidth : compositeContainer.width
-                var maxH = baseImage.implicitHeight > 0 ? baseImage.implicitHeight : compositeContainer.height
-                var cx1 = Math.max(0, Math.min(maxW, Math.min(root.cropStartPt.x, pt.x)))
-                var cy1 = Math.max(0, Math.min(maxH, Math.min(root.cropStartPt.y, pt.y)))
-                var cx2 = Math.max(0, Math.min(maxW, Math.max(root.cropStartPt.x, pt.x)))
-                var cy2 = Math.max(0, Math.min(maxH, Math.max(root.cropStartPt.y, pt.y)))
-                root.cropRect = { x: cx1, y: cy1, width: cx2 - cx1, height: cy2 - cy1 }
-                return
-              }
 
               if (root.currentTool === "eraser" && pressed) {
                 root.eraseNearPoint(pt)
@@ -1520,9 +1579,18 @@ Rectangle {
 
             onReleased: function(mouse) {
               if (root.isDrawing && root.currentAction) {
-                var finalActs = root.actions.slice()
-                finalActs.push(root.currentAction)
-                root.actions = finalActs
+                var act = root.currentAction
+                var valid = true
+                if (act.tool === "block_highlight" && act.start && act.end) {
+                  if (Math.abs(act.end.x - act.start.x) <= 2 || Math.abs(act.end.y - act.start.y) <= 2) valid = false
+                } else if (act.tool === "pixelate" && act.start && act.end) {
+                  if (Math.abs(act.end.x - act.start.x) <= 4 || Math.abs(act.end.y - act.start.y) <= 4) valid = false
+                }
+                if (valid) {
+                  var finalActs = root.actions.slice()
+                  finalActs.push(act)
+                  root.actions = finalActs
+                }
                 root.currentAction = null
                 root.isDrawing = false
                 annotationCanvas.requestPaint()
@@ -1536,9 +1604,18 @@ Rectangle {
 
             onCanceled: function() {
               if (root.isDrawing && root.currentAction) {
-                var finalActs = root.actions.slice()
-                finalActs.push(root.currentAction)
-                root.actions = finalActs
+                var act = root.currentAction
+                var valid = true
+                if (act.tool === "block_highlight" && act.start && act.end) {
+                  if (Math.abs(act.end.x - act.start.x) <= 2 || Math.abs(act.end.y - act.start.y) <= 2) valid = false
+                } else if (act.tool === "pixelate" && act.start && act.end) {
+                  if (Math.abs(act.end.x - act.start.x) <= 4 || Math.abs(act.end.y - act.start.y) <= 4) valid = false
+                }
+                if (valid) {
+                  var finalActs = root.actions.slice()
+                  finalActs.push(act)
+                  root.actions = finalActs
+                }
                 root.currentAction = null
                 root.isDrawing = false
                 annotationCanvas.requestPaint()
@@ -1591,9 +1668,147 @@ Rectangle {
             anchors.fill: parent
             z: 25
 
-            // Dark scrims outside crop rect
+            property var startCrop: null
+            property real startGlobalX: 0
+            property real startGlobalY: 0
+            property string activeHandle: ""
+
+            function startDrag(handle, mouseItem, mouseX, mouseY) {
+              if (!root.cropRect) return
+              var pt = mouseItem.mapToItem(cropOverlay, mouseX, mouseY)
+              activeHandle = handle
+              startGlobalX = pt.x
+              startGlobalY = pt.y
+              startCrop = {
+                x: root.cropRect.x,
+                y: root.cropRect.y,
+                width: root.cropRect.width,
+                height: root.cropRect.height
+              }
+            }
+
+            function updateDrag(mouseItem, mouseX, mouseY) {
+              if (!startCrop || !activeHandle) return
+              var pt = mouseItem.mapToItem(cropOverlay, mouseX, mouseY)
+              var z = root.zoomScale > 0 ? root.zoomScale : 1.0
+              var dx = (pt.x - startGlobalX) / z
+              var dy = (pt.y - startGlobalY) / z
+
+              var imgW = (baseImage.implicitWidth > 0 ? baseImage.implicitWidth : compositeContainer.width)
+              var imgH = (baseImage.implicitHeight > 0 ? baseImage.implicitHeight : compositeContainer.height)
+              var minSize = 20
+
+              var nx = startCrop.x
+              var ny = startCrop.y
+              var nw = startCrop.width
+              var nh = startCrop.height
+
+              if (activeHandle === "move") {
+                nx = Math.max(0, Math.min(imgW - nw, startCrop.x + dx))
+                ny = Math.max(0, Math.min(imgH - nh, startCrop.y + dy))
+              } else {
+                if (activeHandle === "tl" || activeHandle === "l" || activeHandle === "bl") {
+                  var proposedX = Math.max(0, Math.min(startCrop.x + startCrop.width - minSize, startCrop.x + dx))
+                  nw = startCrop.width - (proposedX - startCrop.x)
+                  nx = proposedX
+                }
+                if (activeHandle === "tr" || activeHandle === "r" || activeHandle === "br") {
+                  nw = Math.max(minSize, Math.min(imgW - startCrop.x, startCrop.width + dx))
+                }
+                if (activeHandle === "tl" || activeHandle === "t" || activeHandle === "tr") {
+                  var proposedY = Math.max(0, Math.min(startCrop.y + startCrop.height - minSize, startCrop.y + dy))
+                  nh = startCrop.height - (proposedY - startCrop.y)
+                  ny = proposedY
+                }
+                if (activeHandle === "bl" || activeHandle === "b" || activeHandle === "br") {
+                  nh = Math.max(minSize, Math.min(imgH - startCrop.y, startCrop.height + dy))
+                }
+              }
+
+              root.cropRect = {
+                x: Math.round(nx),
+                y: Math.round(ny),
+                width: Math.round(nw),
+                height: Math.round(nh)
+              }
+            }
+
+            function endDrag() {
+              activeHandle = ""
+              startCrop = null
+            }
+
+            // Background MouseArea: drag to draw new crop box or middle-click pan
+            MouseArea {
+              id: cropBgMouseArea
+              anchors.fill: parent
+              cursorShape: Qt.CrossCursor
+              z: 1
+
+              property real dragStartX: 0
+              property real dragStartY: 0
+              property var previousValidCrop: null
+              property real lastPanX: 0
+              property real lastPanY: 0
+              property bool isPanning: false
+
+              onPressed: function(mouse) {
+                if (mouse.button === Qt.MiddleButton) {
+                  isPanning = true
+                  lastPanX = mouse.x
+                  lastPanY = mouse.y
+                  mouse.accepted = true
+                  return
+                }
+                isPanning = false
+                previousValidCrop = (root.cropRect && root.cropRect.width > 20 && root.cropRect.height > 20) ? root.cropRect : null
+                var z = root.zoomScale > 0 ? root.zoomScale : 1.0
+                dragStartX = mouse.x / z
+                dragStartY = mouse.y / z
+                root.cropRect = { x: dragStartX, y: dragStartY, width: 0, height: 0 }
+              }
+
+              onPositionChanged: function(mouse) {
+                if (isPanning) {
+                  var pdx = mouse.x - lastPanX
+                  var pdy = mouse.y - lastPanY
+                  var maxX = Math.max(0, canvasFlickable.contentWidth - canvasFlickable.width)
+                  var maxY = Math.max(0, canvasFlickable.contentHeight - canvasFlickable.height)
+                  canvasFlickable.contentX = Math.max(0, Math.min(maxX, canvasFlickable.contentX - pdx))
+                  canvasFlickable.contentY = Math.max(0, Math.min(maxY, canvasFlickable.contentY - pdy))
+                  lastPanX = mouse.x
+                  lastPanY = mouse.y
+                  return
+                }
+                if (!pressed) return
+                var z = root.zoomScale > 0 ? root.zoomScale : 1.0
+                var curX = mouse.x / z
+                var curY = mouse.y / z
+                var imgW = (baseImage.implicitWidth > 0 ? baseImage.implicitWidth : compositeContainer.width)
+                var imgH = (baseImage.implicitHeight > 0 ? baseImage.implicitHeight : compositeContainer.height)
+                var x1 = Math.max(0, Math.min(imgW, Math.min(dragStartX, curX)))
+                var y1 = Math.max(0, Math.min(imgH, Math.min(dragStartY, curY)))
+                var x2 = Math.max(0, Math.min(imgW, Math.max(dragStartX, curX)))
+                var y2 = Math.max(0, Math.min(imgH, Math.max(dragStartY, curY)))
+                root.cropRect = { x: x1, y: y1, width: x2 - x1, height: y2 - y1 }
+              }
+
+              onReleased: function() {
+                isPanning = false
+                if (!root.cropRect || root.cropRect.width < 20 || root.cropRect.height < 20) {
+                  if (previousValidCrop) {
+                    root.cropRect = previousValidCrop
+                  } else {
+                    root.initCropRect()
+                  }
+                }
+              }
+            }
+
+            // Dark scrims outside crop rect (z: 5)
             Rectangle {
               // Top scrim
+              z: 5
               x: 0; y: 0
               width: parent.width
               height: root.cropRect ? Math.max(0, root.cropRect.y * root.zoomScale) : parent.height
@@ -1601,6 +1816,7 @@ Rectangle {
             }
             Rectangle {
               // Bottom scrim
+              z: 5
               visible: Boolean(root.cropRect)
               x: 0
               y: root.cropRect ? (root.cropRect.y + root.cropRect.height) * root.zoomScale : parent.height
@@ -1610,6 +1826,7 @@ Rectangle {
             }
             Rectangle {
               // Left scrim
+              z: 5
               visible: Boolean(root.cropRect)
               x: 0
               y: root.cropRect ? root.cropRect.y * root.zoomScale : 0
@@ -1619,6 +1836,7 @@ Rectangle {
             }
             Rectangle {
               // Right scrim
+              z: 5
               visible: Boolean(root.cropRect)
               x: root.cropRect ? (root.cropRect.x + root.cropRect.width) * root.zoomScale : parent.width
               y: root.cropRect ? root.cropRect.y * root.zoomScale : 0
@@ -1627,7 +1845,7 @@ Rectangle {
               color: Qt.rgba(0, 0, 0, 0.55)
             }
 
-            // Crop boundary box
+            // Crop boundary box (z: 10)
             Rectangle {
               id: cropBoundaryBox
               visible: Boolean(root.cropRect && root.cropRect.width > 2 && root.cropRect.height > 2)
@@ -1636,8 +1854,34 @@ Rectangle {
               width: root.cropRect ? root.cropRect.width * root.zoomScale : 0
               height: root.cropRect ? root.cropRect.height * root.zoomScale : 0
               color: "transparent"
-              border.width: 2
+              border.width: 1.5
               border.color: Color.accent
+              z: 10
+
+              // Rule-of-Thirds Grid
+              Rectangle { x: parent.width / 3; y: 0; width: 1; height: parent.height; color: Qt.rgba(1, 1, 1, 0.25) }
+              Rectangle { x: parent.width * 2 / 3; y: 0; width: 1; height: parent.height; color: Qt.rgba(1, 1, 1, 0.25) }
+              Rectangle { x: 0; y: parent.height / 3; width: parent.width; height: 1; color: Qt.rgba(1, 1, 1, 0.25) }
+              Rectangle { x: 0; y: parent.height * 2 / 3; width: parent.width; height: 1; color: Qt.rgba(1, 1, 1, 0.25) }
+
+              // Interior Move MouseArea
+              MouseArea {
+                id: cropMoveArea
+                anchors.fill: parent
+                anchors.margins: Style.space(8)
+                cursorShape: Qt.SizeAllCursor
+                hoverEnabled: true
+
+                onPressed: function(mouse) {
+                  cropOverlay.startDrag("move", cropMoveArea, mouse.x, mouse.y)
+                }
+                onPositionChanged: function(mouse) {
+                  if (pressed) cropOverlay.updateDrag(cropMoveArea, mouse.x, mouse.y)
+                }
+                onReleased: function() {
+                  cropOverlay.endDrag()
+                }
+              }
 
               // Dimension badge in top-left
               Rectangle {
@@ -1650,6 +1894,7 @@ Rectangle {
                 color: Util.alpha("#000000", 0.75)
                 border.width: 1
                 border.color: Color.accent
+                z: 20
 
                 Text {
                   id: cropDimText
@@ -1662,19 +1907,116 @@ Rectangle {
                 }
               }
 
-              // Corner brackets (L-shapes) for crop handle aesthetics
-              // Top-Left
-              Rectangle { x: -2; y: -2; width: 10; height: 3; color: "#FFFFFF" }
-              Rectangle { x: -2; y: -2; width: 3; height: 10; color: "#FFFFFF" }
-              // Top-Right
-              Rectangle { x: parent.width - 8; y: -2; width: 10; height: 3; color: "#FFFFFF" }
-              Rectangle { x: parent.width - 1; y: -2; width: 3; height: 10; color: "#FFFFFF" }
-              // Bottom-Left
-              Rectangle { x: -2; y: parent.height - 1; width: 10; height: 3; color: "#FFFFFF" }
-              Rectangle { x: -2; y: parent.height - 8; width: 3; height: 10; color: "#FFFFFF" }
-              // Bottom-Right
-              Rectangle { x: parent.width - 8; y: parent.height - 1; width: 10; height: 3; color: "#FFFFFF" }
-              Rectangle { x: parent.width - 1; y: parent.height - 8; width: 3; height: 10; color: "#FFFFFF" }
+              // Floating Action Badge: Apply & Cancel
+              Rectangle {
+                id: cropFloatingActions
+                z: 25
+                x: Math.max(-cropBoundaryBox.x, Math.min(cropOverlay.width - cropBoundaryBox.x - width, parent.width / 2 - width / 2))
+                y: (cropBoundaryBox.y + cropBoundaryBox.height + height + 8 < cropOverlay.height) ? (parent.height + Style.space(6)) : ((cropBoundaryBox.y - height - 8 > 0) ? (-height - Style.space(6)) : (parent.height - height - Style.space(6)))
+                width: cropFloatRow.implicitWidth + Style.space(12)
+                height: Style.space(26)
+                radius: Style.space(13)
+                color: Util.alpha(Color.popups.background || Color.background, 0.95)
+                border.width: 1
+                border.color: Util.alpha(Color.popups.border || Color.border, 0.6)
+
+                Row {
+                  id: cropFloatRow
+                  anchors.centerIn: parent
+                  spacing: Style.space(6)
+
+                  // Apply Button
+                  Rectangle {
+                    width: fltApplyRow.implicitWidth + Style.space(10)
+                    height: Style.space(20)
+                    radius: Style.space(10)
+                    color: fltApplyMouse.containsMouse ? Qt.lighter(Color.accent, 1.1) : Color.accent
+                    anchors.verticalCenter: parent.verticalCenter
+
+                    Row {
+                      id: fltApplyRow
+                      anchors.centerIn: parent
+                      spacing: Style.space(3)
+                      Text { text: "✓"; color: "#FFFFFF"; font.pixelSize: Style.space(8.5); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                      Text { text: "Apply"; color: "#FFFFFF"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                    }
+                    MouseArea {
+                      id: fltApplyMouse
+                      anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                      onClicked: root.applyCrop()
+                    }
+                  }
+
+                  // Cancel Button
+                  Rectangle {
+                    width: fltCancelRow.implicitWidth + Style.space(10)
+                    height: Style.space(20)
+                    radius: Style.space(10)
+                    color: fltCancelMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.15) : Util.alpha(Color.popups.text || Color.text, 0.06)
+                    border.width: 1
+                    border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
+                    anchors.verticalCenter: parent.verticalCenter
+
+                    Row {
+                      id: fltCancelRow
+                      anchors.centerIn: parent
+                      spacing: Style.space(3)
+                      Text { text: "✕"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.verticalCenter: parent.verticalCenter }
+                      Text { text: "Cancel"; color: Color.popups.text || Color.text; font.family: Style.font.menuFamily; font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
+                    }
+                    MouseArea {
+                      id: fltCancelMouse
+                      anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                      onClicked: {
+                        root.cropRect = null
+                        root.currentTool = "pan"
+                      }
+                    }
+                  }
+                }
+              }
+
+              // Reusable Handle Component
+              component CropHandle: Rectangle {
+                id: handleRoot
+                property string handleName: ""
+                property int cursor: Qt.ArrowCursor
+                width: Style.space(10)
+                height: Style.space(10)
+                radius: Style.space(2)
+                color: (hMouse.containsMouse || (cropOverlay.activeHandle === handleRoot.handleName)) ? Color.accent : "#FFFFFF"
+                border.width: 1.5
+                border.color: (hMouse.containsMouse || (cropOverlay.activeHandle === handleRoot.handleName)) ? "#FFFFFF" : "#1E293B"
+                z: 15
+
+                MouseArea {
+                  id: hMouse
+                  anchors.fill: parent
+                  anchors.margins: -Style.space(5)
+                  hoverEnabled: true
+                  cursorShape: handleRoot.cursor
+
+                  onPressed: function(mouse) {
+                    cropOverlay.startDrag(handleRoot.handleName, hMouse, mouse.x, mouse.y)
+                  }
+                  onPositionChanged: function(mouse) {
+                    if (pressed) cropOverlay.updateDrag(hMouse, mouse.x, mouse.y)
+                  }
+                  onReleased: function() {
+                    cropOverlay.endDrag()
+                  }
+                }
+              }
+
+              // 8 Resizing Handles
+              CropHandle { handleName: "tl"; cursor: Qt.SizeFDiagCursor; anchors.horizontalCenter: parent.left; anchors.verticalCenter: parent.top }
+              CropHandle { handleName: "t"; cursor: Qt.SizeVerCursor; width: Style.space(16); height: Style.space(7); anchors.horizontalCenter: parent.horizontalCenter; anchors.verticalCenter: parent.top }
+              CropHandle { handleName: "tr"; cursor: Qt.SizeBDiagCursor; anchors.horizontalCenter: parent.right; anchors.verticalCenter: parent.top }
+              CropHandle { handleName: "r"; cursor: Qt.SizeHorCursor; width: Style.space(7); height: Style.space(16); anchors.horizontalCenter: parent.right; anchors.verticalCenter: parent.verticalCenter }
+              CropHandle { handleName: "br"; cursor: Qt.SizeFDiagCursor; anchors.horizontalCenter: parent.right; anchors.verticalCenter: parent.bottom }
+              CropHandle { handleName: "b"; cursor: Qt.SizeVerCursor; width: Style.space(16); height: Style.space(7); anchors.horizontalCenter: parent.horizontalCenter; anchors.verticalCenter: parent.bottom }
+              CropHandle { handleName: "bl"; cursor: Qt.SizeBDiagCursor; anchors.horizontalCenter: parent.left; anchors.verticalCenter: parent.bottom }
+              CropHandle { handleName: "l"; cursor: Qt.SizeHorCursor; width: Style.space(7); height: Style.space(16); anchors.horizontalCenter: parent.left; anchors.verticalCenter: parent.verticalCenter }
             }
           }
         }
@@ -1702,14 +2044,16 @@ Rectangle {
           spacing: Style.space(5)
           Layout.alignment: Qt.AlignVCenter
 
+          readonly property int editCount: root.actions.length + (root.imageHistory ? root.imageHistory.length : 0)
+
           Rectangle {
             width: Style.space(7); height: Style.space(7); radius: Style.space(3.5)
-            color: root.actions.length > 0 ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.25)
+            color: parent.editCount > 0 ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.25)
             anchors.verticalCenter: parent.verticalCenter
           }
 
           Text {
-            text: root.actions.length > 0 ? (root.actions.length + (root.actions.length === 1 ? " edit" : " edits")) : "Clean"
+            text: parent.editCount > 0 ? (parent.editCount + (parent.editCount === 1 ? " edit" : " edits")) : "Clean"
             color: Util.alpha(Color.popups.text || Color.text, 0.6)
             font.family: Style.font.menuFamily
             font.pixelSize: Style.space(8.5)
