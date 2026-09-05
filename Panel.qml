@@ -315,8 +315,8 @@ Panel {
 
     root.history = ClipboardHistory.addEntry(root.history, normalized, root.historyLimit)
     root.saveHistory()
-    if (normalized.type === "text" && ClipboardHistory.isHexColor(normalized.text)) {
-      root.selectColor(normalized.text.trim())
+    if (normalized.type === "text" && ClipboardHistory.isColor(normalized.text)) {
+      root.selectColor(ClipboardHistory.extractColorHex(normalized.text) || normalized.text.trim())
     }
     if (root.opened && root.activeTab === 0) root.rebuildDisplay()
   }
@@ -888,8 +888,8 @@ Panel {
             itemType: "queue",
             entryType: qEntry.type,
             kind: ClipboardHistory.detectKind(qEntry),
-            colorValue: ClipboardHistory.isHexColor(qTxt) ? qTxt.trim() : "",
-            colorRgb: ClipboardHistory.isHexColor(qTxt) ? ClipboardHistory.hexToRgb(qTxt.trim()) : "",
+            colorValue: ClipboardHistory.extractColorHex(qTxt) || "",
+            colorRgb: ClipboardHistory.extractColorHex(qTxt) ? ClipboardHistory.hexToRgb(ClipboardHistory.extractColorHex(qTxt)) : "",
             codeLang: ClipboardHistory.detectCodeLanguage(qTxt),
             fullText: qTxt,
             previewText: (q + 1) + ". " + ClipboardHistory.previewText(qEntry),
