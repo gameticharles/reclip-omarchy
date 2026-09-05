@@ -5032,7 +5032,7 @@ Panel {
               }
             }
 
-            // Image: View & Zoom
+            // Image: View & Edit
             Rectangle {
               visible: menuDropdownCard.clipRow && menuDropdownCard.clipRow.entryType === "image"
               width: parent.width; height: Style.space(28); radius: Style.space(5)
@@ -5040,8 +5040,8 @@ Panel {
               Row {
                 anchors.fill: parent; anchors.leftMargin: Style.space(8); anchors.rightMargin: Style.space(8)
                 spacing: Style.space(8)
-                Text { text: "󰍉"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
-                Text { text: "View & Zoom Image"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "󰏫"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "View & Edit Image"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
               }
               MouseArea {
                 id: zoomItemMouse
@@ -5072,28 +5072,6 @@ Panel {
                   var p = menuDropdownCard.clipRow ? menuDropdownCard.clipRow.path : ""
                   root.activeMenuClipIndex = -1
                   if (p) root.runOcrOnImage(p)
-                }
-              }
-            }
-
-            // Image: Annotate & Edit
-            Rectangle {
-              visible: menuDropdownCard.clipRow && menuDropdownCard.clipRow.entryType === "image"
-              width: parent.width; height: Style.space(28); radius: Style.space(5)
-              color: annotateItemMouse.containsMouse ? Util.alpha(Color.accent, 0.15) : "transparent"
-              Row {
-                anchors.fill: parent; anchors.leftMargin: Style.space(8); anchors.rightMargin: Style.space(8)
-                spacing: Style.space(8)
-                Text { text: "󰏫"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
-                Text { text: "Annotate Image…"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
-              }
-              MouseArea {
-                id: annotateItemMouse
-                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                  var p = menuDropdownCard.clipRow ? menuDropdownCard.clipRow.path : ""
-                  root.activeMenuClipIndex = -1
-                  if (p) root.openImageAnnotation(p)
                 }
               }
             }
