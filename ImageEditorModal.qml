@@ -36,7 +36,7 @@ Rectangle {
   // Properties
   property string imagePath: ""
   property string originalImagePath: ""
-  property string currentTool: "select" // "select", "pan", "pen", "highlighter", "arrow", "rect", "circle", "line", "blur", "text", "stamp", "eraser", "crop", "block_highlight", "pixelate"
+  property string currentTool: "select" // "select", "pan", "pen", "highlighter", "arrow", "rect", "circle", "line", "blur", "text", "stamp", "eraser", "crop", "block_highlight", "pixelate", "magnifier"
   property int selectedActionIndex: -1
   property bool isExporting: false
   property color currentColor: "#EF4444"
@@ -62,6 +62,17 @@ Rectangle {
   property var cropRect: null
   property var cropStartPt: null
   property string cropRatio: "free" // "free", "1:1", "16:9", "4:3", "9:16"
+  property var systemFontFamilies: []
+  property bool fontPickerOpen: false
+  property string fontSearchQuery: ""
+  property var recentColors: ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+  property bool textHalo: false
+  property string textHaloColor: "#000000"
+  property int textHaloWidth: 3
+  property real magnifierZoom: 2.0
+  property int magnifierRadius: 50
+  property bool aspectRatioLocked: false
+  property var scrubStartAct: null
 
   readonly property var cropRatios: [
     { id: "free", label: "Free", ratio: 0 },
@@ -70,6 +81,43 @@ Rectangle {
     { id: "4:3", label: "4:3", ratio: 4.0 / 3.0 },
     { id: "9:16", label: "9:16", ratio: 9.0 / 16.0 }
   ]
+
+  Component.onCompleted: {
+    var fams = Qt.fontFamilies()
+    if (fams && fams.length > 0) {
+      var sorted = fams.slice().sort(function(a, b) {
+        return a.localeCompare(b)
+      })
+      root.systemFontFamilies = sorted
+    }
+  }
+
+  function isColorDark(col) {
+    var c = String(col || "").trim()
+    if (c.startsWith("#")) {
+      var hex = c.substring(1)
+      if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2]
+      if (hex.length >= 6) {
+        var r = parseInt(hex.substr(0, 2), 16) || 0
+        var g = parseInt(hex.substr(2, 2), 16) || 0
+        var b = parseInt(hex.substr(4, 2), 16) || 0
+        var yiq = (r * 299 + g * 587 + b * 114) / 1000
+        return yiq < 128
+      }
+    }
+    return true
+  }
+
+  function addRecentColor(col) {
+    if (!col) return
+    var hex = String(col).toUpperCase()
+    var list = (root.recentColors || []).slice()
+    var idx = list.indexOf(hex)
+    if (idx !== -1) list.splice(idx, 1)
+    list.unshift(hex)
+    if (list.length > 8) list = list.slice(0, 8)
+    root.recentColors = list
+  }
 
   function setCropRatio(ratioId) {
     root.cropRatio = ratioId
@@ -150,6 +198,7 @@ Rectangle {
   property bool isDrawing: false
 
   onCurrentColorChanged: {
+    root.addRecentColor(root.currentColor)
     if (root.activeColorTarget === "fill") {
       root.setSelectedFillColor(root.currentColor)
       root.activeColorTarget = "stroke"
@@ -596,6 +645,7 @@ Rectangle {
       "blur": "▒ Blur",
       "block_highlight": "█ Highlight",
       "pixelate": "░ Pixelate",
+      "magnifier": "🔍 Magnifier",
       "text": "🔤 Text",
       "stamp": "① Stamp"
     }
@@ -604,6 +654,15 @@ Rectangle {
 
   function getActionBounds(act) {
     if (!act) return { x: 0, y: 0, width: 0, height: 0 }
+    if (act.tool === "magnifier" && act.start) {
+      var mr = (act.radius !== undefined) ? Number(act.radius) : 50
+      return {
+        x: act.start.x - mr,
+        y: act.start.y - mr,
+        width: mr * 2,
+        height: mr * 2
+      }
+    }
     if (act.start && act.end) {
       var minX = Math.min(act.start.x, act.end.x)
       var minY = Math.min(act.start.y, act.end.y)
@@ -624,13 +683,13 @@ Rectangle {
         width: Math.max(10, maxX - minX),
         height: Math.max(10, maxY - minY)
       }
-    } else if (act.tool === "text" && act.pos) {
+    } else if (act.tool === "text" && act.pos && act.text) {
       var fs = act.size || 18
       var padX = act.box ? Math.round(fs * 0.45) : 4
       var padY = act.box ? Math.round(fs * 0.25) : 2
-      var txtLen = act.text ? act.text.length : 1
-      var estWidth = Math.max(30, txtLen * (fs * 0.65) + padX * 2)
-      var estHeight = fs * 1.35 + padY * 2
+      var estCharWidth = fs * 0.58
+      var estWidth = Math.max(24, Math.round(act.text.length * estCharWidth) + padX * 2)
+      var estHeight = Math.round(fs * 1.3) + padY * 2
       var bx = act.pos.x - padX
       if (act.textAlign === "center") {
         bx = act.pos.x - estWidth / 2
@@ -644,8 +703,9 @@ Rectangle {
         height: estHeight
       }
     } else if (act.tool === "stamp" && act.pos) {
-      var sr = 18
-      if (act.stampSize === "S") sr = 14
+      var sr = (act.radius !== undefined) ? Number(act.radius) : 18
+      if (act.radius !== undefined) sr = Number(act.radius)
+      else if (act.stampSize === "S") sr = 14
       else if (act.stampSize === "M") sr = 18
       else if (act.stampSize === "L") sr = 24
       else if (act.stampSize === "XL") sr = 32
@@ -684,40 +744,54 @@ Rectangle {
       var act = root.actions[i]
       if (!act) continue
 
+      var testPt = { x: pt.x, y: pt.y }
+      if (act.rotation) {
+        var bRot = root.getActionBounds(act)
+        var cRotX = bRot.x + bRot.width / 2
+        var cRotY = bRot.y + bRot.height / 2
+        var rad = -act.rotation * Math.PI / 180
+        var cosA = Math.cos(rad)
+        var sinA = Math.sin(rad)
+        var dRotX = pt.x - cRotX
+        var dRotY = pt.y - cRotY
+        testPt.x = cRotX + dRotX * cosA - dRotY * sinA
+        testPt.y = cRotY + dRotX * sinA + dRotY * cosA
+      }
+
       if (act.tool === "text" && act.pos) {
         var tb = root.getActionBounds(act)
-        if (pt.x >= tb.x - 4 && pt.x <= tb.x + tb.width + 4 && pt.y >= tb.y - 4 && pt.y <= tb.y + tb.height + 4) {
+        if (testPt.x >= tb.x - 4 && testPt.x <= tb.x + tb.width + 4 && testPt.y >= tb.y - 4 && testPt.y <= tb.y + tb.height + 4) {
           return i
         }
       } else if (act.tool === "stamp" && act.pos) {
         var sr = Math.max(14, (act.width || 4) * 3) + 6
-        if (Math.hypot(act.pos.x - pt.x, act.pos.y - pt.y) <= sr) {
+        if (Math.hypot(act.pos.x - testPt.x, act.pos.y - testPt.y) <= sr) {
           return i
         }
       } else if ((act.tool === "line" || act.tool === "arrow") && act.start && act.end) {
         var l2 = Math.pow(act.end.x - act.start.x, 2) + Math.pow(act.end.y - act.start.y, 2)
         if (l2 === 0) {
-          if (Math.hypot(act.start.x - pt.x, act.start.y - pt.y) <= 16) return i
+          if (Math.hypot(act.start.x - testPt.x, act.start.y - testPt.y) <= 16) return i
         } else {
-          var t = Math.max(0, Math.min(1, ((pt.x - act.start.x) * (act.end.x - act.start.x) + (pt.y - act.start.y) * (act.end.y - act.start.y)) / l2))
+          var t = Math.max(0, Math.min(1, ((testPt.x - act.start.x) * (act.end.x - act.start.x) + (testPt.y - act.start.y) * (act.end.y - act.start.y)) / l2))
           var projX = act.start.x + t * (act.end.x - act.start.x)
           var projY = act.start.y + t * (act.end.y - act.start.y)
-          if (Math.hypot(pt.x - projX, pt.y - projY) <= Math.max(12, (act.width || 4) + 6)) return i
+          if (Math.hypot(testPt.x - projX, testPt.y - projY) <= Math.max(12, (act.width || 4) + 6)) return i
         }
       } else if (act.start && act.end) {
         var bb = root.getActionBounds(act)
-        var isSolid = act.filled || act.tool === "blur" || act.tool === "pixelate" || act.tool === "block_highlight"
+        var isSolid = act.filled || act.tool === "blur" || act.tool === "pixelate" || act.tool === "block_highlight" || act.tool === "magnifier"
         if (isSolid) {
-          if (pt.x >= bb.x - 4 && pt.x <= bb.x + bb.width + 4 && pt.y >= bb.y - 4 && pt.y <= bb.y + bb.height + 4) {
+          if (testPt.x >= bb.x - 4 && testPt.x <= bb.x + bb.width + 4 && testPt.y >= bb.y - 4 && testPt.y <= bb.y + bb.height + 4) {
             return i
           }
         } else {
-          if (pt.x >= bb.x - 10 && pt.x <= bb.x + bb.width + 10 && pt.y >= bb.y - 10 && pt.y <= bb.y + bb.height + 10) {
+          if (testPt.x >= bb.x - 10 && testPt.x <= bb.x + bb.width + 10 && testPt.y >= bb.y - 10 && testPt.y <= bb.y + bb.height + 10) {
             if (bb.width <= 30 || bb.height <= 30) return i
-            var dL = Math.abs(pt.x - bb.x)
-            var dR = Math.abs(pt.x - (bb.x + bb.width))
-            var dT = Math.abs(pt.y - bb.y)
-            var dB = Math.abs(pt.y - (bb.y + bb.height))
+            var dL = Math.abs(testPt.x - bb.x)
+            var dR = Math.abs(testPt.x - (bb.x + bb.width))
+            var dT = Math.abs(testPt.y - bb.y)
+            var dB = Math.abs(testPt.y - (bb.y + bb.height))
             var minD = Math.min(Math.min(dL, dR), Math.min(dT, dB))
             if (minD <= 12) return i
           }
@@ -725,7 +799,7 @@ Rectangle {
       } else if (act.points && act.points.length > 0) {
         var thresh = Math.max(12, (act.width || 4) * (act.tool === "highlighter" ? 2 : 1) + 4)
         for (var p = 0; p < act.points.length; p++) {
-          if (Math.hypot(act.points[p].x - pt.x, act.points[p].y - pt.y) <= thresh) {
+          if (Math.hypot(act.points[p].x - testPt.x, act.points[p].y - testPt.y) <= thresh) {
             return i
           }
         }
@@ -837,6 +911,7 @@ Rectangle {
 
   function setSelectedStrokeColor(col) {
     root.currentColor = col
+    root.addRecentColor(col)
     if (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) {
       var act = root.actions[root.selectedActionIndex]
       if (!act) return
@@ -930,6 +1005,7 @@ Rectangle {
 
   function setSelectedFillColor(col) {
     root.fillColor = col
+    root.addRecentColor(col)
     if (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) {
       var act = root.actions[root.selectedActionIndex]
       if (act && (act.tool === "rect" || act.tool === "circle")) {
@@ -1132,6 +1208,7 @@ Rectangle {
   function setSelectedShadowColor(col) {
     root.dropShadowColor = col
     root.dropShadow = true
+    root.addRecentColor(col)
     if (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) {
       var act = root.actions[root.selectedActionIndex]
       if (act) {
@@ -1391,6 +1468,105 @@ Rectangle {
     root.showFeedback(cloned.locked ? "🔒 Element locked" : "🔓 Element unlocked")
   }
 
+  function setSelectedRotation(deg) {
+    if (root.selectedActionIndex < 0 || root.selectedActionIndex >= root.actions.length) return
+    var act = root.actions[root.selectedActionIndex]
+    if (!act) return
+    var next = root.actions.slice()
+    var cloned = JSON.parse(JSON.stringify(act))
+    cloned.rotation = Math.round(deg) % 360
+    if (cloned.rotation < 0) cloned.rotation += 360
+    next[root.selectedActionIndex] = cloned
+    root.actions = next
+    annotationCanvas.requestPaint()
+  }
+
+  function rotateSelected(degDelta) {
+    if (root.selectedActionIndex < 0 || root.selectedActionIndex >= root.actions.length) return
+    var act = root.actions[root.selectedActionIndex]
+    if (!act) return
+    root.pushUndoState()
+    var curRot = act.rotation || 0
+    var newRot = (curRot + degDelta) % 360
+    if (newRot < 0) newRot += 360
+    root.setSelectedRotation(newRot)
+    root.showFeedback("↻ Rotated " + newRot + "°")
+  }
+
+  function toggleSelectedLockRatio() {
+    if (root.selectedActionIndex < 0 || root.selectedActionIndex >= root.actions.length) return
+    var act = root.actions[root.selectedActionIndex]
+    if (!act) return
+    root.pushUndoState()
+    var next = root.actions.slice()
+    var cloned = JSON.parse(JSON.stringify(act))
+    cloned.lockRatio = !Boolean(cloned.lockRatio)
+    next[root.selectedActionIndex] = cloned
+    root.actions = next
+    root.showFeedback(cloned.lockRatio ? "🔗 Aspect ratio locked" : "🔓 Aspect ratio unlocked")
+  }
+
+  function toggleSelectedTextHalo() {
+    if (root.selectedActionIndex < 0 || root.selectedActionIndex >= root.actions.length) return
+    var act = root.actions[root.selectedActionIndex]
+    if (!act || act.tool !== "text") return
+    root.pushUndoState()
+    var next = root.actions.slice()
+    var cloned = JSON.parse(JSON.stringify(act))
+    cloned.halo = !Boolean(cloned.halo)
+    next[root.selectedActionIndex] = cloned
+    root.actions = next
+    annotationCanvas.requestPaint()
+    root.showFeedback(cloned.halo ? "Text halo outline enabled" : "Text halo outline disabled")
+  }
+
+  function setSelectedMagnifierZoom(z) {
+    if (root.selectedActionIndex < 0 || root.selectedActionIndex >= root.actions.length) return
+    var act = root.actions[root.selectedActionIndex]
+    if (!act || act.tool !== "magnifier") return
+    var next = root.actions.slice()
+    var cloned = JSON.parse(JSON.stringify(act))
+    cloned.zoom = z
+    next[root.selectedActionIndex] = cloned
+    root.actions = next
+    annotationCanvas.requestPaint()
+  }
+
+  function modifySelectedProperty(key, val) {
+    if (root.selectedActionIndex < 0 || root.selectedActionIndex >= root.actions.length) return
+    var act = root.actions[root.selectedActionIndex]
+    if (!act) return
+    if (!root.scrubStartAct) {
+      root.scrubStartAct = JSON.parse(JSON.stringify(act))
+    }
+    var next = root.actions.slice()
+    var cloned = JSON.parse(JSON.stringify(act))
+    cloned[key] = val
+    if (key === "width" && cloned.tool === "text") {
+      cloned.size = Math.max(10, val * 4)
+    }
+    next[root.selectedActionIndex] = cloned
+    root.actions = next
+    annotationCanvas.requestPaint()
+  }
+
+  function commitSelectedProperty(key, val, feedbackLabel) {
+    if (root.selectedActionIndex < 0 || root.selectedActionIndex >= root.actions.length) {
+      root.scrubStartAct = null
+      return
+    }
+    var act = root.actions[root.selectedActionIndex]
+    if (root.scrubStartAct && act) {
+      if (JSON.stringify(root.scrubStartAct) !== JSON.stringify(act)) {
+        root.pushSpecificUndoState(root.scrubStartAct, root.selectedActionIndex)
+      }
+    }
+    root.scrubStartAct = null
+    if (feedbackLabel) {
+      root.showFeedback(feedbackLabel + ": " + val)
+    }
+  }
+
   function moveAction(act, dx, dy) {
     var res = JSON.parse(JSON.stringify(act))
     if (res.start && res.end) {
@@ -1412,12 +1588,35 @@ Rectangle {
     return res
   }
 
-  function computeNewBounds(startBounds, handle, dx, dy) {
+  function computeNewBounds(startBounds, handle, dx, dy, lockRatio) {
     var minW = 10, minH = 10
     var nx = startBounds.x
     var ny = startBounds.y
     var nw = startBounds.width
     var nh = startBounds.height
+
+    if (lockRatio && (handle === "tl" || handle === "tr" || handle === "bl" || handle === "br")) {
+      var aspect = (startBounds.width > 0 && startBounds.height > 0) ? (startBounds.width / startBounds.height) : 1.0
+      var d = Math.abs(dx) > Math.abs(dy) ? dx : (dy * aspect)
+      if (handle === "br") {
+        nw = Math.max(minW, startBounds.width + d)
+        nh = Math.max(minH, nw / aspect)
+      } else if (handle === "tr") {
+        nw = Math.max(minW, startBounds.width + d)
+        nh = Math.max(minH, nw / aspect)
+        ny = startBounds.y + (startBounds.height - nh)
+      } else if (handle === "bl") {
+        nw = Math.max(minW, startBounds.width - d)
+        nh = Math.max(minH, nw / aspect)
+        nx = startBounds.x + (startBounds.width - nw)
+      } else if (handle === "tl") {
+        nw = Math.max(minW, startBounds.width - d)
+        nh = Math.max(minH, nw / aspect)
+        nx = startBounds.x + (startBounds.width - nw)
+        ny = startBounds.y + (startBounds.height - nh)
+      }
+      return { x: nx, y: ny, width: nw, height: nh }
+    }
 
     if (handle === "r" || handle === "tr" || handle === "br") {
       nw = Math.max(minW, startBounds.width + dx)
@@ -1460,6 +1659,10 @@ Rectangle {
         res.start = { x: sx, y: sy }
         res.end = { x: ex, y: ey }
       }
+    }
+
+    if (res.tool === "magnifier" && res.start && res.end) {
+      res.radius = Math.max(15, Math.round(Math.min(newBounds.width, newBounds.height) / 2))
     }
 
     if (res.tool === "text" && res.pos) {
@@ -1795,6 +1998,10 @@ Rectangle {
       event.accepted = true
     } else if (event.key === Qt.Key_K) {
       root.currentTool = "block_highlight"
+      root.selectedActionIndex = -1
+      event.accepted = true
+    } else if (event.key === Qt.Key_Z) {
+      root.currentTool = "magnifier"
       root.selectedActionIndex = -1
       event.accepted = true
     }
@@ -3419,6 +3626,31 @@ Rectangle {
               }
               PanelToolTip { visible: pixMouse.containsMouse; text: "Tensaku mosaic pixelation privacy redact" }
             }
+
+            // Magnifier / Loupe
+            Rectangle {
+              width: magBtnTxt.implicitWidth + Style.space(10); height: Style.space(22); radius: Style.space(4)
+              color: root.currentTool === "magnifier" ? Color.accent : (magMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.05))
+              border.width: 1; border.color: root.currentTool === "magnifier" ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.1)
+              anchors.verticalCenter: parent.verticalCenter
+
+              Row {
+                id: magBtnTxt
+                anchors.centerIn: parent
+                spacing: Style.space(3)
+                Text { text: "🔍"; font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "Magnifier"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(8); font.bold: true; color: root.currentTool === "magnifier" ? "#FFFFFF" : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                id: magMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.currentTool = "magnifier"
+                  if (root.textInputActive) root.commitText()
+                }
+              }
+              PanelToolTip { visible: magMouse.containsMouse; text: "Magnifier / Loupe: zoom in on fine screenshot details (Z)" }
+            }
           }
 
           // Separator
@@ -3695,7 +3927,23 @@ Rectangle {
               // Freehand / shape tools
               root.isDrawing = true
 
-              if (root.currentTool === "pen" || root.currentTool === "highlighter") {
+              if (root.currentTool === "magnifier") {
+                root.currentAction = {
+                  tool: "magnifier",
+                  start: pt,
+                  end: pt,
+                  zoom: Number(root.magnifierZoom || 2.0),
+                  radius: Number(root.magnifierRadius || 50),
+                  color: actColor,
+                  borderWidth: 3,
+                  shadow: true,
+                  shadowColor: "#000000",
+                  shadowBlur: 10,
+                  shadowOpacity: 0.35,
+                  shadowOffsetX: 0,
+                  shadowOffsetY: 4
+                }
+              } else if (root.currentTool === "pen" || root.currentTool === "highlighter") {
                 root.currentAction = {
                   tool: root.currentTool,
                   color: actColor,
@@ -3769,6 +4017,10 @@ Rectangle {
 
               if (root.currentTool === "pen" || root.currentTool === "highlighter") {
                 root.currentAction.points.push(pt)
+              } else if (root.currentTool === "magnifier") {
+                root.currentAction.end = pt
+                var curDist = Math.hypot(pt.x - root.currentAction.start.x, pt.y - root.currentAction.start.y)
+                if (curDist > 10) root.currentAction.radius = Math.max(25, Math.round(curDist))
               } else {
                 root.currentAction.end = pt
               }
@@ -3791,6 +4043,8 @@ Rectangle {
                   if (Math.abs(act.end.x - act.start.x) <= 2 || Math.abs(act.end.y - act.start.y) <= 2) valid = false
                 } else if (act.tool === "pixelate" && act.start && act.end) {
                   if (Math.abs(act.end.x - act.start.x) <= 4 || Math.abs(act.end.y - act.start.y) <= 4) valid = false
+                } else if (act.tool === "magnifier" && act.start) {
+                  if (!act.radius || act.radius < 15) act.radius = Number(root.magnifierRadius || 50)
                 }
                 if (valid) {
                   root.pushUndoState()
@@ -3822,6 +4076,8 @@ Rectangle {
                   if (Math.abs(act.end.x - act.start.x) <= 2 || Math.abs(act.end.y - act.start.y) <= 2) valid = false
                 } else if (act.tool === "pixelate" && act.start && act.end) {
                   if (Math.abs(act.end.x - act.start.x) <= 4 || Math.abs(act.end.y - act.start.y) <= 4) valid = false
+                } else if (act.tool === "magnifier" && act.start) {
+                  if (!act.radius || act.radius < 15) act.radius = Number(root.magnifierRadius || 50)
                 }
                 if (valid) {
                   root.pushUndoState()
@@ -4312,7 +4568,8 @@ Rectangle {
                 updated = JSON.parse(JSON.stringify(dragStartAct))
                 updated.end = { x: dragStartAct.end.x + dx, y: dragStartAct.end.y + dy }
               } else {
-                var nb = root.computeNewBounds(dragStartB, activeHandle, dx, dy)
+                var lock = Boolean(dragStartAct && dragStartAct.lockRatio)
+                var nb = root.computeNewBounds(dragStartB, activeHandle, dx, dy, lock)
                 updated = root.scaleAction(dragStartAct, dragStartB, nb)
               }
 
@@ -4345,6 +4602,8 @@ Rectangle {
               y: selectionOverlay.boxY
               width: selectionOverlay.boxW
               height: selectionOverlay.boxH
+              rotation: (selectionOverlay.curAct && selectionOverlay.curAct.rotation) || 0
+              transformOrigin: Item.Center
               color: (selectionOverlay.curAct && selectionOverlay.curAct.locked) ? Util.alpha("#F59E0B", 0.08) : Util.alpha(Color.accent, 0.08)
               border.width: 1.5
               border.color: (selectionOverlay.curAct && selectionOverlay.curAct.locked) ? "#F59E0B" : Color.accent
@@ -4368,40 +4627,242 @@ Rectangle {
                 }
               }
 
-              // Floating Multi-Row Inspector Panel
-              Rectangle {
-                id: selFloatingActions
-                z: 35
-                readonly property real naturalWidth: {
-                  var w1 = leftInfoRow.implicitWidth + rightActionsRow.implicitWidth + Style.space(20)
-                  var w2 = selRowStrokeFlick.visible ? selRowStrokeContent.implicitWidth : 0
-                  var w3 = selRowShapeFlick.visible ? selRowShapeContent.implicitWidth : 0
-                  var w4 = selRowToolFlick.visible ? selRowToolContent.implicitWidth : 0
-                  var w5 = selRowLayoutFlick.visible ? selRowLayoutContent.implicitWidth : 0
-                  var w6 = selRowShadowFlick.visible ? selRowShadowContent.implicitWidth : 0
-                  return Math.max(Style.space(340), Math.max(w1, Math.max(w2, Math.max(w3, Math.max(w4, Math.max(w5, w6)))))) + Style.space(20)
-                }
-                width: Math.min(selectionOverlay.width - Style.space(8), naturalWidth)
-                height: selInspectorCol.implicitHeight + Style.space(10)
-                x: Math.max(-selectionBoundingBox.x + Style.space(4), Math.min(selectionOverlay.width - selectionBoundingBox.x - width - Style.space(4), parent.width / 2 - width / 2))
-                y: {
-                  var gap = Style.space(8)
-                  // Check if fits above
-                  if (selectionBoundingBox.y - height - gap >= Style.space(4)) {
-                    return -height - gap
+              // Reusable Handle Component
+              component SelHandle: Rectangle {
+                id: sHandleRoot
+                property string handleName: ""
+                property int cursor: Qt.ArrowCursor
+                visible: !Boolean(selectionOverlay.curAct && selectionOverlay.curAct.locked)
+                width: Style.space(9)
+                height: Style.space(9)
+                radius: Style.space(2)
+                color: (shMouse.containsMouse || (selectionOverlay.activeHandle === sHandleRoot.handleName)) ? Color.accent : "#FFFFFF"
+                border.width: 1.5
+                border.color: Color.accent
+                z: 20
+
+                MouseArea {
+                  id: shMouse
+                  anchors.fill: parent
+                  anchors.margins: -Style.space(6)
+                  hoverEnabled: true
+                  cursorShape: sHandleRoot.cursor
+
+                  onPressed: function(mouse) {
+                    selectionOverlay.startDrag(sHandleRoot.handleName, shMouse, mouse.x, mouse.y)
                   }
-                  // Check if fits below
-                  if (selectionBoundingBox.y + parent.height + gap + height <= selectionOverlay.height - Style.space(4)) {
-                    return parent.height + gap
+                  onPositionChanged: function(mouse) {
+                    if (pressed) selectionOverlay.updateDrag(shMouse, mouse.x, mouse.y)
                   }
-                  // Otherwise, dock inside overlay clamped
-                  var canvasY = Math.max(Style.space(4), Math.min(selectionOverlay.height - height - Style.space(4), selectionBoundingBox.y + Style.space(4)))
-                  return canvasY - selectionBoundingBox.y
+                  onReleased: function() {
+                    selectionOverlay.endDrag()
+                  }
                 }
-                radius: Style.space(6)
-                color: Util.alpha(Color.popups.background || Color.background, 0.96)
-                border.width: 1
-                border.color: Util.alpha(Color.popups.border || Color.border, 0.6)
+              }
+
+              // 8 Resizing Handles
+              SelHandle { handleName: "tl"; cursor: Qt.SizeFDiagCursor; anchors.horizontalCenter: parent.left; anchors.verticalCenter: parent.top }
+              SelHandle { handleName: "t"; cursor: Qt.SizeVerCursor; width: Style.space(14); height: Style.space(6); anchors.horizontalCenter: parent.horizontalCenter; anchors.verticalCenter: parent.top }
+              SelHandle { handleName: "tr"; cursor: Qt.SizeBDiagCursor; anchors.horizontalCenter: parent.right; anchors.verticalCenter: parent.top }
+              SelHandle { handleName: "r"; cursor: Qt.SizeHorCursor; width: Style.space(6); height: Style.space(14); anchors.horizontalCenter: parent.right; anchors.verticalCenter: parent.verticalCenter }
+              SelHandle { handleName: "br"; cursor: Qt.SizeFDiagCursor; anchors.horizontalCenter: parent.right; anchors.verticalCenter: parent.bottom }
+              SelHandle { handleName: "b"; cursor: Qt.SizeVerCursor; width: Style.space(14); height: Style.space(6); anchors.horizontalCenter: parent.horizontalCenter; anchors.verticalCenter: parent.bottom }
+              SelHandle { handleName: "bl"; cursor: Qt.SizeBDiagCursor; anchors.horizontalCenter: parent.left; anchors.verticalCenter: parent.bottom }
+              SelHandle { handleName: "l"; cursor: Qt.SizeHorCursor; width: Style.space(6); height: Style.space(14); anchors.horizontalCenter: parent.left; anchors.verticalCenter: parent.verticalCenter }
+            }
+
+            // Reusable Smart Scrubber Component
+            component SmartScrubber: Rectangle {
+              id: scrubRoot
+              property string label: ""
+              property real value: 0
+              property real from: 0
+              property real to: 100
+              property real step: 1
+              property string unit: ""
+              property real sensitivity: 0.5
+              property string tip: ""
+              property bool integerOnly: true
+              signal valueScrubbed(real val)
+              signal valueCommitted(real val)
+
+              property real dragStartX: 0
+              property real dragStartVal: 0
+              property bool isScrubbing: false
+              property bool editMode: false
+
+              height: Style.space(18)
+              width: scrubRow.implicitWidth + Style.space(4)
+              radius: Style.space(3)
+              color: Util.alpha(Color.popups.text || Color.text, 0.06)
+              border.width: 1
+              border.color: isScrubbing ? Color.accent : (scrubMidMouse.containsMouse ? Util.alpha(Color.accent, 0.4) : Util.alpha(Color.popups.text || Color.text, 0.12))
+
+              Row {
+                id: scrubRow
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.horizontalCenter: parent.horizontalCenter
+                spacing: 0
+
+                // Step Down [-]
+                Rectangle {
+                  width: Style.space(14); height: Style.space(18); radius: Style.space(3)
+                  color: decM.containsMouse ? Util.alpha(Color.accent, 0.2) : "transparent"
+                  Text { text: "−"; font.pixelSize: Style.space(7.5); font.bold: true; color: Color.popups.text || Color.text; anchors.centerIn: parent }
+                  MouseArea {
+                    id: decM
+                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      var nVal = Math.max(scrubRoot.from, scrubRoot.value - scrubRoot.step)
+                      if (scrubRoot.integerOnly) nVal = Math.round(nVal)
+                      scrubRoot.value = nVal
+                      scrubRoot.valueScrubbed(nVal)
+                      scrubRoot.valueCommitted(nVal)
+                    }
+                  }
+                }
+
+                // Middle Badge (Drag to scrub, double click to type)
+                Rectangle {
+                  id: midBadge
+                  height: Style.space(18)
+                  width: Math.max(Style.space(36), valLabel.implicitWidth + Style.space(8))
+                  color: scrubRoot.isScrubbing ? Util.alpha(Color.accent, 0.18) : (scrubMidMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.08) : "transparent")
+
+                  Text {
+                    id: valLabel
+                    visible: !scrubRoot.editMode
+                    anchors.centerIn: parent
+                    text: (scrubRoot.label ? (scrubRoot.label + ": ") : "") + (scrubRoot.integerOnly ? Math.round(scrubRoot.value) : scrubRoot.value.toFixed(1)) + scrubRoot.unit
+                    font.family: Style.font.menuFamily
+                    font.pixelSize: Style.space(6.8)
+                    font.bold: true
+                    color: scrubRoot.isScrubbing ? Color.accent : (Color.popups.text || Color.text)
+                  }
+
+                  TextInput {
+                    id: inlineInput
+                    visible: scrubRoot.editMode
+                    anchors.fill: parent
+                    anchors.margins: 1
+                    horizontalAlignment: TextInput.AlignHCenter
+                    verticalAlignment: TextInput.AlignVCenter
+                    font.family: Style.font.menuFamily
+                    font.pixelSize: Style.space(6.8)
+                    font.bold: true
+                    color: Color.accent
+                    selectByMouse: true
+                    onAccepted: {
+                      var num = parseFloat(text)
+                      if (!isNaN(num)) {
+                        var clamped = Math.max(scrubRoot.from, Math.min(scrubRoot.to, num))
+                        if (scrubRoot.integerOnly) clamped = Math.round(clamped)
+                        scrubRoot.value = clamped
+                        scrubRoot.valueScrubbed(clamped)
+                        scrubRoot.valueCommitted(clamped)
+                      }
+                      scrubRoot.editMode = false
+                    }
+                    onActiveFocusChanged: {
+                      if (!activeFocus && scrubRoot.editMode) {
+                        scrubRoot.editMode = false
+                      }
+                    }
+                  }
+
+                  MouseArea {
+                    id: scrubMidMouse
+                    anchors.fill: parent
+                    enabled: !scrubRoot.editMode
+                    hoverEnabled: true
+                    cursorShape: Qt.SizeHorCursor
+
+                    onPressed: function(mouse) {
+                      scrubRoot.dragStartX = mouse.x
+                      scrubRoot.dragStartVal = scrubRoot.value
+                      scrubRoot.isScrubbing = true
+                    }
+                    onPositionChanged: function(mouse) {
+                      if (pressed) {
+                        var dx = mouse.x - scrubRoot.dragStartX
+                        var delta = dx * scrubRoot.step * scrubRoot.sensitivity * 0.25
+                        var nVal = Math.max(scrubRoot.from, Math.min(scrubRoot.to, scrubRoot.dragStartVal + delta))
+                        if (scrubRoot.integerOnly) nVal = Math.round(nVal)
+                        scrubRoot.value = nVal
+                        scrubRoot.valueScrubbed(nVal)
+                      }
+                    }
+                    onReleased: function() {
+                      if (scrubRoot.isScrubbing) {
+                        scrubRoot.isScrubbing = false
+                        scrubRoot.valueCommitted(scrubRoot.value)
+                      }
+                    }
+                    onDoubleClicked: {
+                      scrubRoot.editMode = true
+                      inlineInput.text = String(scrubRoot.integerOnly ? Math.round(scrubRoot.value) : scrubRoot.value.toFixed(1))
+                      inlineInput.forceActiveFocus()
+                      inlineInput.selectAll()
+                    }
+                  }
+                }
+
+                // Step Up [+]
+                Rectangle {
+                  width: Style.space(14); height: Style.space(18); radius: Style.space(3)
+                  color: incM.containsMouse ? Util.alpha(Color.accent, 0.2) : "transparent"
+                  Text { text: "+"; font.pixelSize: Style.space(7.5); font.bold: true; color: Color.popups.text || Color.text; anchors.centerIn: parent }
+                  MouseArea {
+                    id: incM
+                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      var nVal = Math.max(scrubRoot.from, Math.min(scrubRoot.to, scrubRoot.value + scrubRoot.step))
+                      if (scrubRoot.integerOnly) nVal = Math.round(nVal)
+                      scrubRoot.value = nVal
+                      scrubRoot.valueScrubbed(nVal)
+                      scrubRoot.valueCommitted(nVal)
+                    }
+                  }
+                }
+              }
+
+              PanelToolTip {
+                visible: (scrubMidMouse.containsMouse || isScrubbing) && !scrubRoot.editMode
+                text: scrubRoot.tip ? scrubRoot.tip : (scrubRoot.label + ": drag horizontally to adjust, double-click to type")
+              }
+            }
+
+            // Floating Multi-Row Inspector Panel
+            Rectangle {
+              id: selFloatingActions
+              visible: Boolean(selectionOverlay.selBounds && selectionOverlay.boxW > 0 && selectionOverlay.boxH > 0)
+              z: 35
+              readonly property real naturalWidth: {
+                var w1 = leftInfoRow.implicitWidth + rightActionsRow.implicitWidth + Style.space(20)
+                var w2 = selRowStrokeFlick.visible ? selRowStrokeContent.implicitWidth : 0
+                var w3 = selRowShapeFlick.visible ? selRowShapeContent.implicitWidth : 0
+                var w4 = selRowToolFlick.visible ? selRowToolContent.implicitWidth : 0
+                var w5 = selRowLayoutFlick.visible ? selRowLayoutContent.implicitWidth : 0
+                var w6 = selRowShadowFlick.visible ? selRowShadowContent.implicitWidth : 0
+                return Math.max(Style.space(340), Math.max(w1, Math.max(w2, Math.max(w3, Math.max(w4, Math.max(w5, w6)))))) + Style.space(20)
+              }
+              width: Math.min(selectionOverlay.width - Style.space(8), naturalWidth)
+              height: selInspectorCol.implicitHeight + Style.space(10)
+              x: Math.max(Style.space(4), Math.min(selectionOverlay.width - width - Style.space(4), selectionOverlay.boxX + selectionOverlay.boxW / 2 - width / 2))
+              y: {
+                var gap = Style.space(8)
+                if (selectionOverlay.boxY - height - gap >= Style.space(4)) {
+                  return selectionOverlay.boxY - height - gap
+                }
+                if (selectionOverlay.boxY + selectionOverlay.boxH + gap + height <= selectionOverlay.height - Style.space(4)) {
+                  return selectionOverlay.boxY + selectionOverlay.boxH + gap
+                }
+                return Math.max(Style.space(4), Math.min(selectionOverlay.height - height - Style.space(4), selectionOverlay.boxY + Style.space(4)))
+              }
+              radius: Style.space(6)
+              color: Util.alpha(Color.popups.background || Color.background, 0.96)
+              border.width: 1
+              border.color: Util.alpha(Color.popups.border || Color.border, 0.6)
 
                 Column {
                   id: selInspectorCol
@@ -4490,6 +4951,44 @@ Rectangle {
                         PanelToolTip {
                           visible: lockMouse.containsMouse
                           text: parent.isLocked ? "Locked: cannot drag, resize, or delete (Click to Unlock)" : "Lock element (protect from accidental drag/resize/delete)"
+                        }
+                      }
+
+                      // 4. Aspect Ratio Lock Toggle
+                      Rectangle {
+                        property bool isRatioLocked: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.lockRatio)
+                        width: ratioRow.implicitWidth + Style.space(8); height: Style.space(18); radius: Style.space(3)
+                        color: isRatioLocked ? Util.alpha(Color.accent, 0.25) : (ratioMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
+                        border.width: 1
+                        border.color: isRatioLocked ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.12)
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Row {
+                          id: ratioRow
+                          anchors.centerIn: parent
+                          spacing: Style.space(2)
+                          Text {
+                            text: parent.parent.isRatioLocked ? "🔗" : "🔓"
+                            font.pixelSize: Style.space(7.5)
+                            anchors.verticalCenter: parent.verticalCenter
+                          }
+                          Text {
+                            text: "Ratio"
+                            font.family: Style.font.menuFamily
+                            font.pixelSize: Style.space(7)
+                            font.bold: true
+                            color: parent.parent.isRatioLocked ? Color.accent : (Color.popups.text || Color.text)
+                            anchors.verticalCenter: parent.verticalCenter
+                          }
+                        }
+                        MouseArea {
+                          id: ratioMouse
+                          anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                          onClicked: root.toggleSelectedLockRatio()
+                        }
+                        PanelToolTip {
+                          visible: ratioMouse.containsMouse
+                          text: parent.isRatioLocked ? "Aspect ratio locked: corner handles scale proportionally (Click to Unlock)" : "Lock aspect ratio for proportional corner scaling"
                         }
                       }
                     }
@@ -4604,34 +5103,17 @@ Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
                       }
 
-                      // Stroke Width Pills (0 for rect/circle, 2-14 for lines/pens)
-                      Repeater {
-                        model: (selectionOverlay.curAct && (selectionOverlay.curAct.tool === "rect" || selectionOverlay.curAct.tool === "circle")) ?
-                          [{ label: "0", val: 0, tip: "No border (0px)" }, { label: "2", val: 2, tip: "Stroke: 2px" }, { label: "4", val: 4, tip: "Stroke: 4px" }, { label: "8", val: 8, tip: "Stroke: 8px" }, { label: "14", val: 14, tip: "Stroke: 14px" }] :
-                          [{ label: "2", val: 2, tip: "Stroke: 2px" }, { label: "4", val: 4, tip: "Stroke: 4px" }, { label: "8", val: 8, tip: "Stroke: 8px" }, { label: "14", val: 14, tip: "Stroke: 14px" }]
-                        Rectangle {
-                          required property var modelData
-                          width: Style.space(16); height: Style.space(18); radius: Style.space(3)
-                          color: (selectionOverlay.curAct && selectionOverlay.curAct.width === modelData.val) ? Color.accent : (swMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                          border.width: 1
-                          border.color: (selectionOverlay.curAct && selectionOverlay.curAct.width === modelData.val) ? Color.accent : "transparent"
-                          anchors.verticalCenter: parent.verticalCenter
-
-                          Text {
-                            text: parent.modelData.label
-                            color: (selectionOverlay.curAct && selectionOverlay.curAct.width === parent.modelData.val) ? "#FFFFFF" : (Color.popups.text || Color.text)
-                            font.family: Style.font.menuFamily
-                            font.pixelSize: Style.space(7)
-                            font.bold: true
-                            anchors.centerIn: parent
-                          }
-                          MouseArea {
-                            id: swMouse
-                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: root.setSelectedStrokeWidth(parent.modelData.val)
-                          }
-                          PanelToolTip { visible: swMouse.containsMouse; text: parent.modelData.tip }
-                        }
+                      // SmartScrubber for Stroke Width
+                      SmartScrubber {
+                        label: "Width"
+                        value: (selectionOverlay.curAct && selectionOverlay.curAct.width !== undefined) ? selectionOverlay.curAct.width : root.strokeWidth
+                        from: (selectionOverlay.curAct && (selectionOverlay.curAct.tool === "rect" || selectionOverlay.curAct.tool === "circle")) ? 0 : 1
+                        to: 40
+                        step: 1
+                        unit: "px"
+                        tip: "Stroke width (drag or double-click to type)"
+                        onValueScrubbed: function(val) { root.modifySelectedProperty("width", val); root.strokeWidth = val }
+                        onValueCommitted: function(val) { root.commitSelectedProperty("width", val, "Stroke Width"); root.strokeWidth = val }
                       }
 
                       // Stroke Color Swatches (intelligently visible when stroke width > 0)
@@ -4641,7 +5123,7 @@ Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
 
                         Repeater {
-                          model: ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                          model: root.recentColors && root.recentColors.length > 0 ? root.recentColors : ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
                           Rectangle {
                             required property string modelData
                             width: Style.space(12); height: Style.space(12); radius: Style.space(6)
@@ -4761,46 +5243,22 @@ Rectangle {
                       anchors.verticalCenter: parent.verticalCenter
                       spacing: Style.space(4)
 
-                      // Feature A: Corner Radius (for rect)
+                      // Corner Radius SmartScrubber (for rect)
                       Row {
                         visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "rect")
                         spacing: Style.space(3)
                         anchors.verticalCenter: parent.verticalCenter
 
-                        Text {
-                          text: "Radius:"
-                          color: Util.alpha(Color.popups.text || Color.text, 0.6)
-                          font.family: Style.font.menuFamily
-                          font.pixelSize: Style.space(7.5)
-                          font.bold: true
-                          anchors.verticalCenter: parent.verticalCenter
-                        }
-
-                        Repeater {
-                          model: root.cornerRadiusPresets
-                          Rectangle {
-                            required property var modelData
-                            property bool isAct: Boolean(selectionOverlay.curAct && (selectionOverlay.curAct.radius !== undefined ? selectionOverlay.curAct.radius : root.rectCornerRadius) === modelData.val)
-                            width: Style.space(16); height: Style.space(18); radius: Style.space(3)
-                            color: isAct ? Color.accent : (crMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                            border.width: 1; border.color: isAct ? Color.accent : "transparent"
-                            anchors.verticalCenter: parent.verticalCenter
-
-                            Text {
-                              text: parent.modelData.label
-                              color: parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
-                              font.family: Style.font.menuFamily
-                              font.pixelSize: Style.space(7)
-                              font.bold: true
-                              anchors.centerIn: parent
-                            }
-                            MouseArea {
-                              id: crMouse
-                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: root.setSelectedCornerRadius(parent.modelData.val)
-                            }
-                            PanelToolTip { visible: crMouse.containsMouse; text: parent.modelData.tip }
-                          }
+                        SmartScrubber {
+                          label: "Radius"
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.radius !== undefined) ? selectionOverlay.curAct.radius : root.rectCornerRadius
+                          from: 0
+                          to: 80
+                          step: 2
+                          unit: "px"
+                          tip: "Corner radius (drag or double-click to type)"
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("radius", val); root.rectCornerRadius = val }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("radius", val, "Corner Radius"); root.rectCornerRadius = val }
                         }
 
                         // Separator between Radius and Fill
@@ -4885,7 +5343,7 @@ Rectangle {
                         }
 
                         Repeater {
-                          model: ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                          model: root.recentColors && root.recentColors.length > 0 ? root.recentColors : ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
                           Rectangle {
                             required property string modelData
                             property string curFillCol: (selectionOverlay.curAct && (selectionOverlay.curAct.fillColor || selectionOverlay.curAct.color)) || ""
@@ -4934,7 +5392,8 @@ Rectangle {
                   }
 
                   // ==========================================
-                  // ROW 4: TOOL SPECIFICS (TEXT, ARROW, STAMP, PIXEL)
+                  // ==========================================
+                  // ROW 4: TOOL SPECIFICS (TEXT, ARROW, STAMP, PIXEL, BLUR, MAGNIFIER)
                   // ==========================================
                   Flickable {
                     id: selRowToolFlick
@@ -4943,7 +5402,9 @@ Rectangle {
                       selectionOverlay.curAct.tool === "arrow" ||
                       selectionOverlay.curAct.tool === "line" ||
                       selectionOverlay.curAct.tool === "stamp" ||
-                      selectionOverlay.curAct.tool === "pixelate"
+                      selectionOverlay.curAct.tool === "pixelate" ||
+                      selectionOverlay.curAct.tool === "blur" ||
+                      selectionOverlay.curAct.tool === "magnifier"
                     ))
                     width: parent.width
                     height: visible ? Style.space(20) : 0
@@ -5027,62 +5488,23 @@ Rectangle {
                         }
                       }
 
-                      // 2. TEXT CONTROLS (Feature E: Font Families, Weight, Align, Size, Card Box, Color)
+                      // 2. TEXT CONTROLS (Size SmartScrubber, Font Presets + System Font Dropdown, Halo Toggle, Bold, Align, Card Box, Color)
                       Row {
                         visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "text")
                         spacing: Style.space(3)
                         anchors.verticalCenter: parent.verticalCenter
 
-                        // Font Size Presets
-                        Text {
-                          text: "Size:"
-                          color: Util.alpha(Color.popups.text || Color.text, 0.6)
-                          font.family: Style.font.menuFamily
-                          font.pixelSize: Style.space(7.5)
-                          font.bold: true
-                          anchors.verticalCenter: parent.verticalCenter
-                        }
-
-                        Repeater {
-                          model: [
-                            { label: "S", sz: 14 },
-                            { label: "M", sz: 20 },
-                            { label: "L", sz: 28 },
-                            { label: "XL", sz: 40 }
-                          ]
-                          Rectangle {
-                            required property var modelData
-                            width: Style.space(16); height: Style.space(18); radius: Style.space(3)
-                            color: (selectionOverlay.curAct && Math.abs((selectionOverlay.curAct.size || 18) - modelData.sz) <= 3) ? Color.accent : (tsMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                            border.width: 1
-                            border.color: (selectionOverlay.curAct && Math.abs((selectionOverlay.curAct.size || 18) - modelData.sz) <= 3) ? Color.accent : "transparent"
-                            anchors.verticalCenter: parent.verticalCenter
-
-                            Text {
-                              text: parent.modelData.label
-                              color: (selectionOverlay.curAct && Math.abs((selectionOverlay.curAct.size || 18) - parent.modelData.sz) <= 3) ? "#FFFFFF" : (Color.popups.text || Color.text)
-                              font.family: Style.font.menuFamily
-                              font.pixelSize: Style.space(7)
-                              font.bold: true
-                              anchors.centerIn: parent
-                            }
-                            MouseArea {
-                              id: tsMouse
-                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: {
-                                if (selectionOverlay.curAct) {
-                                  root.pushUndoState()
-                                  var next = root.actions.slice()
-                                  var cloned = JSON.parse(JSON.stringify(selectionOverlay.curAct))
-                                  cloned.size = parent.modelData.sz
-                                  next[root.selectedActionIndex] = cloned
-                                  root.actions = next
-                                  annotationCanvas.requestPaint()
-                                }
-                              }
-                            }
-                            PanelToolTip { visible: tsMouse.containsMouse; text: "Font size: " + parent.modelData.sz + "px" }
-                          }
+                        // SmartScrubber for Font Size
+                        SmartScrubber {
+                          label: "Size"
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.size !== undefined) ? selectionOverlay.curAct.size : 20
+                          from: 8
+                          to: 128
+                          step: 2
+                          unit: "px"
+                          tip: "Font size (drag or double-click to type)"
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("size", val) }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("size", val, "Font Size") }
                         }
 
                         // Separator
@@ -5115,6 +5537,78 @@ Rectangle {
                             }
                             PanelToolTip { visible: ffMouse.containsMouse; text: parent.modelData.tip }
                           }
+                        }
+
+                        // System Font Dropdown Trigger Button
+                        Rectangle {
+                          id: fontPickerTriggerBtn
+                          property string curFam: (selectionOverlay.curAct && selectionOverlay.curAct.fontFamily) ? selectionOverlay.curAct.fontFamily : "sans"
+                          width: Math.min(Style.space(80), fpTrigRow.implicitWidth + Style.space(8))
+                          height: Style.space(18)
+                          radius: Style.space(3)
+                          color: root.fontPickerOpen ? Color.accent : (fpTrigMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.08))
+                          border.width: 1
+                          border.color: root.fontPickerOpen ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.15)
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          Row {
+                            id: fpTrigRow
+                            anchors.centerIn: parent
+                            spacing: Style.space(3)
+
+                            Text {
+                              text: {
+                                var f = fontPickerTriggerBtn.curFam
+                                if (f.length > 10) return f.substring(0, 9) + "…"
+                                return f
+                              }
+                              font.family: Style.font.menuFamily
+                              font.pixelSize: Style.space(7)
+                              font.bold: true
+                              color: root.fontPickerOpen ? "#FFFFFF" : (Color.popups.text || Color.text)
+                              anchors.verticalCenter: parent.verticalCenter
+                            }
+
+                            Text {
+                              text: "▾"
+                              font.pixelSize: Style.space(6)
+                              color: root.fontPickerOpen ? "#FFFFFF" : Util.alpha(Color.popups.text || Color.text, 0.6)
+                              anchors.verticalCenter: parent.verticalCenter
+                            }
+                          }
+
+                          MouseArea {
+                            id: fpTrigMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.fontPickerOpen = !root.fontPickerOpen
+                              if (root.fontPickerOpen) root.fontSearchQuery = ""
+                            }
+                          }
+                          PanelToolTip { visible: fpTrigMouse.containsMouse; text: "Choose from " + root.systemFontFamilies.length + " installed system fonts" }
+                        }
+
+                        // Text Halo Toggle Button
+                        Rectangle {
+                          property bool hasHalo: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.halo)
+                          width: haloRow.implicitWidth + Style.space(8); height: Style.space(18); radius: Style.space(3)
+                          color: hasHalo ? Color.accent : (haloMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
+                          border.width: 1; border.color: hasHalo ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.12)
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          Row {
+                            id: haloRow
+                            anchors.centerIn: parent
+                            spacing: Style.space(2)
+                            Text { text: "◰"; font.pixelSize: Style.space(7); color: parent.parent.hasHalo ? "#FFFFFF" : Color.accent; anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: "Halo"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7); font.bold: true; color: parent.parent.hasHalo ? "#FFFFFF" : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
+                          }
+                          MouseArea {
+                            id: haloMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleSelectedTextHalo()
+                          }
+                          PanelToolTip { visible: haloMouse.containsMouse; text: parent.hasHalo ? "Text halo outline enabled (click to disable)" : "Add outline halo for high contrast on busy backgrounds" }
                         }
 
                         // Bold Toggle
@@ -5196,12 +5690,12 @@ Rectangle {
                           PanelToolTip { visible: boxToggleMouse.containsMouse; text: (selectionOverlay.curAct && selectionOverlay.curAct.box) ? "Remove background card" : "Add high-contrast dark card box" }
                         }
 
-                        // Text Color Swatches
+                        // Text Color Swatches (Using recentColors)
                         Row {
                           spacing: Style.space(2)
                           anchors.verticalCenter: parent.verticalCenter
                           Repeater {
-                            model: ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                            model: root.recentColors && root.recentColors.length > 0 ? root.recentColors : ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
                             Rectangle {
                               required property string modelData
                               width: Style.space(12); height: Style.space(12); radius: Style.space(6)
@@ -5239,7 +5733,7 @@ Rectangle {
                         }
                       }
 
-                      // 3. STAMP CONTROLS (Feature F: Types, Stepper, Sizing Presets, Color)
+                      // 3. STAMP CONTROLS (Types, Stepper, Size SmartScrubber, Color)
                       Row {
                         visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "stamp")
                         spacing: Style.space(3)
@@ -5280,7 +5774,7 @@ Rectangle {
                           }
                         }
 
-                        // Feature F: Number Stepper (only visible if stampType === 'number')
+                        // Number Stepper (only visible if stampType === 'number')
                         Row {
                           visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.stampType === "number")
                           spacing: Style.space(2)
@@ -5326,49 +5820,33 @@ Rectangle {
                         // Separator
                         Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
 
-                        // Feature F: Stamp Sizing Presets (S, M, L, XL)
-                        Text {
-                          text: "Size:"
-                          color: Util.alpha(Color.popups.text || Color.text, 0.55)
-                          font.family: Style.font.menuFamily
-                          font.pixelSize: Style.space(7)
-                          font.bold: true
-                          anchors.verticalCenter: parent.verticalCenter
-                        }
-
-                        Repeater {
-                          model: root.stampSizePresets
-                          Rectangle {
-                            required property var modelData
-                            property bool isAct: Boolean(selectionOverlay.curAct && (selectionOverlay.curAct.stampSize || "M") === modelData.id)
-                            width: Style.space(16); height: Style.space(18); radius: Style.space(3)
-                            color: isAct ? Color.accent : (ssMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                            border.width: 1; border.color: isAct ? Color.accent : "transparent"
-                            anchors.verticalCenter: parent.verticalCenter
-
-                            Text {
-                              text: parent.modelData.label
-                              color: parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
-                              font.family: Style.font.menuFamily
-                              font.pixelSize: Style.space(7)
-                              font.bold: true
-                              anchors.centerIn: parent
-                            }
-                            MouseArea {
-                              id: ssMouse
-                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: root.setSelectedStampSize(parent.modelData.id)
-                            }
-                            PanelToolTip { visible: ssMouse.containsMouse; text: parent.modelData.tip }
+                        // Stamp Radius SmartScrubber
+                        SmartScrubber {
+                          label: "Radius"
+                          value: {
+                            if (!selectionOverlay.curAct) return 18
+                            if (selectionOverlay.curAct.radius !== undefined) return selectionOverlay.curAct.radius
+                            if (selectionOverlay.curAct.stampSize === "S") return 14
+                            if (selectionOverlay.curAct.stampSize === "M") return 18
+                            if (selectionOverlay.curAct.stampSize === "L") return 24
+                            if (selectionOverlay.curAct.stampSize === "XL") return 32
+                            return 18
                           }
+                          from: 10
+                          to: 60
+                          step: 2
+                          unit: "px"
+                          tip: "Stamp radius (drag or double-click to type)"
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("radius", val) }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("radius", val, "Stamp Radius") }
                         }
 
-                        // Stamp Color Swatches
+                        // Stamp Color Swatches (Using recentColors)
                         Row {
                           spacing: Style.space(2)
                           anchors.verticalCenter: parent.verticalCenter
                           Repeater {
-                            model: ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                            model: root.recentColors && root.recentColors.length > 0 ? root.recentColors : ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
                             Rectangle {
                               required property string modelData
                               width: Style.space(12); height: Style.space(12); radius: Style.space(6)
@@ -5406,41 +5884,114 @@ Rectangle {
                         }
                       }
 
-                      // 4. PIXELATE CONTROLS (for pixelate)
+                      // 4. PIXELATE CONTROLS (SmartScrubber for Block Size)
                       Row {
                         visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "pixelate")
                         spacing: Style.space(2)
                         anchors.verticalCenter: parent.verticalCenter
 
-                        Repeater {
-                          model: [
-                            { label: "Fine", sz: 8 },
-                            { label: "Med", sz: 14 },
-                            { label: "Coarse", sz: 22 }
-                          ]
-                          Rectangle {
-                            required property var modelData
-                            width: pixSizeTxt.implicitWidth + Style.space(6); height: Style.space(18); radius: Style.space(3)
-                            color: (selectionOverlay.curAct && (selectionOverlay.curAct.pixelSize || 14) === modelData.sz) ? Color.accent : (pixSMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                            border.width: 1
-                            border.color: (selectionOverlay.curAct && (selectionOverlay.curAct.pixelSize || 14) === modelData.sz) ? Color.accent : "transparent"
-                            anchors.verticalCenter: parent.verticalCenter
+                        SmartScrubber {
+                          label: "Block"
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.pixelSize !== undefined) ? selectionOverlay.curAct.pixelSize : 14
+                          from: 4
+                          to: 64
+                          step: 2
+                          unit: "px"
+                          tip: "Pixelation block size (drag or double-click to type)"
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("pixelSize", val) }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("pixelSize", val, "Pixel Size") }
+                        }
+                      }
 
-                            Text {
-                              id: pixSizeTxt
-                              text: parent.modelData.label
-                              color: (selectionOverlay.curAct && (selectionOverlay.curAct.pixelSize || 14) === parent.modelData.sz) ? "#FFFFFF" : (Color.popups.text || Color.text)
-                              font.family: Style.font.menuFamily
-                              font.pixelSize: Style.space(7.5)
-                              font.bold: true
-                              anchors.centerIn: parent
+                      // 5. BLUR CONTROLS (SmartScrubber for Optical Dispersion)
+                      Row {
+                        visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "blur")
+                        spacing: Style.space(2)
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        SmartScrubber {
+                          label: "Dispersion"
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.dispersion !== undefined) ? selectionOverlay.curAct.dispersion : 4
+                          from: 2
+                          to: 32
+                          step: 1
+                          unit: "px"
+                          tip: "Blur optical dispersion radius (drag or double-click to type)"
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("dispersion", val) }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("dispersion", val, "Blur Dispersion") }
+                        }
+                      }
+
+                      // 6. MAGNIFIER CONTROLS (Zoom, Radius, Rim Color Swatches)
+                      Row {
+                        visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "magnifier")
+                        spacing: Style.space(3)
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        SmartScrubber {
+                          label: "Zoom"
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.zoom !== undefined) ? selectionOverlay.curAct.zoom : 2.0
+                          from: 1.2
+                          to: 5.0
+                          step: 0.1
+                          unit: "×"
+                          tip: "Magnifier zoom factor (drag or double-click to type)"
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("zoom", Math.round(val * 10) / 10) }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("zoom", Math.round(val * 10) / 10, "Magnifier Zoom") }
+                        }
+
+                        SmartScrubber {
+                          label: "Radius"
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.radius !== undefined) ? selectionOverlay.curAct.radius : 50
+                          from: 25
+                          to: 200
+                          step: 5
+                          unit: "px"
+                          tip: "Magnifier lens radius (drag or double-click to type)"
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("radius", val) }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("radius", val, "Magnifier Radius") }
+                        }
+
+                        // Rim Color Swatches
+                        Row {
+                          spacing: Style.space(2)
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          Repeater {
+                            model: root.recentColors && root.recentColors.length > 0 ? root.recentColors : ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                            Rectangle {
+                              required property string modelData
+                              width: Style.space(12); height: Style.space(12); radius: Style.space(6)
+                              color: modelData
+                              border.width: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? 2 : 1
+                              border.color: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.25)
+                              scale: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? 1.25 : 1.0
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              MouseArea {
+                                id: mcMouse
+                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: root.setSelectedColor(parent.modelData)
+                              }
+                              PanelToolTip { visible: mcMouse.containsMouse; text: "Rim color: " + parent.modelData }
                             }
+                          }
+
+                          // Eyedropper for Magnifier Rim
+                          Rectangle {
+                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                            color: medMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
                             MouseArea {
-                              id: pixSMouse
+                              id: medMouse
                               anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: root.setSelectedPixelSize(parent.modelData.sz)
+                              onClicked: {
+                                root.activeColorTarget = "stroke"
+                                root.requestScreenPick()
+                              }
                             }
-                            PanelToolTip { visible: pixSMouse.containsMouse; text: "Pixel block: " + parent.modelData.sz + "px" }
+                            PanelToolTip { visible: medMouse.containsMouse; text: "Pick rim color from screen" }
                           }
                         }
                       }
@@ -5456,7 +6007,7 @@ Rectangle {
                   }
 
                   // ==========================================
-                  // ROW 5: LAYOUT, ALIGNMENT & OPACITY
+                  // ROW 5: LAYOUT, ALIGNMENT, ROTATION & OPACITY
                   // ==========================================
                   Flickable {
                     id: selRowLayoutFlick
@@ -5603,52 +6154,67 @@ Rectangle {
                         }
                       }
 
+                      // Separator before Rotate
+                      Rectangle {
+                        width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15)
+                        anchors.verticalCenter: parent.verticalCenter
+                      }
+
+                      // Rotation Controls (Rotate 90° button + Angle SmartScrubber)
+                      Row {
+                        spacing: Style.space(3)
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Rectangle {
+                          width: rot90Txt.implicitWidth + Style.space(8); height: Style.space(18); radius: Style.space(3)
+                          color: rot90Mouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06)
+                          border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.12)
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          Row {
+                            id: rot90Txt
+                            anchors.centerIn: parent; spacing: Style.space(2)
+                            Text { text: "↻"; font.pixelSize: Style.space(8); color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: "90°"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7); font.bold: true; color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
+                          }
+                          MouseArea {
+                            id: rot90Mouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: root.rotateSelected(90)
+                          }
+                          PanelToolTip { visible: rot90Mouse.containsMouse; text: "Rotate 90° clockwise" }
+                        }
+
+                        SmartScrubber {
+                          label: "Angle"
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.rotation !== undefined) ? selectionOverlay.curAct.rotation : 0
+                          from: 0
+                          to: 359
+                          step: 5
+                          unit: "°"
+                          tip: "Rotation angle (drag or double-click to type)"
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("rotation", Math.round(val)) }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("rotation", Math.round(val), "Rotation") }
+                        }
+                      }
+
                       // Separator before Opacity
                       Rectangle {
                         width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15)
                         anchors.verticalCenter: parent.verticalCenter
                       }
 
-                      // Feature C: Universal Element Opacity
-                      Text {
-                        text: "Opacity:"
-                        color: Util.alpha(Color.popups.text || Color.text, 0.55)
-                        font.family: Style.font.menuFamily
-                        font.pixelSize: Style.space(7)
-                        font.bold: true
-                        anchors.verticalCenter: parent.verticalCenter
-                      }
-
-                      Repeater {
-                        model: root.elementOpacityPresets
-                        Rectangle {
-                          required property var modelData
-                          property bool isAct: {
-                            if (!selectionOverlay.curAct) return false
-                            var curOp = (selectionOverlay.curAct.opacity !== undefined) ? selectionOverlay.curAct.opacity : 1.0
-                            return Math.abs(curOp - modelData.val) < 0.05
-                          }
-                          width: elemOpTxt.implicitWidth + Style.space(6); height: Style.space(18); radius: Style.space(3)
-                          color: isAct ? Color.accent : (eopMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                          border.width: 1; border.color: isAct ? Color.accent : "transparent"
-                          anchors.verticalCenter: parent.verticalCenter
-
-                          Text {
-                            id: elemOpTxt
-                            text: parent.modelData.label
-                            color: parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
-                            font.family: Style.font.menuFamily
-                            font.pixelSize: Style.space(6.5)
-                            font.bold: true
-                            anchors.centerIn: parent
-                          }
-                          MouseArea {
-                            id: eopMouse
-                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: root.setSelectedOpacity(parent.modelData.val)
-                          }
-                          PanelToolTip { visible: eopMouse.containsMouse; text: parent.modelData.tip }
-                        }
+                      // Feature C: Universal Element Opacity SmartScrubber
+                      SmartScrubber {
+                        label: "Opacity"
+                        value: Math.round(((selectionOverlay.curAct && selectionOverlay.curAct.opacity !== undefined) ? selectionOverlay.curAct.opacity : 1.0) * 100)
+                        from: 5
+                        to: 100
+                        step: 5
+                        unit: "%"
+                        tip: "Element opacity (drag or double-click to type)"
+                        onValueScrubbed: function(val) { root.modifySelectedProperty("opacity", val / 100.0) }
+                        onValueCommitted: function(val) { root.commitSelectedProperty("opacity", val / 100.0, "Opacity") }
                       }
                     }
                   }
@@ -5734,7 +6300,7 @@ Rectangle {
                         PanelToolTip { visible: shTogMouse.containsMouse; text: parent.isShOn ? "Disable drop shadow" : "Enable drop shadow" }
                       }
 
-                      // Detailed Shadow Controls (spread/blur, opacity, offset presets, color, eyedropper)
+                      // Detailed Shadow Controls (spread/blur, opacity, offsets, color, eyedropper)
                       Row {
                         visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.shadow)
                         spacing: Style.space(3)
@@ -5743,135 +6309,68 @@ Rectangle {
                         // Separator
                         Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
 
-                        // Blur / Spread
-                        Text {
-                          text: "Blur:"
-                          color: Util.alpha(Color.popups.text || Color.text, 0.55)
-                          font.family: Style.font.menuFamily
-                          font.pixelSize: Style.space(7)
-                          font.bold: true
-                          anchors.verticalCenter: parent.verticalCenter
-                        }
-
-                        Repeater {
-                          model: root.shadowBlurPresets
-                          Rectangle {
-                            required property var modelData
-                            property bool isAct: Boolean(selectionOverlay.curAct && (selectionOverlay.curAct.shadowBlur !== undefined ? selectionOverlay.curAct.shadowBlur : root.dropShadowBlur) === modelData.val)
-                            width: Style.space(16); height: Style.space(18); radius: Style.space(3)
-                            color: isAct ? Color.accent : (sbMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                            border.width: 1; border.color: isAct ? Color.accent : "transparent"
-                            anchors.verticalCenter: parent.verticalCenter
-                            Text {
-                              text: parent.modelData.label
-                              color: parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
-                              font.family: Style.font.menuFamily
-                              font.pixelSize: Style.space(7)
-                              font.bold: true
-                              anchors.centerIn: parent
-                            }
-                            MouseArea {
-                              id: sbMouse
-                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: root.setSelectedShadowBlur(parent.modelData.val)
-                            }
-                            PanelToolTip { visible: sbMouse.containsMouse; text: parent.modelData.tip }
-                          }
+                        // Blur SmartScrubber
+                        SmartScrubber {
+                          label: "Blur"
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.shadowBlur !== undefined) ? selectionOverlay.curAct.shadowBlur : root.dropShadowBlur
+                          from: 0
+                          to: 50
+                          step: 2
+                          unit: "px"
+                          tip: "Shadow blur radius (drag or double-click to type)"
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("shadowBlur", val); root.dropShadowBlur = val }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("shadowBlur", val, "Shadow Blur"); root.dropShadowBlur = val }
                         }
 
                         // Separator
                         Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
 
-                        // Opacity
-                        Text {
-                          text: "Opacity:"
-                          color: Util.alpha(Color.popups.text || Color.text, 0.55)
-                          font.family: Style.font.menuFamily
-                          font.pixelSize: Style.space(7)
-                          font.bold: true
-                          anchors.verticalCenter: parent.verticalCenter
-                        }
-
-                        Repeater {
-                          model: root.shadowOpacityPresets
-                          Rectangle {
-                            required property var modelData
-                            property bool isAct: {
-                              if (!selectionOverlay.curAct) return false
-                              var curOp = (selectionOverlay.curAct.shadowOpacity !== undefined) ? selectionOverlay.curAct.shadowOpacity : root.dropShadowOpacity
-                              return Math.abs(curOp - modelData.val) < 0.08
-                            }
-                            width: opTxt.implicitWidth + Style.space(6); height: Style.space(18); radius: Style.space(3)
-                            color: isAct ? Color.accent : (soMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                            border.width: 1; border.color: isAct ? Color.accent : "transparent"
-                            anchors.verticalCenter: parent.verticalCenter
-                            Text {
-                              id: opTxt
-                              text: parent.modelData.label
-                              color: parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
-                              font.family: Style.font.menuFamily
-                              font.pixelSize: Style.space(6.5)
-                              font.bold: true
-                              anchors.centerIn: parent
-                            }
-                            MouseArea {
-                              id: soMouse
-                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: root.setSelectedShadowOpacity(parent.modelData.val)
-                            }
-                            PanelToolTip { visible: soMouse.containsMouse; text: parent.modelData.tip }
-                          }
+                        // Opacity SmartScrubber
+                        SmartScrubber {
+                          label: "Opacity"
+                          value: Math.round(((selectionOverlay.curAct && selectionOverlay.curAct.shadowOpacity !== undefined) ? selectionOverlay.curAct.shadowOpacity : root.dropShadowOpacity) * 100)
+                          from: 0
+                          to: 100
+                          step: 5
+                          unit: "%"
+                          tip: "Shadow opacity (drag or double-click to type)"
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("shadowOpacity", val / 100.0); root.dropShadowOpacity = val / 100.0 }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("shadowOpacity", val / 100.0, "Shadow Opacity"); root.dropShadowOpacity = val / 100.0 }
                         }
 
                         // Separator
                         Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
 
-                        // Offset Presets (Down, Deep, Glow)
-                        Text {
-                          text: "Offset:"
-                          color: Util.alpha(Color.popups.text || Color.text, 0.55)
-                          font.family: Style.font.menuFamily
-                          font.pixelSize: Style.space(7)
-                          font.bold: true
-                          anchors.verticalCenter: parent.verticalCenter
+                        // Offset X SmartScrubber
+                        SmartScrubber {
+                          label: "Off X"
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.shadowOffsetX !== undefined) ? selectionOverlay.curAct.shadowOffsetX : root.dropShadowOffsetX
+                          from: -40
+                          to: 40
+                          step: 2
+                          unit: "px"
+                          tip: "Shadow horizontal offset (drag or double-click to type)"
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("shadowOffsetX", val); root.dropShadowOffsetX = val }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("shadowOffsetX", val, "Shadow Offset X"); root.dropShadowOffsetX = val }
                         }
 
-                        Repeater {
-                          model: root.shadowOffsetPresets
-                          Rectangle {
-                            required property var modelData
-                            property bool isAct: {
-                              if (!selectionOverlay.curAct) return false
-                              var ox = (selectionOverlay.curAct.shadowOffsetX !== undefined) ? selectionOverlay.curAct.shadowOffsetX : root.dropShadowOffsetX
-                              var oy = (selectionOverlay.curAct.shadowOffsetY !== undefined) ? selectionOverlay.curAct.shadowOffsetY : root.dropShadowOffsetY
-                              return ox === modelData.ox && oy === modelData.oy
-                            }
-                            width: offTxt.implicitWidth + Style.space(6); height: Style.space(18); radius: Style.space(3)
-                            color: isAct ? Color.accent : (soffMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                            border.width: 1; border.color: isAct ? Color.accent : "transparent"
-                            anchors.verticalCenter: parent.verticalCenter
-                            Text {
-                              id: offTxt
-                              text: parent.modelData.label
-                              color: parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
-                              font.family: Style.font.menuFamily
-                              font.pixelSize: Style.space(6.5)
-                              font.bold: true
-                              anchors.centerIn: parent
-                            }
-                            MouseArea {
-                              id: soffMouse
-                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: root.setSelectedShadowOffset(parent.modelData.ox, parent.modelData.oy)
-                            }
-                            PanelToolTip { visible: soffMouse.containsMouse; text: parent.modelData.tip }
-                          }
+                        // Offset Y SmartScrubber
+                        SmartScrubber {
+                          label: "Off Y"
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.shadowOffsetY !== undefined) ? selectionOverlay.curAct.shadowOffsetY : root.dropShadowOffsetY
+                          from: -40
+                          to: 40
+                          step: 2
+                          unit: "px"
+                          tip: "Shadow vertical offset (drag or double-click to type)"
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("shadowOffsetY", val); root.dropShadowOffsetY = val }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("shadowOffsetY", val, "Shadow Offset Y"); root.dropShadowOffsetY = val }
                         }
 
                         // Separator
                         Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
 
-                        // Shadow Color Swatches
+                        // Shadow Color Swatches (Using recentColors)
                         Text {
                           text: "Color:"
                           color: Util.alpha(Color.popups.text || Color.text, 0.55)
@@ -5882,7 +6381,7 @@ Rectangle {
                         }
 
                         Repeater {
-                          model: root.shadowColorPresets
+                          model: root.recentColors && root.recentColors.length > 0 ? root.recentColors : ["#000000", "#1E293B", "#3B82F6", "#EF4444", "#FFFFFF"]
                           Rectangle {
                             required property string modelData
                             property string curCol: (selectionOverlay.curAct && selectionOverlay.curAct.shadowColor) || String(root.dropShadowColor)
@@ -5922,50 +6421,6 @@ Rectangle {
                   }
                 }
               }
-
-              // Reusable Handle Component
-              component SelHandle: Rectangle {
-                id: sHandleRoot
-                property string handleName: ""
-                property int cursor: Qt.ArrowCursor
-                visible: !Boolean(selectionOverlay.curAct && selectionOverlay.curAct.locked)
-                width: Style.space(9)
-                height: Style.space(9)
-                radius: Style.space(2)
-                color: (shMouse.containsMouse || (selectionOverlay.activeHandle === sHandleRoot.handleName)) ? Color.accent : "#FFFFFF"
-                border.width: 1.5
-                border.color: Color.accent
-                z: 20
-
-                MouseArea {
-                  id: shMouse
-                  anchors.fill: parent
-                  anchors.margins: -Style.space(6)
-                  hoverEnabled: true
-                  cursorShape: sHandleRoot.cursor
-
-                  onPressed: function(mouse) {
-                    selectionOverlay.startDrag(sHandleRoot.handleName, shMouse, mouse.x, mouse.y)
-                  }
-                  onPositionChanged: function(mouse) {
-                    if (pressed) selectionOverlay.updateDrag(shMouse, mouse.x, mouse.y)
-                  }
-                  onReleased: function() {
-                    selectionOverlay.endDrag()
-                  }
-                }
-              }
-
-              // 8 Resizing Handles
-              SelHandle { handleName: "tl"; cursor: Qt.SizeFDiagCursor; anchors.horizontalCenter: parent.left; anchors.verticalCenter: parent.top }
-              SelHandle { handleName: "t"; cursor: Qt.SizeVerCursor; width: Style.space(14); height: Style.space(6); anchors.horizontalCenter: parent.horizontalCenter; anchors.verticalCenter: parent.top }
-              SelHandle { handleName: "tr"; cursor: Qt.SizeBDiagCursor; anchors.horizontalCenter: parent.right; anchors.verticalCenter: parent.top }
-              SelHandle { handleName: "r"; cursor: Qt.SizeHorCursor; width: Style.space(6); height: Style.space(14); anchors.horizontalCenter: parent.right; anchors.verticalCenter: parent.verticalCenter }
-              SelHandle { handleName: "br"; cursor: Qt.SizeFDiagCursor; anchors.horizontalCenter: parent.right; anchors.verticalCenter: parent.bottom }
-              SelHandle { handleName: "b"; cursor: Qt.SizeVerCursor; width: Style.space(14); height: Style.space(6); anchors.horizontalCenter: parent.horizontalCenter; anchors.verticalCenter: parent.bottom }
-              SelHandle { handleName: "bl"; cursor: Qt.SizeBDiagCursor; anchors.horizontalCenter: parent.left; anchors.verticalCenter: parent.bottom }
-              SelHandle { handleName: "l"; cursor: Qt.SizeHorCursor; width: Style.space(6); height: Style.space(14); anchors.horizontalCenter: parent.left; anchors.verticalCenter: parent.verticalCenter }
-            }
 
             // Direct Endpoint Handles for Line and Arrow
             Item {
@@ -6192,6 +6647,223 @@ Rectangle {
     }
   }
 
+  // ==========================================
+  // DEVICE SYSTEM FONT PICKER OVERLAY POPUP
+  // ==========================================
+  Item {
+    id: fontPickerOverlay
+    visible: root.fontPickerOpen
+    anchors.fill: parent
+    z: 150
+
+    // Semi-transparent backdrop to dismiss popup when clicking anywhere outside
+    MouseArea {
+      anchors.fill: parent
+      onClicked: root.fontPickerOpen = false
+    }
+
+    // Modal popup card centered on screen
+    Rectangle {
+      id: fontPickerCard
+      width: Style.space(260)
+      height: Style.space(340)
+      radius: Style.space(8)
+      color: Util.alpha(Color.popups.background || Color.background, 0.98)
+      border.width: 1
+      border.color: Util.alpha(Color.popups.border || Color.border, 0.6)
+      anchors.centerIn: parent
+
+      // Prevent clicks inside card from bubbling to backdrop
+      MouseArea {
+        anchors.fill: parent
+        onClicked: function(mouse) { mouse.accepted = true }
+      }
+
+      Column {
+        anchors.fill: parent
+        anchors.margins: Style.space(8)
+        spacing: Style.space(6)
+
+        // Header
+        Item {
+          width: parent.width
+          height: Style.space(20)
+
+          Text {
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            text: "System Fonts (" + (fontListView.filteredFonts ? fontListView.filteredFonts.length : 0) + ")"
+            font.family: Style.font.menuFamily
+            font.pixelSize: Style.space(8.5)
+            font.bold: true
+            color: Color.popups.text || Color.text
+          }
+
+          Rectangle {
+            width: Style.space(18); height: Style.space(18); radius: Style.space(3)
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            color: cfbMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : "transparent"
+            Text { text: "✕"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
+            MouseArea {
+              id: cfbMouse
+              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+              onClicked: root.fontPickerOpen = false
+            }
+          }
+        }
+
+        // Search Box
+        Rectangle {
+          width: parent.width
+          height: Style.space(24)
+          radius: Style.space(4)
+          color: Util.alpha(Color.popups.text || Color.text, 0.06)
+          border.width: 1
+          border.color: fontSearchInput.activeFocus ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.15)
+
+          Row {
+            anchors.fill: parent
+            anchors.leftMargin: Style.space(6)
+            anchors.rightMargin: Style.space(6)
+            spacing: Style.space(4)
+
+            Text {
+              text: "🔍"
+              font.pixelSize: Style.space(7.5)
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            TextInput {
+              id: fontSearchInput
+              width: parent.width - Style.space(24)
+              anchors.verticalCenter: parent.verticalCenter
+              font.family: Style.font.menuFamily
+              font.pixelSize: Style.space(8)
+              color: Color.popups.text || Color.text
+              selectionColor: Color.accent
+              selectedTextColor: "#FFFFFF"
+              text: root.fontSearchQuery
+              onTextChanged: root.fontSearchQuery = text
+
+              Text {
+                visible: !fontSearchInput.text && !fontSearchInput.activeFocus
+                text: "Filter system fonts..."
+                font.family: Style.font.menuFamily
+                font.pixelSize: Style.space(8)
+                color: Util.alpha(Color.popups.text || Color.text, 0.4)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+            }
+          }
+        }
+
+        // Quick Preset Chips (Sans, Mono, Serif)
+        Row {
+          spacing: Style.space(4)
+          Repeater {
+            model: [
+              { id: "sans", label: "Sans" },
+              { id: "mono", label: "Mono" },
+              { id: "serif", label: "Serif" }
+            ]
+            Rectangle {
+              required property var modelData
+              width: chipTxt.implicitWidth + Style.space(10); height: Style.space(18); radius: Style.space(3)
+              color: chipMouse.containsMouse ? Util.alpha(Color.accent, 0.2) : Util.alpha(Color.popups.text || Color.text, 0.06)
+              border.width: 1; border.color: Util.alpha(Color.accent, 0.3)
+              Text {
+                id: chipTxt
+                text: parent.modelData.label
+                font.family: Style.font.menuFamily
+                font.pixelSize: Style.space(7.5)
+                font.bold: true
+                color: Color.accent
+                anchors.centerIn: parent
+              }
+              MouseArea {
+                id: chipMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.setSelectedFontFamily(parent.modelData.id)
+                  root.fontPickerOpen = false
+                }
+              }
+            }
+          }
+        }
+
+        // Live Font List
+        ListView {
+          id: fontListView
+          width: parent.width
+          height: fontPickerCard.height - Style.space(92)
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+
+          readonly property var filteredFonts: {
+            var q = (root.fontSearchQuery || "").trim().toLowerCase()
+            var list = root.systemFontFamilies || []
+            if (!q) return list
+            return list.filter(function(f) {
+              return f.toLowerCase().indexOf(q) !== -1
+            })
+          }
+
+          model: filteredFonts
+
+          delegate: Rectangle {
+            id: fItemDelegate
+            required property string modelData
+            property bool isSelected: {
+              if (!selectionOverlay.curAct) return false
+              return (selectionOverlay.curAct.fontFamily || "sans") === modelData
+            }
+            width: fontListView.width
+            height: Style.space(24)
+            radius: Style.space(3)
+            color: isSelected ? Util.alpha(Color.accent, 0.25) : (fItemMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.08) : "transparent")
+
+            Row {
+              anchors.fill: parent
+              anchors.leftMargin: Style.space(6)
+              anchors.rightMargin: Style.space(6)
+              spacing: Style.space(6)
+
+              Text {
+                text: fItemDelegate.modelData
+                font.family: fItemDelegate.modelData
+                font.pixelSize: Style.space(9)
+                color: fItemDelegate.isSelected ? Color.accent : (Color.popups.text || Color.text)
+                anchors.verticalCenter: parent.verticalCenter
+                elide: Text.ElideRight
+                width: parent.width - (fItemDelegate.isSelected ? Style.space(20) : 0)
+              }
+
+              Text {
+                visible: fItemDelegate.isSelected
+                text: "✓"
+                color: Color.accent
+                font.bold: true
+                font.pixelSize: Style.space(8)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+            }
+
+            MouseArea {
+              id: fItemMouse
+              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                root.setSelectedFontFamily(fItemDelegate.modelData)
+                root.fontPickerOpen = false
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Helper drawing functions
   function renderAction(ctx, act) {
     if (!act) return
@@ -6200,6 +6872,18 @@ Rectangle {
     var elemOpacity = (act.opacity !== undefined) ? Number(act.opacity) : 1.0
     if (elemOpacity < 1.0) {
       ctx.globalAlpha = ctx.globalAlpha * elemOpacity
+    }
+
+    var actRotation = (act.rotation !== undefined) ? Number(act.rotation) : 0
+    if (actRotation !== 0) {
+      var bRot = root.getActionBounds(act)
+      if (bRot && bRot.width > 0 && bRot.height > 0) {
+        var cx = bRot.x + bRot.width / 2
+        var cy = bRot.y + bRot.height / 2
+        ctx.translate(cx, cy)
+        ctx.rotate(actRotation * Math.PI / 180)
+        ctx.translate(-cx, -cy)
+      }
     }
 
     var actColor = String(act.color || "#EF4444")
@@ -6412,11 +7096,30 @@ Rectangle {
         var by = Math.min(act.start.y, act.end.y)
         var bw = Math.abs(act.end.x - act.start.x)
         var bh = Math.abs(act.end.y - act.start.y)
-        ctx.fillStyle = "#0A0A0A"
+        ctx.save()
+        // Frosted base
+        ctx.fillStyle = "rgba(15, 23, 42, 0.78)"
         ctx.fillRect(bx, by, bw, bh)
-        ctx.strokeStyle = "rgba(255,255,255,0.25)"
+        // Multi-sample optical dispersion
+        if (baseImage && baseImage.status === Image.Ready) {
+          ctx.globalAlpha = 0.16 * elemOpacity
+          var blurDisp = (act.dispersion !== undefined) ? Number(act.dispersion) : 4
+          var ds = Math.max(0.5, blurDisp / 4)
+          var blurOffsets = [[-2*ds, -2*ds], [2*ds, -2*ds], [-2*ds, 2*ds], [2*ds, 2*ds], [-4*ds, 0], [4*ds, 0], [0, -4*ds], [0, 4*ds]]
+          for (var bo = 0; bo < blurOffsets.length; bo++) {
+            var ox = blurOffsets[bo][0]
+            var oy = blurOffsets[bo][1]
+            ctx.drawImage(baseImage, bx + ox, by + oy, bw, bh, bx, by, bw, bh)
+          }
+        }
+        ctx.globalAlpha = elemOpacity
+        // Glass specular tint and crisp border
+        ctx.fillStyle = "rgba(255, 255, 255, 0.07)"
+        ctx.fillRect(bx, by, bw, bh)
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.35)"
         ctx.lineWidth = 1
         ctx.strokeRect(bx, by, bw, bh)
+        ctx.restore()
       } else if (act.tool === "block_highlight" && act.start && act.end) {
         var hx = Math.min(act.start.x, act.end.x)
         var hy = Math.min(act.start.y, act.end.y)
@@ -6459,6 +7162,7 @@ Rectangle {
         var famStr = "sans-serif"
         if (act.fontFamily === "mono") famStr = "monospace"
         else if (act.fontFamily === "serif") famStr = "serif"
+        else if (act.fontFamily) famStr = '"' + act.fontFamily + '", sans-serif'
         ctx.font = weightStr + " " + fs + "px " + famStr
         var tAlign = act.textAlign || "left"
         ctx.textAlign = tAlign
@@ -6504,18 +7208,119 @@ Rectangle {
           ctx.fillText(act.text, act.pos.x, act.pos.y)
         } else {
           enableShadow()
-          ctx.strokeStyle = "rgba(0,0,0,0.7)"
-          ctx.lineWidth = 3
-          ctx.strokeText(act.text, act.pos.x, act.pos.y)
+          if (act.halo) {
+            ctx.strokeStyle = act.haloColor || (root.isColorDark(actColor) ? "#FFFFFF" : "#000000")
+            ctx.lineWidth = (act.haloWidth !== undefined ? act.haloWidth : 3) * 2
+            ctx.lineJoin = "round"
+            ctx.miterLimit = 2
+            ctx.strokeText(act.text, act.pos.x, act.pos.y)
+          } else {
+            ctx.strokeStyle = "rgba(0,0,0,0.7)"
+            ctx.lineWidth = 3
+            ctx.strokeText(act.text, act.pos.x, act.pos.y)
+          }
           disableShadow()
           ctx.fillStyle = actColor
           ctx.fillText(act.text, act.pos.x, act.pos.y)
         }
+      } else if (act.tool === "magnifier" && act.start) {
+        var magR = (act.radius !== undefined) ? Number(act.radius) : 50
+        var magZoom = (act.zoom !== undefined) ? Number(act.zoom) : 2.0
+        var magCenterX = act.start.x
+        var magCenterY = act.start.y
+        var magBorderW = (act.borderWidth !== undefined) ? act.borderWidth : 3
+        var magColor = act.color || "#3B82F6"
+
+        ctx.save()
+        // Draw shadow under the lens
+        enableShadow()
+        ctx.beginPath()
+        ctx.arc(magCenterX, magCenterY, magR, 0, Math.PI * 2)
+        ctx.fillStyle = "#1E293B"
+        ctx.fill()
+        disableShadow()
+
+        // Clip to circular lens
+        ctx.save()
+        ctx.beginPath()
+        ctx.arc(magCenterX, magCenterY, magR, 0, Math.PI * 2)
+        ctx.clip()
+
+        // Draw magnified base image
+        if (baseImage && baseImage.status === Image.Ready) {
+          var srcW = (magR * 2) / magZoom
+          var srcH = (magR * 2) / magZoom
+          var srcX = magCenterX - srcW / 2
+          var srcY = magCenterY - srcH / 2
+          ctx.drawImage(baseImage, srcX, srcY, srcW, srcH, magCenterX - magR, magCenterY - magR, magR * 2, magR * 2)
+        } else {
+          ctx.fillStyle = "#0F172A"
+          ctx.fill()
+        }
+
+        // Lens specular glare / reflection
+        var grad = ctx.createLinearGradient(magCenterX - magR, magCenterY - magR, magCenterX + magR, magCenterY + magR)
+        grad.addColorStop(0, "rgba(255, 255, 255, 0.25)")
+        grad.addColorStop(0.4, "rgba(255, 255, 255, 0.03)")
+        grad.addColorStop(1, "rgba(0, 0, 0, 0.15)")
+        ctx.fillStyle = grad
+        ctx.beginPath()
+        ctx.arc(magCenterX, magCenterY, magR, 0, Math.PI * 2)
+        ctx.fill()
+
+        // Subtle crosshair
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.35)"
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        ctx.moveTo(magCenterX - 8, magCenterY)
+        ctx.lineTo(magCenterX + 8, magCenterY)
+        ctx.moveTo(magCenterX, magCenterY - 8)
+        ctx.lineTo(magCenterX, magCenterY + 8)
+        ctx.stroke()
+
+        ctx.restore() // unclip
+
+        // Outer lens metallic rim
+        ctx.strokeStyle = magColor
+        ctx.lineWidth = magBorderW
+        ctx.beginPath()
+        ctx.arc(magCenterX, magCenterY, magR, 0, Math.PI * 2)
+        ctx.stroke()
+
+        // Inner rim accent
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.6)"
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        ctx.arc(magCenterX, magCenterY, magR - magBorderW / 2, 0, Math.PI * 2)
+        ctx.stroke()
+
+        // Zoom Badge at bottom of lens
+        var badgeText = magZoom.toFixed(1) + "×"
+        ctx.font = "bold 10px sans-serif"
+        var badgeTw = ctx.measureText(badgeText).width
+        var badgeW = badgeTw + 10
+        var badgeH = 16
+        var badgeX = magCenterX - badgeW / 2
+        var badgeY = magCenterY + magR - badgeH / 2
+        ctx.fillStyle = "rgba(15, 23, 42, 0.85)"
+        ctx.beginPath()
+        ctx.rect(badgeX, badgeY, badgeW, badgeH)
+        ctx.fill()
+        ctx.strokeStyle = magColor
+        ctx.lineWidth = 1
+        ctx.stroke()
+        ctx.fillStyle = "#FFFFFF"
+        ctx.textAlign = "center"
+        ctx.textBaseline = "middle"
+        ctx.fillText(badgeText, magCenterX, badgeY + badgeH / 2)
+
+        ctx.restore()
       } else if (act.tool === "stamp" && act.pos) {
         var sx = act.pos.x
         var sy = act.pos.y
-        var sr = 18
-        if (act.stampSize === "S") sr = 14
+        var sr = (act.radius !== undefined) ? Number(act.radius) : 18
+        if (act.radius !== undefined) sr = Number(act.radius)
+        else if (act.stampSize === "S") sr = 14
         else if (act.stampSize === "M") sr = 18
         else if (act.stampSize === "L") sr = 24
         else if (act.stampSize === "XL") sr = 32
