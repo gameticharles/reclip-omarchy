@@ -44,7 +44,13 @@ Rectangle {
   property bool fillShape: false
   property string fillMode: "none" // "none", "semi", "solid"
   property color fillColor: "#EF4444"
-  property string activeColorTarget: "stroke" // "stroke" or "fill"
+  property string activeColorTarget: "stroke" // "stroke", "fill", "shadow"
+  property bool dropShadow: false
+  property color dropShadowColor: "#000000"
+  property int dropShadowBlur: 8
+  property real dropShadowOpacity: 0.45
+  property int dropShadowOffsetX: 0
+  property int dropShadowOffsetY: 4
   property bool textBox: false
   property string currentStamp: "number" // "number", "check", "cross", "star", "warn", "bug", "fire"
   property int stampCounter: 1
@@ -143,7 +149,12 @@ Rectangle {
 
   onCurrentColorChanged: {
     if (root.activeColorTarget === "fill") {
-      root.fillColor = root.currentColor
+      root.setSelectedFillColor(root.currentColor)
+      root.activeColorTarget = "stroke"
+      return
+    }
+    if (root.activeColorTarget === "shadow") {
+      root.setSelectedShadowColor(root.currentColor)
       root.activeColorTarget = "stroke"
       return
     }
@@ -297,6 +308,31 @@ Rectangle {
     { id: "fire", label: "🔥", name: "Fire" }
   ]
 
+  // Drop shadow presets
+  readonly property var shadowBlurPresets: [
+    { label: "4", val: 4, tip: "Soft tight blur (4px)" },
+    { label: "8", val: 8, tip: "Standard blur (8px)" },
+    { label: "14", val: 14, tip: "Deep spread (14px)" },
+    { label: "24", val: 24, tip: "Ambient glow (24px)" }
+  ]
+
+  readonly property var shadowOpacityPresets: [
+    { label: "25%", val: 0.25, tip: "Subtle (25%)" },
+    { label: "45%", val: 0.45, tip: "Natural (45%)" },
+    { label: "70%", val: 0.70, tip: "Prominent (70%)" },
+    { label: "90%", val: 0.90, tip: "Heavy (90%)" }
+  ]
+
+  readonly property var shadowOffsetPresets: [
+    { label: "Down", ox: 0, oy: 4, tip: "Natural bottom drop (0, 4)" },
+    { label: "Deep", ox: 3, oy: 6, tip: "Angled bottom-right (3, 6)" },
+    { label: "Glow", ox: 0, oy: 0, tip: "Uniform ambient glow (0, 0)" }
+  ]
+
+  readonly property var shadowColorPresets: [
+    "#000000", "#0F172A", "#3B82F6", "#EF4444", "#EAB308", "#FFFFFF"
+  ]
+
   // Lifecycle
   function open(path) {
     root.imagePath = path || ""
@@ -314,6 +350,7 @@ Rectangle {
     root.stampCounter = 1
     root.cropRatio = "free"
     root.textBox = false
+    root.dropShadow = false
     root.selectedActionIndex = -1
     root.currentTool = "select"
     root.zoomScale = 1.0
@@ -657,6 +694,16 @@ Rectangle {
         root.fillShape = (fm !== "none")
         root.fillColor = act.fillColor || act.color || root.currentColor
       }
+      if (typeof act.shadow !== "undefined") {
+        root.dropShadow = Boolean(act.shadow)
+        if (act.shadowColor) root.dropShadowColor = act.shadowColor
+        if (typeof act.shadowBlur !== "undefined") root.dropShadowBlur = act.shadowBlur
+        if (typeof act.shadowOpacity !== "undefined") root.dropShadowOpacity = act.shadowOpacity
+        if (typeof act.shadowOffsetX !== "undefined") root.dropShadowOffsetX = act.shadowOffsetX
+        if (typeof act.shadowOffsetY !== "undefined") root.dropShadowOffsetY = act.shadowOffsetY
+      } else {
+        root.dropShadow = false
+      }
     } else {
       root.selectedActionIndex = -1
     }
@@ -895,6 +942,149 @@ Rectangle {
     }
   }
 
+  function formatColorWithAlpha(hexColor, alpha) {
+    var a = (typeof alpha === "number" && !isNaN(alpha)) ? Math.max(0, Math.min(1, alpha)) : 0.45
+    var c = String(hexColor || "#000000").trim()
+    if (c.indexOf("#") === 0) {
+      var hex = c.slice(1)
+      if (hex.length === 3) {
+        hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2]
+      }
+      if (hex.length >= 6) {
+        var r = parseInt(hex.substr(0, 2), 16) || 0
+        var g = parseInt(hex.substr(2, 2), 16) || 0
+        var b = parseInt(hex.substr(4, 2), 16) || 0
+        return "rgba(" + r + "," + g + "," + b + "," + a + ")"
+      }
+    }
+    return c
+  }
+
+  function toggleSelectedShadow() {
+    var curState = false
+    if (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) {
+      var act = root.actions[root.selectedActionIndex]
+      if (act) curState = Boolean(act.shadow)
+    } else {
+      curState = root.dropShadow
+    }
+    var nextState = !curState
+    root.dropShadow = nextState
+    if (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) {
+      var sAct = root.actions[root.selectedActionIndex]
+      if (sAct) {
+        root.pushUndoState()
+        var next = root.actions.slice()
+        var cloned = JSON.parse(JSON.stringify(sAct))
+        cloned.shadow = nextState
+        if (nextState) {
+          cloned.shadowColor = cloned.shadowColor || String(root.dropShadowColor)
+          cloned.shadowBlur = (cloned.shadowBlur !== undefined ? cloned.shadowBlur : root.dropShadowBlur)
+          cloned.shadowOpacity = (cloned.shadowOpacity !== undefined ? cloned.shadowOpacity : root.dropShadowOpacity)
+          cloned.shadowOffsetX = (cloned.shadowOffsetX !== undefined ? cloned.shadowOffsetX : root.dropShadowOffsetX)
+          cloned.shadowOffsetY = (cloned.shadowOffsetY !== undefined ? cloned.shadowOffsetY : root.dropShadowOffsetY)
+        }
+        next[root.selectedActionIndex] = cloned
+        root.actions = next
+        annotationCanvas.requestPaint()
+      }
+    }
+    root.showFeedback(nextState ? "◩ Drop Shadow enabled" : "Drop Shadow disabled")
+  }
+
+  function setSelectedShadowBlur(blur) {
+    root.dropShadowBlur = blur
+    root.dropShadow = true
+    if (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) {
+      var act = root.actions[root.selectedActionIndex]
+      if (act) {
+        root.pushUndoState()
+        var next = root.actions.slice()
+        var cloned = JSON.parse(JSON.stringify(act))
+        cloned.shadow = true
+        cloned.shadowBlur = blur
+        cloned.shadowColor = cloned.shadowColor || String(root.dropShadowColor)
+        cloned.shadowOpacity = (cloned.shadowOpacity !== undefined ? cloned.shadowOpacity : root.dropShadowOpacity)
+        cloned.shadowOffsetX = (cloned.shadowOffsetX !== undefined ? cloned.shadowOffsetX : root.dropShadowOffsetX)
+        cloned.shadowOffsetY = (cloned.shadowOffsetY !== undefined ? cloned.shadowOffsetY : root.dropShadowOffsetY)
+        next[root.selectedActionIndex] = cloned
+        root.actions = next
+        annotationCanvas.requestPaint()
+      }
+    }
+    root.showFeedback("Shadow Blur: " + blur + "px")
+  }
+
+  function setSelectedShadowOpacity(op) {
+    root.dropShadowOpacity = op
+    root.dropShadow = true
+    if (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) {
+      var act = root.actions[root.selectedActionIndex]
+      if (act) {
+        root.pushUndoState()
+        var next = root.actions.slice()
+        var cloned = JSON.parse(JSON.stringify(act))
+        cloned.shadow = true
+        cloned.shadowOpacity = op
+        cloned.shadowColor = cloned.shadowColor || String(root.dropShadowColor)
+        cloned.shadowBlur = (cloned.shadowBlur !== undefined ? cloned.shadowBlur : root.dropShadowBlur)
+        cloned.shadowOffsetX = (cloned.shadowOffsetX !== undefined ? cloned.shadowOffsetX : root.dropShadowOffsetX)
+        cloned.shadowOffsetY = (cloned.shadowOffsetY !== undefined ? cloned.shadowOffsetY : root.dropShadowOffsetY)
+        next[root.selectedActionIndex] = cloned
+        root.actions = next
+        annotationCanvas.requestPaint()
+      }
+    }
+    root.showFeedback("Shadow Opacity: " + Math.round(op * 100) + "%")
+  }
+
+  function setSelectedShadowOffset(ox, oy) {
+    root.dropShadowOffsetX = ox
+    root.dropShadowOffsetY = oy
+    root.dropShadow = true
+    if (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) {
+      var act = root.actions[root.selectedActionIndex]
+      if (act) {
+        root.pushUndoState()
+        var next = root.actions.slice()
+        var cloned = JSON.parse(JSON.stringify(act))
+        cloned.shadow = true
+        cloned.shadowOffsetX = ox
+        cloned.shadowOffsetY = oy
+        cloned.shadowColor = cloned.shadowColor || String(root.dropShadowColor)
+        cloned.shadowBlur = (cloned.shadowBlur !== undefined ? cloned.shadowBlur : root.dropShadowBlur)
+        cloned.shadowOpacity = (cloned.shadowOpacity !== undefined ? cloned.shadowOpacity : root.dropShadowOpacity)
+        next[root.selectedActionIndex] = cloned
+        root.actions = next
+        annotationCanvas.requestPaint()
+      }
+    }
+    root.showFeedback("Shadow Offset: (" + ox + ", " + oy + ")")
+  }
+
+  function setSelectedShadowColor(col) {
+    root.dropShadowColor = col
+    root.dropShadow = true
+    if (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) {
+      var act = root.actions[root.selectedActionIndex]
+      if (act) {
+        root.pushUndoState()
+        var next = root.actions.slice()
+        var cloned = JSON.parse(JSON.stringify(act))
+        cloned.shadow = true
+        cloned.shadowColor = String(col)
+        cloned.shadowBlur = (cloned.shadowBlur !== undefined ? cloned.shadowBlur : root.dropShadowBlur)
+        cloned.shadowOpacity = (cloned.shadowOpacity !== undefined ? cloned.shadowOpacity : root.dropShadowOpacity)
+        cloned.shadowOffsetX = (cloned.shadowOffsetX !== undefined ? cloned.shadowOffsetX : root.dropShadowOffsetX)
+        cloned.shadowOffsetY = (cloned.shadowOffsetY !== undefined ? cloned.shadowOffsetY : root.dropShadowOffsetY)
+        next[root.selectedActionIndex] = cloned
+        root.actions = next
+        annotationCanvas.requestPaint()
+      }
+    }
+    root.showFeedback("Shadow color: " + col)
+  }
+
   function moveAction(act, dx, dy) {
     var res = JSON.parse(JSON.stringify(act))
     if (res.start && res.end) {
@@ -1087,6 +1277,12 @@ Rectangle {
         color: String(root.currentColor),
         size: Math.max(14, root.strokeWidth * 4),
         box: Boolean(root.textBox),
+        shadow: Boolean(root.dropShadow),
+        shadowColor: String(root.dropShadowColor),
+        shadowBlur: Number(root.dropShadowBlur),
+        shadowOpacity: Number(root.dropShadowOpacity),
+        shadowOffsetX: Number(root.dropShadowOffsetX),
+        shadowOffsetY: Number(root.dropShadowOffsetY),
         pos: { x: root.textInputPos.x, y: root.textInputPos.y }
       }
       var next = root.actions.slice()
@@ -1915,6 +2111,74 @@ Rectangle {
               }
             }
 
+            // Separator between Fill & Shadow
+            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
+
+            // C. Drop Shadow Section
+            Row {
+              spacing: Style.space(3)
+              anchors.verticalCenter: parent.verticalCenter
+
+              // Shadow Toggle Button
+              Rectangle {
+                width: rshTogRow.implicitWidth + Style.space(8); height: Style.space(20); radius: Style.space(3)
+                color: root.dropShadow ? Util.alpha(Color.accent, 0.3) : (rshTogMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
+                border.width: 1
+                border.color: root.dropShadow ? Color.accent : "transparent"
+                anchors.verticalCenter: parent.verticalCenter
+
+                Row {
+                  id: rshTogRow
+                  anchors.centerIn: parent; spacing: Style.space(2)
+                  Text { text: "◩"; font.pixelSize: Style.space(7.5); color: root.dropShadow ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
+                  Text { text: "Shadow"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true; color: root.dropShadow ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
+                }
+                MouseArea {
+                  id: rshTogMouse
+                  anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.toggleSelectedShadow()
+                }
+                PanelToolTip { visible: rshTogMouse.containsMouse; text: root.dropShadow ? "Drop shadow enabled (click to disable)" : "Enable drop shadow" }
+              }
+
+              // Shadow quick controls when active
+              Row {
+                visible: root.dropShadow
+                spacing: Style.space(2)
+                anchors.verticalCenter: parent.verticalCenter
+
+                Repeater {
+                  model: root.shadowBlurPresets
+                  Rectangle {
+                    required property var modelData
+                    width: Style.space(16); height: Style.space(18); radius: Style.space(3)
+                    color: root.dropShadowBlur === modelData.val ? Util.alpha(Color.accent, 0.3) : (rsbMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
+                    border.width: 1; border.color: root.dropShadowBlur === modelData.val ? Color.accent : "transparent"
+                    anchors.verticalCenter: parent.verticalCenter
+                    Text { text: parent.modelData.label; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7); font.bold: true; color: root.dropShadowBlur === parent.modelData.val ? Color.accent : (Color.popups.text || Color.text); anchors.centerIn: parent }
+                    MouseArea { id: rsbMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setSelectedShadowBlur(parent.modelData.val) }
+                    PanelToolTip { visible: rsbMouse.containsMouse; text: parent.modelData.tip }
+                  }
+                }
+
+                Repeater {
+                  model: root.shadowColorPresets
+                  Rectangle {
+                    required property string modelData
+                    property string curCol: String(root.dropShadowColor)
+                    width: Style.space(14); height: Style.space(14); radius: Style.space(7)
+                    color: modelData
+                    border.width: curCol.toLowerCase() === String(modelData).toLowerCase() ? 2 : 1
+                    border.color: curCol.toLowerCase() === String(modelData).toLowerCase() ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.2)
+                    scale: curCol.toLowerCase() === String(modelData).toLowerCase() ? 1.2 : 1.0
+                    anchors.verticalCenter: parent.verticalCenter
+                    MouseArea { id: rscColMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setSelectedShadowColor(parent.modelData) }
+                    PanelToolTip { visible: rscColMouse.containsMouse; text: "Shadow: " + parent.modelData }
+                  }
+                }
+              }
+            }
+
             // Separator before Studio & Hex
             Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
           }
@@ -2021,6 +2285,31 @@ Rectangle {
                 }
               }
               PanelToolTip { visible: eyedropMouse.containsMouse; text: "Eyedropper: pick stroke color from screen" }
+            }
+
+            // Separator between Stroke and Shadow
+            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
+
+            // Shadow Toggle for Line/Arrow/Pen
+            Rectangle {
+              visible: root.currentTool === "line" || root.currentTool === "arrow" || root.currentTool === "pen"
+              width: lshTogRow.implicitWidth + Style.space(8); height: Style.space(20); radius: Style.space(3)
+              color: root.dropShadow ? Util.alpha(Color.accent, 0.3) : (lshTogMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
+              border.width: 1; border.color: root.dropShadow ? Color.accent : "transparent"
+              anchors.verticalCenter: parent.verticalCenter
+
+              Row {
+                id: lshTogRow
+                anchors.centerIn: parent; spacing: Style.space(2)
+                Text { text: "◩"; font.pixelSize: Style.space(7.5); color: root.dropShadow ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "Shadow"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true; color: root.dropShadow ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                id: lshTogMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: root.toggleSelectedShadow()
+              }
+              PanelToolTip { visible: lshTogMouse.containsMouse; text: root.dropShadow ? "Drop shadow enabled (click to disable)" : "Enable drop shadow" }
             }
 
             // Separator
@@ -2155,6 +2444,30 @@ Rectangle {
               PanelToolTip { visible: txtEdMouse.containsMouse; text: "Eyedropper: pick text color from screen" }
             }
 
+            // Separator between Text Color and Shadow
+            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
+
+            // Shadow Toggle for Text
+            Rectangle {
+              width: tshTogRow.implicitWidth + Style.space(8); height: Style.space(20); radius: Style.space(3)
+              color: root.dropShadow ? Util.alpha(Color.accent, 0.3) : (tshTogMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
+              border.width: 1; border.color: root.dropShadow ? Color.accent : "transparent"
+              anchors.verticalCenter: parent.verticalCenter
+
+              Row {
+                id: tshTogRow
+                anchors.centerIn: parent; spacing: Style.space(2)
+                Text { text: "◩"; font.pixelSize: Style.space(7.5); color: root.dropShadow ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "Shadow"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true; color: root.dropShadow ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                id: tshTogMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: root.toggleSelectedShadow()
+              }
+              PanelToolTip { visible: tshTogMouse.containsMouse; text: root.dropShadow ? "Drop shadow enabled (click to disable)" : "Enable drop shadow" }
+            }
+
             // Separator
             Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
           }
@@ -2216,6 +2529,30 @@ Rectangle {
                 }
               }
               PanelToolTip { visible: stEdMouse.containsMouse; text: "Eyedropper: pick stamp color" }
+            }
+
+            // Separator between Stamp Color and Shadow
+            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
+
+            // Shadow Toggle for Stamp
+            Rectangle {
+              width: stshTogRow.implicitWidth + Style.space(8); height: Style.space(20); radius: Style.space(3)
+              color: root.dropShadow ? Util.alpha(Color.accent, 0.3) : (stshTogMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
+              border.width: 1; border.color: root.dropShadow ? Color.accent : "transparent"
+              anchors.verticalCenter: parent.verticalCenter
+
+              Row {
+                id: stshTogRow
+                anchors.centerIn: parent; spacing: Style.space(2)
+                Text { text: "◩"; font.pixelSize: Style.space(7.5); color: root.dropShadow ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "Shadow"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true; color: root.dropShadow ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                id: stshTogMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: root.toggleSelectedShadow()
+              }
+              PanelToolTip { visible: stshTogMouse.containsMouse; text: root.dropShadow ? "Drop shadow enabled (click to disable)" : "Enable drop shadow" }
             }
 
             // Separator
@@ -3020,6 +3357,12 @@ Rectangle {
                   num: root.stampCounter,
                   color: actColor,
                   width: Number(root.strokeWidth),
+                  shadow: Boolean(root.dropShadow),
+                  shadowColor: String(root.dropShadowColor),
+                  shadowBlur: Number(root.dropShadowBlur),
+                  shadowOpacity: Number(root.dropShadowOpacity),
+                  shadowOffsetX: Number(root.dropShadowOffsetX),
+                  shadowOffsetY: Number(root.dropShadowOffsetY),
                   pos: pt
                 }
                 if (root.currentStamp === "number") {
@@ -3047,6 +3390,12 @@ Rectangle {
                   tool: root.currentTool,
                   color: actColor,
                   width: Number(root.strokeWidth),
+                  shadow: Boolean(root.dropShadow && root.currentTool === "pen"),
+                  shadowColor: String(root.dropShadowColor),
+                  shadowBlur: Number(root.dropShadowBlur),
+                  shadowOpacity: Number(root.dropShadowOpacity),
+                  shadowOffsetX: Number(root.dropShadowOffsetX),
+                  shadowOffsetY: Number(root.dropShadowOffsetY),
                   points: [pt]
                 }
               } else {
@@ -3057,6 +3406,12 @@ Rectangle {
                   width: Number(root.strokeWidth),
                   filled: root.fillMode !== "none",
                   fillMode: root.fillMode,
+                  shadow: Boolean(root.dropShadow && (root.currentTool === "rect" || root.currentTool === "circle" || root.currentTool === "line" || root.currentTool === "arrow")),
+                  shadowColor: String(root.dropShadowColor),
+                  shadowBlur: Number(root.dropShadowBlur),
+                  shadowOpacity: Number(root.dropShadowOpacity),
+                  shadowOffsetX: Number(root.dropShadowOffsetX),
+                  shadowOffsetY: Number(root.dropShadowOffsetY),
                   start: pt,
                   end: pt
                 }
@@ -3699,524 +4054,921 @@ Rectangle {
                 }
               }
 
-              // Floating Actions Bar
+              // Floating Multi-Row Inspector Panel
               Rectangle {
                 id: selFloatingActions
                 z: 35
-                readonly property real naturalWidth: selFloatRow.implicitWidth + Style.space(16)
+                readonly property real naturalWidth: Math.max(Style.space(340), Math.max(leftInfoRow.implicitWidth + rightActionsRow.implicitWidth + Style.space(20), Math.max(selRow2Flick.contentWidth, selRow3Flick.contentWidth)) + Style.space(20))
                 width: Math.min(selectionOverlay.width - Style.space(8), naturalWidth)
+                height: selInspectorCol.implicitHeight + Style.space(10)
                 x: Math.max(-selectionBoundingBox.x + Style.space(4), Math.min(selectionOverlay.width - selectionBoundingBox.x - width - Style.space(4), parent.width / 2 - width / 2))
-                y: (selectionBoundingBox.y - height - Style.space(8) >= 0) ? (-height - Style.space(8)) : (parent.height + Style.space(8))
-                height: Style.space(28)
-                radius: Style.space(14)
+                y: {
+                  var gap = Style.space(8)
+                  // Check if fits above
+                  if (selectionBoundingBox.y - height - gap >= Style.space(4)) {
+                    return -height - gap
+                  }
+                  // Check if fits below
+                  if (selectionBoundingBox.y + parent.height + gap + height <= selectionOverlay.height - Style.space(4)) {
+                    return parent.height + gap
+                  }
+                  // Otherwise, dock inside overlay clamped
+                  var canvasY = Math.max(Style.space(4), Math.min(selectionOverlay.height - height - Style.space(4), selectionBoundingBox.y + Style.space(4)))
+                  return canvasY - selectionBoundingBox.y
+                }
+                radius: Style.space(6)
                 color: Util.alpha(Color.popups.background || Color.background, 0.96)
                 border.width: 1
                 border.color: Util.alpha(Color.popups.border || Color.border, 0.6)
 
-                Flickable {
-                  anchors.fill: parent
-                  contentWidth: selFloatRow.implicitWidth + Style.space(16)
-                  contentHeight: height
-                  boundsBehavior: Flickable.StopAtBounds
-                  flickableDirection: Flickable.HorizontalFlick
-                  clip: true
+                Column {
+                  id: selInspectorCol
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.top: parent.top
+                  anchors.margins: Style.space(5)
+                  spacing: Style.space(4)
 
-                  Row {
-                    id: selFloatRow
-                    anchors.verticalCenter: parent.verticalCenter
-                    anchors.horizontalCenter: parent.contentWidth <= parent.width ? parent.horizontalCenter : undefined
-                    x: parent.contentWidth > parent.width ? Style.space(8) : 0
-                    spacing: Style.space(4)
+                  // ==========================================
+                  // ROW 1: HEADER / INFO / LAYERING / ACTIONS
+                  // ==========================================
+                  Item {
+                    id: selRow1
+                    width: parent.width
+                    height: Style.space(20)
 
-                    // 1. Tool Type Badge
-                    Text {
-                      text: root.getActionLabel(selectionOverlay.curAct)
-                      color: Color.accent
-                      font.family: Style.font.menuFamily
-                      font.pixelSize: Style.space(8)
-                      font.bold: true
-                      anchors.verticalCenter: parent.verticalCenter
-                    }
-
-                    // Separator
-                    Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.2); anchors.verticalCenter: parent.verticalCenter }
-
-                    // 2. Stroke Section (for rect, circle, line, arrow, pen, highlighter)
+                    // Left: Badge & Size
                     Row {
-                      visible: Boolean(selectionOverlay.curAct && (
-                        selectionOverlay.curAct.tool === "rect" ||
-                        selectionOverlay.curAct.tool === "circle" ||
-                        selectionOverlay.curAct.tool === "line" ||
-                        selectionOverlay.curAct.tool === "arrow" ||
-                        selectionOverlay.curAct.tool === "pen" ||
-                        selectionOverlay.curAct.tool === "highlighter"
-                      ))
-                      spacing: Style.space(3)
+                      id: leftInfoRow
+                      anchors.left: parent.left
                       anchors.verticalCenter: parent.verticalCenter
+                      spacing: Style.space(5)
 
-                      Text {
-                        text: "Stroke:"
-                        color: Util.alpha(Color.popups.text || Color.text, 0.6)
-                        font.family: Style.font.menuFamily
-                        font.pixelSize: Style.space(7.5)
-                        font.bold: true
+                      // 1. Tool Type Badge
+                      Rectangle {
+                        height: Style.space(18)
+                        width: tbTxt.implicitWidth + Style.space(8)
+                        radius: Style.space(3)
+                        color: Util.alpha(Color.accent, 0.16)
+                        border.width: 1
+                        border.color: Util.alpha(Color.accent, 0.35)
                         anchors.verticalCenter: parent.verticalCenter
-                      }
-
-                      // Stroke Width Pills (0 for rect/circle, 2-14 for lines/pens)
-                      Repeater {
-                        model: (selectionOverlay.curAct && (selectionOverlay.curAct.tool === "rect" || selectionOverlay.curAct.tool === "circle")) ?
-                          [{ label: "0", val: 0, tip: "No border (0px)" }, { label: "2", val: 2, tip: "Stroke: 2px" }, { label: "4", val: 4, tip: "Stroke: 4px" }, { label: "8", val: 8, tip: "Stroke: 8px" }, { label: "14", val: 14, tip: "Stroke: 14px" }] :
-                          [{ label: "2", val: 2, tip: "Stroke: 2px" }, { label: "4", val: 4, tip: "Stroke: 4px" }, { label: "8", val: 8, tip: "Stroke: 8px" }, { label: "14", val: 14, tip: "Stroke: 14px" }]
-                        Rectangle {
-                          required property var modelData
-                          width: Style.space(16); height: Style.space(18); radius: Style.space(3)
-                          color: (selectionOverlay.curAct && selectionOverlay.curAct.width === modelData.val) ? Color.accent : (swMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                          border.width: 1
-                          border.color: (selectionOverlay.curAct && selectionOverlay.curAct.width === modelData.val) ? Color.accent : "transparent"
-                          anchors.verticalCenter: parent.verticalCenter
-
-                          Text {
-                            text: parent.modelData.label
-                            color: (selectionOverlay.curAct && selectionOverlay.curAct.width === parent.modelData.val) ? "#FFFFFF" : (Color.popups.text || Color.text)
-                            font.family: Style.font.menuFamily
-                            font.pixelSize: Style.space(7)
-                            font.bold: true
-                            anchors.centerIn: parent
-                          }
-                          MouseArea {
-                            id: swMouse
-                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: root.setSelectedStrokeWidth(parent.modelData.val)
-                          }
-                          PanelToolTip { visible: swMouse.containsMouse; text: parent.modelData.tip }
+                        Text {
+                          id: tbTxt
+                          text: root.getActionLabel(selectionOverlay.curAct)
+                          color: Color.accent
+                          font.family: Style.font.menuFamily
+                          font.pixelSize: Style.space(7.5)
+                          font.bold: true
+                          anchors.centerIn: parent
                         }
                       }
 
-                      // Stroke Color Swatches (intelligently visible when stroke width > 0)
+                      // 2. Element Dimensions
+                      Text {
+                        text: Math.round(selectionBoundingBox.width) + " × " + Math.round(selectionBoundingBox.height) + " px"
+                        color: Util.alpha(Color.popups.text || Color.text, 0.5)
+                        font.family: Style.font.menuFamily
+                        font.pixelSize: Style.space(7)
+                        anchors.verticalCenter: parent.verticalCenter
+                      }
+                    }
+
+                    // Right: Layering & Actions
+                    Row {
+                      id: rightActionsRow
+                      anchors.right: parent.right
+                      anchors.verticalCenter: parent.verticalCenter
+                      spacing: Style.space(3)
+
+                      // Bring to Front
+                      Rectangle {
+                        width: Style.space(18); height: Style.space(18); radius: Style.space(3)
+                        color: frontMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
+                        anchors.verticalCenter: parent.verticalCenter
+                        Text { text: "▲"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
+                        MouseArea { id: frontMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.bringSelectedToFront() }
+                        PanelToolTip { visible: frontMouse.containsMouse; text: "Bring to Front (])" }
+                      }
+
+                      // Send to Back
+                      Rectangle {
+                        width: Style.space(18); height: Style.space(18); radius: Style.space(3)
+                        color: backMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
+                        anchors.verticalCenter: parent.verticalCenter
+                        Text { text: "▼"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
+                        MouseArea { id: backMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.sendSelectedToBack() }
+                        PanelToolTip { visible: backMouse.containsMouse; text: "Send to Back ([)" }
+                      }
+
+                      // Separator
+                      Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
+
+                      // Duplicate Button
+                      Rectangle {
+                        width: Style.space(18); height: Style.space(18); radius: Style.space(3)
+                        color: dupMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
+                        anchors.verticalCenter: parent.verticalCenter
+                        Text { text: "⧉"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(8.5); anchors.centerIn: parent }
+                        MouseArea { id: dupMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.duplicateSelectedAction() }
+                        PanelToolTip { visible: dupMouse.containsMouse; text: "Duplicate element (Ctrl+D)" }
+                      }
+
+                      // Delete Button
+                      Rectangle {
+                        width: Style.space(18); height: Style.space(18); radius: Style.space(3)
+                        color: delMouse.containsMouse ? Util.alpha("#EF4444", 0.3) : Util.alpha("#EF4444", 0.12)
+                        border.width: 1; border.color: Util.alpha("#EF4444", 0.3)
+                        anchors.verticalCenter: parent.verticalCenter
+                        Text { text: "🗑"; color: "#EF4444"; font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                        MouseArea { id: delMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.deleteSelectedAction() }
+                        PanelToolTip { visible: delMouse.containsMouse; text: "Delete element (Del)" }
+                      }
+
+                      // Separator
+                      Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
+
+                      // Close / Deselect Button
+                      Rectangle {
+                        width: Style.space(18); height: Style.space(18); radius: Style.space(3)
+                        color: deselMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : "transparent"
+                        anchors.verticalCenter: parent.verticalCenter
+                        Text { text: "✕"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
+                        MouseArea { id: deselMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.selectedActionIndex = -1 }
+                        PanelToolTip { visible: deselMouse.containsMouse; text: "Deselect (Esc)" }
+                      }
+                    }
+                  }
+
+                  // Separator Line between Row 1 and Row 2
+                  Rectangle {
+                    width: parent.width
+                    height: 1
+                    color: Util.alpha(Color.popups.border || Color.border, 0.25)
+                  }
+
+                  // ==========================================
+                  // ROW 2: PRIMARY ELEMENT STYLING
+                  // ==========================================
+                  Flickable {
+                    id: selRow2Flick
+                    width: parent.width
+                    height: Style.space(20)
+                    contentWidth: selRow2Content.implicitWidth + Style.space(8)
+                    contentHeight: height
+                    boundsBehavior: Flickable.StopAtBounds
+                    flickableDirection: Flickable.HorizontalFlick
+                    clip: true
+
+                    Row {
+                      id: selRow2Content
+                      anchors.verticalCenter: parent.verticalCenter
+                      spacing: Style.space(4)
+
+                      // 1. STROKE SECTION (for rect, circle, line, arrow, pen, highlighter)
                       Row {
-                        visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.width !== 0)
-                        spacing: Style.space(2)
+                        visible: Boolean(selectionOverlay.curAct && (
+                          selectionOverlay.curAct.tool === "rect" ||
+                          selectionOverlay.curAct.tool === "circle" ||
+                          selectionOverlay.curAct.tool === "line" ||
+                          selectionOverlay.curAct.tool === "arrow" ||
+                          selectionOverlay.curAct.tool === "pen" ||
+                          selectionOverlay.curAct.tool === "highlighter"
+                        ))
+                        spacing: Style.space(3)
                         anchors.verticalCenter: parent.verticalCenter
 
+                        Text {
+                          text: "Stroke:"
+                          color: Util.alpha(Color.popups.text || Color.text, 0.6)
+                          font.family: Style.font.menuFamily
+                          font.pixelSize: Style.space(7.5)
+                          font.bold: true
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        // Stroke Width Pills (0 for rect/circle, 2-14 for lines/pens)
                         Repeater {
-                          model: ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                          model: (selectionOverlay.curAct && (selectionOverlay.curAct.tool === "rect" || selectionOverlay.curAct.tool === "circle")) ?
+                            [{ label: "0", val: 0, tip: "No border (0px)" }, { label: "2", val: 2, tip: "Stroke: 2px" }, { label: "4", val: 4, tip: "Stroke: 4px" }, { label: "8", val: 8, tip: "Stroke: 8px" }, { label: "14", val: 14, tip: "Stroke: 14px" }] :
+                            [{ label: "2", val: 2, tip: "Stroke: 2px" }, { label: "4", val: 4, tip: "Stroke: 4px" }, { label: "8", val: 8, tip: "Stroke: 8px" }, { label: "14", val: 14, tip: "Stroke: 14px" }]
                           Rectangle {
-                            required property string modelData
-                            width: Style.space(12); height: Style.space(12); radius: Style.space(6)
-                            color: modelData
-                            border.width: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? 2 : 1
-                            border.color: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.25)
-                            scale: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? 1.25 : 1.0
+                            required property var modelData
+                            width: Style.space(16); height: Style.space(18); radius: Style.space(3)
+                            color: (selectionOverlay.curAct && selectionOverlay.curAct.width === modelData.val) ? Color.accent : (swMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
+                            border.width: 1
+                            border.color: (selectionOverlay.curAct && selectionOverlay.curAct.width === modelData.val) ? Color.accent : "transparent"
                             anchors.verticalCenter: parent.verticalCenter
 
-                            MouseArea {
-                              id: scMouse
-                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: root.setSelectedStrokeColor(parent.modelData)
-                            }
-                            PanelToolTip { visible: scMouse.containsMouse; text: "Stroke: " + parent.modelData }
-                          }
-                        }
-
-                        // Eyedropper for Stroke
-                        Rectangle {
-                          width: Style.space(16); height: Style.space(16); radius: Style.space(8)
-                          color: sedMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
-                          anchors.verticalCenter: parent.verticalCenter
-                          Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
-                          MouseArea {
-                            id: sedMouse
-                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: {
-                              root.activeColorTarget = "stroke"
-                              root.requestScreenPick()
-                            }
-                          }
-                          PanelToolTip { visible: sedMouse.containsMouse; text: "Pick stroke color from screen" }
-                        }
-                      }
-
-                      // Separator after stroke
-                      Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
-                    }
-
-                    // 3. Fill Section (INTELLIGENTLY VISIBLE ONLY FOR RECT & CIRCLE)
-                    Row {
-                      visible: Boolean(selectionOverlay.curAct && (selectionOverlay.curAct.tool === "rect" || selectionOverlay.curAct.tool === "circle"))
-                      spacing: Style.space(3)
-                      anchors.verticalCenter: parent.verticalCenter
-
-                      Text {
-                        text: "Fill:"
-                        color: Util.alpha(Color.popups.text || Color.text, 0.6)
-                        font.family: Style.font.menuFamily
-                        font.pixelSize: Style.space(7.5)
-                        font.bold: true
-                        anchors.verticalCenter: parent.verticalCenter
-                      }
-
-                      // Fill Mode pills
-                      Repeater {
-                        model: [
-                          { id: "none", label: "None", icon: "□", tip: "No fill (outline only)" },
-                          { id: "semi", label: "Tint", icon: "▦", tip: "Tinted translucent fill (25%)" },
-                          { id: "solid", label: "Solid", icon: "⬛", tip: "Solid opaque fill (100%)" }
-                        ]
-                        Rectangle {
-                          required property var modelData
-                          property bool isAct: {
-                            if (!selectionOverlay.curAct) return false
-                            var fm = selectionOverlay.curAct.fillMode || (selectionOverlay.curAct.filled ? "semi" : "none")
-                            return fm === modelData.id
-                          }
-                          width: fModeRow.implicitWidth + Style.space(6); height: Style.space(18); radius: Style.space(3)
-                          color: isAct ? Color.accent : (fmMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                          border.width: 1
-                          border.color: isAct ? Color.accent : "transparent"
-                          anchors.verticalCenter: parent.verticalCenter
-
-                          Row {
-                            id: fModeRow
-                            anchors.centerIn: parent
-                            spacing: Style.space(2)
                             Text {
-                              text: parent.parent.modelData.icon
-                              font.pixelSize: Style.space(6.5)
-                              color: parent.parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
-                              anchors.verticalCenter: parent.verticalCenter
-                            }
-                            Text {
-                              text: parent.parent.modelData.label
+                              text: parent.modelData.label
+                              color: (selectionOverlay.curAct && selectionOverlay.curAct.width === parent.modelData.val) ? "#FFFFFF" : (Color.popups.text || Color.text)
                               font.family: Style.font.menuFamily
                               font.pixelSize: Style.space(7)
                               font.bold: true
-                              color: parent.parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
+                              anchors.centerIn: parent
+                            }
+                            MouseArea {
+                              id: swMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: root.setSelectedStrokeWidth(parent.modelData.val)
+                            }
+                            PanelToolTip { visible: swMouse.containsMouse; text: parent.modelData.tip }
+                          }
+                        }
+
+                        // Stroke Color Swatches (intelligently visible when stroke width > 0)
+                        Row {
+                          visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.width !== 0)
+                          spacing: Style.space(2)
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          Repeater {
+                            model: ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                            Rectangle {
+                              required property string modelData
+                              width: Style.space(12); height: Style.space(12); radius: Style.space(6)
+                              color: modelData
+                              border.width: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? 2 : 1
+                              border.color: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.25)
+                              scale: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? 1.25 : 1.0
                               anchors.verticalCenter: parent.verticalCenter
+
+                              MouseArea {
+                                id: scMouse
+                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: root.setSelectedStrokeColor(parent.modelData)
+                              }
+                              PanelToolTip { visible: scMouse.containsMouse; text: "Stroke: " + parent.modelData }
                             }
                           }
-                          MouseArea {
-                            id: fmMouse
-                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: root.setSelectedFillMode(parent.modelData.id)
+
+                          // Eyedropper for Stroke
+                          Rectangle {
+                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                            color: sedMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
+                            MouseArea {
+                              id: sedMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.activeColorTarget = "stroke"
+                                root.requestScreenPick()
+                              }
+                            }
+                            PanelToolTip { visible: sedMouse.containsMouse; text: "Pick stroke color from screen" }
                           }
-                          PanelToolTip { visible: fmMouse.containsMouse; text: parent.modelData.tip }
                         }
+
+                        // Separator after stroke
+                        Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
                       }
 
-                      // Fill Color Swatches (INTELLIGENTLY VISIBLE ONLY WHEN FILL MODE IS NOT "none")
+                      // 2. FILL SECTION (INTELLIGENTLY VISIBLE ONLY FOR RECT & CIRCLE)
                       Row {
-                        visible: Boolean(selectionOverlay.curAct && (
-                          (selectionOverlay.curAct.fillMode && selectionOverlay.curAct.fillMode !== "none") ||
-                          (selectionOverlay.curAct.filled && (!selectionOverlay.curAct.fillMode || selectionOverlay.curAct.fillMode !== "none"))
-                        ))
+                        visible: Boolean(selectionOverlay.curAct && (selectionOverlay.curAct.tool === "rect" || selectionOverlay.curAct.tool === "circle"))
+                        spacing: Style.space(3)
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Text {
+                          text: "Fill:"
+                          color: Util.alpha(Color.popups.text || Color.text, 0.6)
+                          font.family: Style.font.menuFamily
+                          font.pixelSize: Style.space(7.5)
+                          font.bold: true
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        // Fill Mode pills
+                        Repeater {
+                          model: [
+                            { id: "none", label: "None", icon: "□", tip: "No fill (outline only)" },
+                            { id: "semi", label: "Tint", icon: "▦", tip: "Tinted translucent fill (25%)" },
+                            { id: "solid", label: "Solid", icon: "⬛", tip: "Solid opaque fill (100%)" }
+                          ]
+                          Rectangle {
+                            required property var modelData
+                            property bool isAct: {
+                              if (!selectionOverlay.curAct) return false
+                              var fm = selectionOverlay.curAct.fillMode || (selectionOverlay.curAct.filled ? "semi" : "none")
+                              return fm === modelData.id
+                            }
+                            width: fModeRow.implicitWidth + Style.space(6); height: Style.space(18); radius: Style.space(3)
+                            color: isAct ? Color.accent : (fmMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
+                            border.width: 1
+                            border.color: isAct ? Color.accent : "transparent"
+                            anchors.verticalCenter: parent.verticalCenter
+
+                            Row {
+                              id: fModeRow
+                              anchors.centerIn: parent
+                              spacing: Style.space(2)
+                              Text {
+                                text: parent.parent.modelData.icon
+                                font.pixelSize: Style.space(6.5)
+                                color: parent.parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+                              Text {
+                                text: parent.parent.modelData.label
+                                font.family: Style.font.menuFamily
+                                font.pixelSize: Style.space(7)
+                                font.bold: true
+                                color: parent.parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
+                                anchors.verticalCenter: parent.verticalCenter
+                              }
+                            }
+                            MouseArea {
+                              id: fmMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: root.setSelectedFillMode(parent.modelData.id)
+                            }
+                            PanelToolTip { visible: fmMouse.containsMouse; text: parent.modelData.tip }
+                          }
+                        }
+
+                        // Fill Color Swatches (INTELLIGENTLY VISIBLE ONLY WHEN FILL MODE IS NOT "none")
+                        Row {
+                          visible: Boolean(selectionOverlay.curAct && (
+                            (selectionOverlay.curAct.fillMode && selectionOverlay.curAct.fillMode !== "none") ||
+                            (selectionOverlay.curAct.filled && (!selectionOverlay.curAct.fillMode || selectionOverlay.curAct.fillMode !== "none"))
+                          ))
+                          spacing: Style.space(2)
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          Repeater {
+                            model: ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                            Rectangle {
+                              required property string modelData
+                              property string curFillCol: (selectionOverlay.curAct && (selectionOverlay.curAct.fillColor || selectionOverlay.curAct.color)) || ""
+                              width: Style.space(12); height: Style.space(12); radius: Style.space(6)
+                              color: modelData
+                              border.width: String(curFillCol).toLowerCase() === String(modelData).toLowerCase() ? 2 : 1
+                              border.color: String(curFillCol).toLowerCase() === String(modelData).toLowerCase() ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.25)
+                              scale: String(curFillCol).toLowerCase() === String(modelData).toLowerCase() ? 1.25 : 1.0
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              MouseArea {
+                                id: fcMouse
+                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: root.setSelectedFillColor(parent.modelData)
+                              }
+                              PanelToolTip { visible: fcMouse.containsMouse; text: "Fill: " + parent.modelData }
+                            }
+                          }
+
+                          // Fill Eyedropper
+                          Rectangle {
+                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                            color: fedMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
+                            MouseArea {
+                              id: fedMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.activeColorTarget = "fill"
+                                root.requestScreenPick()
+                              }
+                            }
+                            PanelToolTip { visible: fedMouse.containsMouse; text: "Pick fill color from screen" }
+                          }
+                        }
+
+                        // Separator after fill
+                        Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
+                      }
+
+                      // 3. FLIP DIRECTION BUTTON (for arrow & line)
+                      Row {
+                        visible: Boolean(selectionOverlay.curAct && (selectionOverlay.curAct.tool === "arrow" || selectionOverlay.curAct.tool === "line"))
+                        spacing: Style.space(4)
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Rectangle {
+                          width: flipArrowTxt.implicitWidth + Style.space(8); height: Style.space(18); radius: Style.space(3)
+                          color: flipArrowMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
+                          border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.12)
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          Row {
+                            id: flipArrowTxt
+                            anchors.centerIn: parent; spacing: Style.space(2)
+                            Text { text: "⇄"; font.pixelSize: Style.space(8); font.bold: true; color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: "Flip"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true; color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
+                          }
+                          MouseArea {
+                            id: flipArrowMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: root.flipSelectedArrow()
+                          }
+                          PanelToolTip { visible: flipArrowMouse.containsMouse; text: "Reverse direction (swap head and tail)" }
+                        }
+
+                        Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
+                      }
+
+                      // 4. TEXT CONTROLS (for text)
+                      Row {
+                        visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "text")
+                        spacing: Style.space(3)
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Repeater {
+                          model: [
+                            { label: "S", sz: 14 },
+                            { label: "M", sz: 20 },
+                            { label: "L", sz: 28 },
+                            { label: "XL", sz: 40 }
+                          ]
+                          Rectangle {
+                            required property var modelData
+                            width: Style.space(18); height: Style.space(18); radius: Style.space(3)
+                            color: (selectionOverlay.curAct && Math.abs((selectionOverlay.curAct.size || 18) - modelData.sz) <= 3) ? Color.accent : (tsMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
+                            border.width: 1
+                            border.color: (selectionOverlay.curAct && Math.abs((selectionOverlay.curAct.size || 18) - modelData.sz) <= 3) ? Color.accent : "transparent"
+                            anchors.verticalCenter: parent.verticalCenter
+
+                            Text {
+                              text: parent.modelData.label
+                              color: (selectionOverlay.curAct && Math.abs((selectionOverlay.curAct.size || 18) - parent.modelData.sz) <= 3) ? "#FFFFFF" : (Color.popups.text || Color.text)
+                              font.family: Style.font.menuFamily
+                              font.pixelSize: Style.space(7.5)
+                              font.bold: true
+                              anchors.centerIn: parent
+                            }
+                            MouseArea {
+                              id: tsMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                if (selectionOverlay.curAct) {
+                                  root.pushUndoState()
+                                  var next = root.actions.slice()
+                                  var cloned = JSON.parse(JSON.stringify(selectionOverlay.curAct))
+                                  cloned.size = parent.modelData.sz
+                                  next[root.selectedActionIndex] = cloned
+                                  root.actions = next
+                                  annotationCanvas.requestPaint()
+                                }
+                              }
+                            }
+                            PanelToolTip { visible: tsMouse.containsMouse; text: "Font size: " + parent.modelData.sz + "px" }
+                          }
+                        }
+
+                        // Card Box Toggle
+                        Rectangle {
+                          width: boxToggleTxt.implicitWidth + Style.space(8); height: Style.space(18); radius: Style.space(3)
+                          color: (selectionOverlay.curAct && selectionOverlay.curAct.box) ? Color.accent : (boxToggleMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
+                          border.width: 1
+                          border.color: (selectionOverlay.curAct && selectionOverlay.curAct.box) ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.12)
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          Row {
+                            id: boxToggleTxt
+                            anchors.centerIn: parent; spacing: Style.space(2)
+                            Text { text: "■"; font.pixelSize: Style.space(7); color: (selectionOverlay.curAct && selectionOverlay.curAct.box) ? "#FFFFFF" : Color.accent; anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: "Card Box"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true; color: (selectionOverlay.curAct && selectionOverlay.curAct.box) ? "#FFFFFF" : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
+                          }
+                          MouseArea {
+                            id: boxToggleMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: root.toggleSelectedTextBox()
+                          }
+                          PanelToolTip { visible: boxToggleMouse.containsMouse; text: (selectionOverlay.curAct && selectionOverlay.curAct.box) ? "Remove background card" : "Add high-contrast dark card box" }
+                        }
+
+                        // Text Color Swatches
+                        Row {
+                          spacing: Style.space(2)
+                          anchors.verticalCenter: parent.verticalCenter
+                          Repeater {
+                            model: ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                            Rectangle {
+                              required property string modelData
+                              width: Style.space(12); height: Style.space(12); radius: Style.space(6)
+                              color: modelData
+                              border.width: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? 2 : 1
+                              border.color: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.25)
+                              scale: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? 1.25 : 1.0
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              MouseArea {
+                                id: tcMouse
+                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: root.setSelectedColor(parent.modelData)
+                              }
+                              PanelToolTip { visible: tcMouse.containsMouse; text: "Color: " + parent.modelData }
+                            }
+                          }
+
+                          // Eyedropper for Text
+                          Rectangle {
+                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                            color: tedMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
+                            MouseArea {
+                              id: tedMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.activeColorTarget = "stroke"
+                                root.requestScreenPick()
+                              }
+                            }
+                            PanelToolTip { visible: tedMouse.containsMouse; text: "Pick text color from screen" }
+                          }
+                        }
+
+                        // Separator after text
+                        Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
+                      }
+
+                      // 5. STAMP CONTROLS (for stamp)
+                      Row {
+                        visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "stamp")
                         spacing: Style.space(2)
                         anchors.verticalCenter: parent.verticalCenter
 
                         Repeater {
-                          model: ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                          model: [
+                            { id: "number", label: "①" },
+                            { id: "check", label: "✓" },
+                            { id: "cross", label: "✕" },
+                            { id: "star", label: "★" },
+                            { id: "warn", label: "⚠" },
+                            { id: "bug", label: "🪲" },
+                            { id: "fire", label: "🔥" }
+                          ]
                           Rectangle {
-                            required property string modelData
-                            property string curFillCol: (selectionOverlay.curAct && (selectionOverlay.curAct.fillColor || selectionOverlay.curAct.color)) || ""
-                            width: Style.space(12); height: Style.space(12); radius: Style.space(6)
-                            color: modelData
-                            border.width: String(curFillCol).toLowerCase() === String(modelData).toLowerCase() ? 2 : 1
-                            border.color: String(curFillCol).toLowerCase() === String(modelData).toLowerCase() ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.25)
-                            scale: String(curFillCol).toLowerCase() === String(modelData).toLowerCase() ? 1.25 : 1.0
+                            required property var modelData
+                            width: Style.space(18); height: Style.space(18); radius: Style.space(3)
+                            color: (selectionOverlay.curAct && selectionOverlay.curAct.stampType === modelData.id) ? Color.accent : (stMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
+                            border.width: 1
+                            border.color: (selectionOverlay.curAct && selectionOverlay.curAct.stampType === modelData.id) ? Color.accent : "transparent"
                             anchors.verticalCenter: parent.verticalCenter
 
-                            MouseArea {
-                              id: fcMouse
-                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: root.setSelectedFillColor(parent.modelData)
+                            Text {
+                              text: parent.modelData.label
+                              color: (selectionOverlay.curAct && selectionOverlay.curAct.stampType === parent.modelData.id) ? "#FFFFFF" : (Color.popups.text || Color.text)
+                              font.pixelSize: Style.space(8.5)
+                              font.bold: true
+                              anchors.centerIn: parent
                             }
-                            PanelToolTip { visible: fcMouse.containsMouse; text: "Fill: " + parent.modelData }
+                            MouseArea {
+                              id: stMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: root.setSelectedStampType(parent.modelData.id)
+                            }
+                            PanelToolTip { visible: stMouse.containsMouse; text: "Change stamp to " + parent.modelData.label }
                           }
                         }
 
-                        // Fill Eyedropper
+                        // Stamp Color Swatches
+                        Row {
+                          spacing: Style.space(2)
+                          anchors.verticalCenter: parent.verticalCenter
+                          Repeater {
+                            model: ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                            Rectangle {
+                              required property string modelData
+                              width: Style.space(12); height: Style.space(12); radius: Style.space(6)
+                              color: modelData
+                              border.width: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? 2 : 1
+                              border.color: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.25)
+                              scale: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? 1.25 : 1.0
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              MouseArea {
+                                id: stcMouse
+                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: root.setSelectedColor(parent.modelData)
+                              }
+                              PanelToolTip { visible: stcMouse.containsMouse; text: "Color: " + parent.modelData }
+                            }
+                          }
+
+                          // Eyedropper for Stamp
+                          Rectangle {
+                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                            color: stedMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
+                            MouseArea {
+                              id: stedMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.activeColorTarget = "stroke"
+                                root.requestScreenPick()
+                              }
+                            }
+                            PanelToolTip { visible: stedMouse.containsMouse; text: "Pick stamp color from screen" }
+                          }
+                        }
+
+                        // Separator after stamp
+                        Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
+                      }
+
+                      // 6. PIXELATE CONTROLS (for pixelate)
+                      Row {
+                        visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "pixelate")
+                        spacing: Style.space(2)
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Repeater {
+                          model: [
+                            { label: "Fine", sz: 8 },
+                            { label: "Med", sz: 14 },
+                            { label: "Coarse", sz: 22 }
+                          ]
+                          Rectangle {
+                            required property var modelData
+                            width: pixSizeTxt.implicitWidth + Style.space(6); height: Style.space(18); radius: Style.space(3)
+                            color: (selectionOverlay.curAct && (selectionOverlay.curAct.pixelSize || 14) === modelData.sz) ? Color.accent : (pixSMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
+                            border.width: 1
+                            border.color: (selectionOverlay.curAct && (selectionOverlay.curAct.pixelSize || 14) === modelData.sz) ? Color.accent : "transparent"
+                            anchors.verticalCenter: parent.verticalCenter
+
+                            Text {
+                              id: pixSizeTxt
+                              text: parent.modelData.label
+                              color: (selectionOverlay.curAct && (selectionOverlay.curAct.pixelSize || 14) === parent.modelData.sz) ? "#FFFFFF" : (Color.popups.text || Color.text)
+                              font.family: Style.font.menuFamily
+                              font.pixelSize: Style.space(7.5)
+                              font.bold: true
+                              anchors.centerIn: parent
+                            }
+                            MouseArea {
+                              id: pixSMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: root.setSelectedPixelSize(parent.modelData.sz)
+                            }
+                            PanelToolTip { visible: pixSMouse.containsMouse; text: "Pixel block: " + parent.modelData.sz + "px" }
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  // ==========================================
+                  // ROW 3: DROP SHADOW ENGINE
+                  // ==========================================
+                  Flickable {
+                    id: selRow3Flick
+                    visible: Boolean(selectionOverlay.curAct && (
+                      selectionOverlay.curAct.tool === "rect" ||
+                      selectionOverlay.curAct.tool === "circle" ||
+                      selectionOverlay.curAct.tool === "line" ||
+                      selectionOverlay.curAct.tool === "arrow" ||
+                      selectionOverlay.curAct.tool === "pen" ||
+                      selectionOverlay.curAct.tool === "text" ||
+                      selectionOverlay.curAct.tool === "stamp"
+                    ))
+                    width: parent.width
+                    height: visible ? Style.space(20) : 0
+                    contentWidth: selRow3Content.implicitWidth + Style.space(8)
+                    contentHeight: height
+                    boundsBehavior: Flickable.StopAtBounds
+                    flickableDirection: Flickable.HorizontalFlick
+                    clip: true
+
+                    Row {
+                      id: selRow3Content
+                      anchors.verticalCenter: parent.verticalCenter
+                      spacing: Style.space(4)
+
+                      // Shadow Header Label
+                      Text {
+                        text: "Shadow:"
+                        color: Util.alpha(Color.popups.text || Color.text, 0.6)
+                        font.family: Style.font.menuFamily
+                        font.pixelSize: Style.space(7.5)
+                        font.bold: true
+                        anchors.verticalCenter: parent.verticalCenter
+                      }
+
+                      // Shadow Toggle Button
+                      Rectangle {
+                        property bool isShOn: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.shadow)
+                        width: shTogRow.implicitWidth + Style.space(8); height: Style.space(18); radius: Style.space(3)
+                        color: isShOn ? Color.accent : (shTogMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
+                        border.width: 1
+                        border.color: isShOn ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.12)
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Row {
+                          id: shTogRow
+                          anchors.centerIn: parent
+                          spacing: Style.space(2)
+                          Text {
+                            text: "◩"
+                            font.pixelSize: Style.space(7.5)
+                            color: parent.parent.isShOn ? "#FFFFFF" : Color.accent
+                            anchors.verticalCenter: parent.verticalCenter
+                          }
+                          Text {
+                            text: parent.parent.isShOn ? "ON" : "OFF"
+                            font.family: Style.font.menuFamily
+                            font.pixelSize: Style.space(7)
+                            font.bold: true
+                            color: parent.parent.isShOn ? "#FFFFFF" : (Color.popups.text || Color.text)
+                            anchors.verticalCenter: parent.verticalCenter
+                          }
+                        }
+                        MouseArea {
+                          id: shTogMouse
+                          anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                          onClicked: root.toggleSelectedShadow()
+                        }
+                        PanelToolTip { visible: shTogMouse.containsMouse; text: parent.isShOn ? "Disable drop shadow" : "Enable drop shadow" }
+                      }
+
+                      // Detailed Shadow Controls (spread/blur, opacity, offset presets, color, eyedropper)
+                      Row {
+                        visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.shadow)
+                        spacing: Style.space(3)
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        // Separator
+                        Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
+
+                        // Blur / Spread
+                        Text {
+                          text: "Blur:"
+                          color: Util.alpha(Color.popups.text || Color.text, 0.55)
+                          font.family: Style.font.menuFamily
+                          font.pixelSize: Style.space(7)
+                          font.bold: true
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        Repeater {
+                          model: root.shadowBlurPresets
+                          Rectangle {
+                            required property var modelData
+                            property bool isAct: Boolean(selectionOverlay.curAct && (selectionOverlay.curAct.shadowBlur !== undefined ? selectionOverlay.curAct.shadowBlur : root.dropShadowBlur) === modelData.val)
+                            width: Style.space(16); height: Style.space(18); radius: Style.space(3)
+                            color: isAct ? Color.accent : (sbMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
+                            border.width: 1; border.color: isAct ? Color.accent : "transparent"
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text {
+                              text: parent.modelData.label
+                              color: parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
+                              font.family: Style.font.menuFamily
+                              font.pixelSize: Style.space(7)
+                              font.bold: true
+                              anchors.centerIn: parent
+                            }
+                            MouseArea {
+                              id: sbMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: root.setSelectedShadowBlur(parent.modelData.val)
+                            }
+                            PanelToolTip { visible: sbMouse.containsMouse; text: parent.modelData.tip }
+                          }
+                        }
+
+                        // Separator
+                        Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
+
+                        // Opacity
+                        Text {
+                          text: "Opacity:"
+                          color: Util.alpha(Color.popups.text || Color.text, 0.55)
+                          font.family: Style.font.menuFamily
+                          font.pixelSize: Style.space(7)
+                          font.bold: true
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        Repeater {
+                          model: root.shadowOpacityPresets
+                          Rectangle {
+                            required property var modelData
+                            property bool isAct: {
+                              if (!selectionOverlay.curAct) return false
+                              var curOp = (selectionOverlay.curAct.shadowOpacity !== undefined) ? selectionOverlay.curAct.shadowOpacity : root.dropShadowOpacity
+                              return Math.abs(curOp - modelData.val) < 0.08
+                            }
+                            width: opTxt.implicitWidth + Style.space(6); height: Style.space(18); radius: Style.space(3)
+                            color: isAct ? Color.accent : (soMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
+                            border.width: 1; border.color: isAct ? Color.accent : "transparent"
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text {
+                              id: opTxt
+                              text: parent.modelData.label
+                              color: parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
+                              font.family: Style.font.menuFamily
+                              font.pixelSize: Style.space(6.5)
+                              font.bold: true
+                              anchors.centerIn: parent
+                            }
+                            MouseArea {
+                              id: soMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: root.setSelectedShadowOpacity(parent.modelData.val)
+                            }
+                            PanelToolTip { visible: soMouse.containsMouse; text: parent.modelData.tip }
+                          }
+                        }
+
+                        // Separator
+                        Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
+
+                        // Offset Presets (Down, Deep, Glow)
+                        Text {
+                          text: "Offset:"
+                          color: Util.alpha(Color.popups.text || Color.text, 0.55)
+                          font.family: Style.font.menuFamily
+                          font.pixelSize: Style.space(7)
+                          font.bold: true
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        Repeater {
+                          model: root.shadowOffsetPresets
+                          Rectangle {
+                            required property var modelData
+                            property bool isAct: {
+                              if (!selectionOverlay.curAct) return false
+                              var ox = (selectionOverlay.curAct.shadowOffsetX !== undefined) ? selectionOverlay.curAct.shadowOffsetX : root.dropShadowOffsetX
+                              var oy = (selectionOverlay.curAct.shadowOffsetY !== undefined) ? selectionOverlay.curAct.shadowOffsetY : root.dropShadowOffsetY
+                              return ox === modelData.ox && oy === modelData.oy
+                            }
+                            width: offTxt.implicitWidth + Style.space(6); height: Style.space(18); radius: Style.space(3)
+                            color: isAct ? Color.accent : (soffMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
+                            border.width: 1; border.color: isAct ? Color.accent : "transparent"
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text {
+                              id: offTxt
+                              text: parent.modelData.label
+                              color: parent.isAct ? "#FFFFFF" : (Color.popups.text || Color.text)
+                              font.family: Style.font.menuFamily
+                              font.pixelSize: Style.space(6.5)
+                              font.bold: true
+                              anchors.centerIn: parent
+                            }
+                            MouseArea {
+                              id: soffMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: root.setSelectedShadowOffset(parent.modelData.ox, parent.modelData.oy)
+                            }
+                            PanelToolTip { visible: soffMouse.containsMouse; text: parent.modelData.tip }
+                          }
+                        }
+
+                        // Separator
+                        Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
+
+                        // Shadow Color Swatches
+                        Text {
+                          text: "Color:"
+                          color: Util.alpha(Color.popups.text || Color.text, 0.55)
+                          font.family: Style.font.menuFamily
+                          font.pixelSize: Style.space(7)
+                          font.bold: true
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        Repeater {
+                          model: root.shadowColorPresets
+                          Rectangle {
+                            required property string modelData
+                            property string curCol: (selectionOverlay.curAct && selectionOverlay.curAct.shadowColor) || String(root.dropShadowColor)
+                            width: Style.space(12); height: Style.space(12); radius: Style.space(6)
+                            color: modelData
+                            border.width: String(curCol).toLowerCase() === String(modelData).toLowerCase() ? 2 : 1
+                            border.color: String(curCol).toLowerCase() === String(modelData).toLowerCase() ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.25)
+                            scale: String(curCol).toLowerCase() === String(modelData).toLowerCase() ? 1.25 : 1.0
+                            anchors.verticalCenter: parent.verticalCenter
+                            MouseArea {
+                              id: scolMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: root.setSelectedShadowColor(parent.modelData)
+                            }
+                            PanelToolTip { visible: scolMouse.containsMouse; text: "Shadow color: " + parent.modelData }
+                          }
+                        }
+
+                        // Shadow Color Eyedropper
                         Rectangle {
                           width: Style.space(16); height: Style.space(16); radius: Style.space(8)
-                          color: fedMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                          color: shedMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
                           anchors.verticalCenter: parent.verticalCenter
                           Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
                           MouseArea {
-                            id: fedMouse
+                            id: shedMouse
                             anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                             onClicked: {
-                              root.activeColorTarget = "fill"
+                              root.activeColorTarget = "shadow"
                               root.requestScreenPick()
                             }
                           }
-                          PanelToolTip { visible: fedMouse.containsMouse; text: "Pick fill color from screen" }
+                          PanelToolTip { visible: shedMouse.containsMouse; text: "Pick shadow color from screen" }
                         }
                       }
-
-                      // Separator after fill
-                      Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
-                    }
-
-                    // 4. Flip Direction Button (for arrow & line)
-                    Row {
-                      visible: Boolean(selectionOverlay.curAct && (selectionOverlay.curAct.tool === "arrow" || selectionOverlay.curAct.tool === "line"))
-                      spacing: Style.space(4)
-                      anchors.verticalCenter: parent.verticalCenter
-
-                      Rectangle {
-                        width: flipArrowTxt.implicitWidth + Style.space(8); height: Style.space(18); radius: Style.space(3)
-                        color: flipArrowMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
-                        border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.12)
-                        anchors.verticalCenter: parent.verticalCenter
-
-                        Row {
-                          id: flipArrowTxt
-                          anchors.centerIn: parent; spacing: Style.space(2)
-                          Text { text: "⇄"; font.pixelSize: Style.space(8); font.bold: true; color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
-                          Text { text: "Flip"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true; color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
-                        }
-                        MouseArea {
-                          id: flipArrowMouse
-                          anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                          onClicked: root.flipSelectedArrow()
-                        }
-                        PanelToolTip { visible: flipArrowMouse.containsMouse; text: "Reverse direction (swap head and tail)" }
-                      }
-
-                      Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
-                    }
-
-                    // 6. Text Controls: Size pills + Card Box Toggle (for text)
-                    Row {
-                      visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "text")
-                      spacing: Style.space(3)
-                      anchors.verticalCenter: parent.verticalCenter
-
-                      Repeater {
-                        model: [
-                          { label: "S", sz: 14 },
-                          { label: "M", sz: 20 },
-                          { label: "L", sz: 28 },
-                          { label: "XL", sz: 40 }
-                        ]
-                        Rectangle {
-                          required property var modelData
-                          width: Style.space(18); height: Style.space(18); radius: Style.space(3)
-                          color: (selectionOverlay.curAct && Math.abs((selectionOverlay.curAct.size || 18) - modelData.sz) <= 3) ? Color.accent : (tsMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                          border.width: 1
-                          border.color: (selectionOverlay.curAct && Math.abs((selectionOverlay.curAct.size || 18) - modelData.sz) <= 3) ? Color.accent : "transparent"
-                          anchors.verticalCenter: parent.verticalCenter
-
-                          Text {
-                            text: parent.modelData.label
-                            color: (selectionOverlay.curAct && Math.abs((selectionOverlay.curAct.size || 18) - parent.modelData.sz) <= 3) ? "#FFFFFF" : (Color.popups.text || Color.text)
-                            font.family: Style.font.menuFamily
-                            font.pixelSize: Style.space(7.5)
-                            font.bold: true
-                            anchors.centerIn: parent
-                          }
-                          MouseArea {
-                            id: tsMouse
-                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: {
-                              if (selectionOverlay.curAct) {
-                                root.pushUndoState()
-                                var next = root.actions.slice()
-                                var cloned = JSON.parse(JSON.stringify(selectionOverlay.curAct))
-                                cloned.size = parent.modelData.sz
-                                next[root.selectedActionIndex] = cloned
-                                root.actions = next
-                                annotationCanvas.requestPaint()
-                              }
-                            }
-                          }
-                          PanelToolTip { visible: tsMouse.containsMouse; text: "Font size: " + parent.modelData.sz + "px" }
-                        }
-                      }
-
-                      // Card Box Toggle
-                      Rectangle {
-                        width: boxToggleTxt.implicitWidth + Style.space(8); height: Style.space(18); radius: Style.space(3)
-                        color: (selectionOverlay.curAct && selectionOverlay.curAct.box) ? Color.accent : (boxToggleMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                        border.width: 1
-                        border.color: (selectionOverlay.curAct && selectionOverlay.curAct.box) ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.12)
-                        anchors.verticalCenter: parent.verticalCenter
-
-                        Row {
-                          id: boxToggleTxt
-                          anchors.centerIn: parent; spacing: Style.space(2)
-                          Text { text: "■"; font.pixelSize: Style.space(7); color: (selectionOverlay.curAct && selectionOverlay.curAct.box) ? "#FFFFFF" : Color.accent; anchors.verticalCenter: parent.verticalCenter }
-                          Text { text: "Card Box"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true; color: (selectionOverlay.curAct && selectionOverlay.curAct.box) ? "#FFFFFF" : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
-                        }
-                        MouseArea {
-                          id: boxToggleMouse
-                          anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                          onClicked: root.toggleSelectedTextBox()
-                        }
-                        PanelToolTip { visible: boxToggleMouse.containsMouse; text: (selectionOverlay.curAct && selectionOverlay.curAct.box) ? "Remove background card" : "Add high-contrast dark card box" }
-                      }
-
-                      // Separator after text
-                      Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
-                    }
-
-                    // 7. Stamp Controls: Symbol pills (for stamp)
-                    Row {
-                      visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "stamp")
-                      spacing: Style.space(2)
-                      anchors.verticalCenter: parent.verticalCenter
-
-                      Repeater {
-                        model: [
-                          { id: "number", label: "①" },
-                          { id: "check", label: "✓" },
-                          { id: "cross", label: "✕" },
-                          { id: "star", label: "★" },
-                          { id: "warn", label: "⚠" },
-                          { id: "bug", label: "🪲" },
-                          { id: "fire", label: "🔥" }
-                        ]
-                        Rectangle {
-                          required property var modelData
-                          width: Style.space(18); height: Style.space(18); radius: Style.space(3)
-                          color: (selectionOverlay.curAct && selectionOverlay.curAct.stampType === modelData.id) ? Color.accent : (stMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                          border.width: 1
-                          border.color: (selectionOverlay.curAct && selectionOverlay.curAct.stampType === modelData.id) ? Color.accent : "transparent"
-                          anchors.verticalCenter: parent.verticalCenter
-
-                          Text {
-                            text: parent.modelData.label
-                            color: (selectionOverlay.curAct && selectionOverlay.curAct.stampType === parent.modelData.id) ? "#FFFFFF" : (Color.popups.text || Color.text)
-                            font.pixelSize: Style.space(8.5)
-                            font.bold: true
-                            anchors.centerIn: parent
-                          }
-                          MouseArea {
-                            id: stMouse
-                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: root.setSelectedStampType(parent.modelData.id)
-                          }
-                          PanelToolTip { visible: stMouse.containsMouse; text: "Change stamp to " + parent.modelData.label }
-                        }
-                      }
-
-                      // Separator after stamp
-                      Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
-                    }
-
-                    // 8. Pixelate Block Size Controls (for pixelate)
-                    Row {
-                      visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "pixelate")
-                      spacing: Style.space(2)
-                      anchors.verticalCenter: parent.verticalCenter
-
-                      Repeater {
-                        model: [
-                          { label: "Fine", sz: 8 },
-                          { label: "Med", sz: 14 },
-                          { label: "Coarse", sz: 22 }
-                        ]
-                        Rectangle {
-                          required property var modelData
-                          width: pixSizeTxt.implicitWidth + Style.space(6); height: Style.space(18); radius: Style.space(3)
-                          color: (selectionOverlay.curAct && (selectionOverlay.curAct.pixelSize || 14) === modelData.sz) ? Color.accent : (pixSMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                          border.width: 1
-                          border.color: (selectionOverlay.curAct && (selectionOverlay.curAct.pixelSize || 14) === modelData.sz) ? Color.accent : "transparent"
-                          anchors.verticalCenter: parent.verticalCenter
-
-                          Text {
-                            id: pixSizeTxt
-                            text: parent.modelData.label
-                            color: (selectionOverlay.curAct && (selectionOverlay.curAct.pixelSize || 14) === parent.modelData.sz) ? "#FFFFFF" : (Color.popups.text || Color.text)
-                            font.family: Style.font.menuFamily
-                            font.pixelSize: Style.space(7.5)
-                            font.bold: true
-                            anchors.centerIn: parent
-                          }
-                          MouseArea {
-                            id: pixSMouse
-                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: root.setSelectedPixelSize(parent.modelData.sz)
-                          }
-                          PanelToolTip { visible: pixSMouse.containsMouse; text: "Pixel block: " + parent.modelData.sz + "px" }
-                        }
-                      }
-
-                      // Separator after pixelate
-                      Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
-                    }
-
-                    // Duplicate Button
-                    Rectangle {
-                      width: Style.space(20); height: Style.space(20); radius: Style.space(4)
-                      color: dupMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
-                      anchors.verticalCenter: parent.verticalCenter
-                      Text { text: "⧉"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(9); anchors.centerIn: parent }
-                      MouseArea {
-                        id: dupMouse
-                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                        onClicked: root.duplicateSelectedAction()
-                      }
-                      PanelToolTip { visible: dupMouse.containsMouse; text: "Duplicate element (Ctrl+D)" }
-                    }
-
-                    // Bring to Front Button
-                    Rectangle {
-                      width: Style.space(20); height: Style.space(20); radius: Style.space(4)
-                      color: frontMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
-                      anchors.verticalCenter: parent.verticalCenter
-                      Text { text: "▲"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
-                      MouseArea {
-                        id: frontMouse
-                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                        onClicked: root.bringSelectedToFront()
-                      }
-                      PanelToolTip { visible: frontMouse.containsMouse; text: "Bring to Front (])" }
-                    }
-
-                    // Send to Back Button
-                    Rectangle {
-                      width: Style.space(20); height: Style.space(20); radius: Style.space(4)
-                      color: backMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
-                      anchors.verticalCenter: parent.verticalCenter
-                      Text { text: "▼"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
-                      MouseArea {
-                        id: backMouse
-                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                        onClicked: root.sendSelectedToBack()
-                      }
-                      PanelToolTip { visible: backMouse.containsMouse; text: "Send to Back ([)" }
-                    }
-
-                    // Separator before delete
-                    Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.2); anchors.verticalCenter: parent.verticalCenter }
-
-                    // Delete Button
-                    Rectangle {
-                      width: Style.space(20); height: Style.space(20); radius: Style.space(4)
-                      color: delMouse.containsMouse ? Util.alpha("#EF4444", 0.3) : Util.alpha("#EF4444", 0.12)
-                      border.width: 1; border.color: Util.alpha("#EF4444", 0.3)
-                      anchors.verticalCenter: parent.verticalCenter
-                      Text { text: "🗑"; color: "#EF4444"; font.pixelSize: Style.space(8.5); anchors.centerIn: parent }
-                      MouseArea {
-                        id: delMouse
-                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                        onClicked: root.deleteSelectedAction()
-                      }
-                      PanelToolTip { visible: delMouse.containsMouse; text: "Delete element (Del)" }
-                    }
-
-                    // Close / Deselect Button
-                    Rectangle {
-                      width: Style.space(20); height: Style.space(20); radius: Style.space(4)
-                      color: deselMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : "transparent"
-                      anchors.verticalCenter: parent.verticalCenter
-                      Text { text: "✕"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(8); anchors.centerIn: parent }
-                      MouseArea {
-                        id: deselMouse
-                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                        onClicked: root.selectedActionIndex = -1
-                      }
-                      PanelToolTip { visible: deselMouse.containsMouse; text: "Deselect (Esc)" }
                     }
                   }
                 }
@@ -4498,6 +5250,28 @@ Rectangle {
     var actColor = String(act.color || "#EF4444")
     var actWidth = (typeof act.width !== "undefined") ? Number(act.width) : 4
 
+    var hasShadow = Boolean(act.shadow)
+    var shadowCol = hasShadow ? root.formatColorWithAlpha(act.shadowColor || "#000000", (act.shadowOpacity !== undefined ? act.shadowOpacity : 0.45)) : "transparent"
+    var shadowBlur = hasShadow ? (act.shadowBlur !== undefined ? act.shadowBlur : 8) : 0
+    var shadowOffX = hasShadow ? (act.shadowOffsetX !== undefined ? act.shadowOffsetX : 0) : 0
+    var shadowOffY = hasShadow ? (act.shadowOffsetY !== undefined ? act.shadowOffsetY : 4) : 0
+
+    function enableShadow() {
+      if (hasShadow) {
+        ctx.shadowColor = shadowCol
+        ctx.shadowBlur = shadowBlur
+        ctx.shadowOffsetX = shadowOffX
+        ctx.shadowOffsetY = shadowOffY
+      }
+    }
+
+    function disableShadow() {
+      ctx.shadowColor = "transparent"
+      ctx.shadowBlur = 0
+      ctx.shadowOffsetX = 0
+      ctx.shadowOffsetY = 0
+    }
+
     try {
       if (act.tool === "pen") {
         ctx.beginPath()
@@ -4507,15 +5281,19 @@ Rectangle {
         ctx.lineJoin = "round"
         var pts = act.points || []
         if (pts.length === 1) {
+          enableShadow()
           ctx.arc(pts[0].x, pts[0].y, actWidth / 2, 0, Math.PI * 2)
           ctx.fillStyle = actColor
           ctx.fill()
+          disableShadow()
         } else if (pts.length >= 2) {
+          enableShadow()
           ctx.moveTo(pts[0].x, pts[0].y)
           for (var j = 1; j < pts.length; j++) {
             ctx.lineTo(pts[j].x, pts[j].y)
           }
           ctx.stroke()
+          disableShadow()
         }
       } else if (act.tool === "highlighter") {
         ctx.globalAlpha = 0.35
@@ -4532,48 +5310,71 @@ Rectangle {
           ctx.stroke()
         }
       } else if (act.tool === "rect" && act.start && act.end) {
-        ctx.beginPath()
         var rx = Math.min(act.start.x, act.end.x)
         var ry = Math.min(act.start.y, act.end.y)
         var rw = Math.abs(act.end.x - act.start.x)
         var rh = Math.abs(act.end.y - act.start.y)
         var fMode = act.fillMode || (act.filled ? "semi" : "none")
         if (fMode !== "none") {
+          enableShadow()
           ctx.fillStyle = String(act.fillColor || actColor)
           ctx.globalAlpha = (fMode === "solid") ? 1.0 : (act.fillAlpha !== undefined ? act.fillAlpha : 0.25)
           ctx.fillRect(rx, ry, rw, rh)
           ctx.globalAlpha = 1.0
+          disableShadow()
         }
         if (actWidth > 0) {
+          if (fMode === "none") {
+            enableShadow()
+          } else {
+            disableShadow()
+          }
           ctx.strokeStyle = actColor
           ctx.lineWidth = actWidth
           ctx.strokeRect(rx, ry, rw, rh)
+          disableShadow()
         }
       } else if (act.tool === "circle" && act.start && act.end) {
-        ctx.beginPath()
         var crx = (act.end.x - act.start.x) / 2
         var cry = (act.end.y - act.start.y) / 2
         var ccx = act.start.x + crx
         var ccy = act.start.y + cry
-        if (typeof ctx.ellipse === "function") {
-          ctx.ellipse(ccx, ccy, Math.abs(crx), Math.abs(cry), 0, 0, Math.PI * 2)
-        } else {
-          var r = Math.max(Math.abs(crx), Math.abs(cry))
-          ctx.arc(ccx, ccy, r, 0, Math.PI * 2)
-        }
         var fMode = act.fillMode || (act.filled ? "semi" : "none")
         if (fMode !== "none") {
+          ctx.beginPath()
+          if (typeof ctx.ellipse === "function") {
+            ctx.ellipse(ccx, ccy, Math.abs(crx), Math.abs(cry), 0, 0, Math.PI * 2)
+          } else {
+            var r = Math.max(Math.abs(crx), Math.abs(cry))
+            ctx.arc(ccx, ccy, r, 0, Math.PI * 2)
+          }
+          enableShadow()
           ctx.fillStyle = String(act.fillColor || actColor)
           ctx.globalAlpha = (fMode === "solid") ? 1.0 : (act.fillAlpha !== undefined ? act.fillAlpha : 0.25)
           ctx.fill()
           ctx.globalAlpha = 1.0
+          disableShadow()
         }
         if (actWidth > 0) {
+          ctx.beginPath()
+          if (typeof ctx.ellipse === "function") {
+            ctx.ellipse(ccx, ccy, Math.abs(crx), Math.abs(cry), 0, 0, Math.PI * 2)
+          } else {
+            var rc = Math.max(Math.abs(crx), Math.abs(cry))
+            ctx.arc(ccx, ccy, rc, 0, Math.PI * 2)
+          }
+          if (fMode === "none") {
+            enableShadow()
+          } else {
+            disableShadow()
+          }
           ctx.strokeStyle = actColor
           ctx.lineWidth = actWidth
           ctx.stroke()
+          disableShadow()
         }
       } else if (act.tool === "line" && act.start && act.end) {
+        enableShadow()
         ctx.beginPath()
         ctx.strokeStyle = actColor
         ctx.lineWidth = actWidth
@@ -4581,7 +5382,9 @@ Rectangle {
         ctx.moveTo(act.start.x, act.start.y)
         ctx.lineTo(act.end.x, act.end.y)
         ctx.stroke()
+        disableShadow()
       } else if (act.tool === "arrow" && act.start && act.end) {
+        enableShadow()
         ctx.beginPath()
         ctx.strokeStyle = actColor
         ctx.fillStyle = actColor
@@ -4599,6 +5402,7 @@ Rectangle {
         ctx.lineTo(act.end.x - headLen * Math.cos(angle + Math.PI / 6), act.end.y - headLen * Math.sin(angle + Math.PI / 6))
         ctx.closePath()
         ctx.fill()
+        disableShadow()
       } else if (act.tool === "blur" && act.start && act.end) {
         var bx = Math.min(act.start.x, act.end.x)
         var by = Math.min(act.start.y, act.end.y)
@@ -4654,19 +5458,25 @@ Rectangle {
           var padY = Math.round(fs * 0.25)
           var tw = ctx.measureText(act.text).width
           ctx.save()
+          enableShadow()
           ctx.fillStyle = "rgba(15, 23, 42, 0.88)"
           ctx.fillRect(act.pos.x - padX, act.pos.y - padY, tw + padX * 2, fs + padY * 2)
+          disableShadow()
           ctx.strokeStyle = actColor
           ctx.lineWidth = 1.5
           ctx.strokeRect(act.pos.x - padX, act.pos.y - padY, tw + padX * 2, fs + padY * 2)
           ctx.restore()
+          ctx.fillStyle = actColor
+          ctx.fillText(act.text, act.pos.x, act.pos.y)
         } else {
+          enableShadow()
           ctx.strokeStyle = "rgba(0,0,0,0.7)"
           ctx.lineWidth = 3
           ctx.strokeText(act.text, act.pos.x, act.pos.y)
+          disableShadow()
+          ctx.fillStyle = actColor
+          ctx.fillText(act.text, act.pos.x, act.pos.y)
         }
-        ctx.fillStyle = actColor
-        ctx.fillText(act.text, act.pos.x, act.pos.y)
       } else if (act.tool === "stamp" && act.pos) {
         var sx = act.pos.x
         var sy = act.pos.y
@@ -4674,10 +5484,12 @@ Rectangle {
 
         ctx.save()
         // Circular badge background (shared across all stamps for visual consistency)
+        enableShadow()
         ctx.fillStyle = actColor
         ctx.beginPath()
         ctx.arc(sx, sy, sr, 0, Math.PI * 2)
         ctx.fill()
+        disableShadow()
         ctx.strokeStyle = "#FFFFFF"
         ctx.lineWidth = Math.max(1.5, Math.round(sr * 0.12))
         ctx.stroke()
