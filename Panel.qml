@@ -1288,28 +1288,33 @@ Panel {
           }
         }
 
-        // Trailing Controls (Aligned strictly to the Right: Calendar, Capture, Incognito, Close)
+        // Trailing Controls (Aligned strictly to the Right: Calendar, Multi-Select, Screenshot, OCR, Settings, Incognito, Close)
         Row {
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
           spacing: Style.space(6)
 
-          // Timeline / Calendar Toggle (ReClip title-btn style)
+          // Timeline / Calendar Toggle
           Rectangle {
             width: Style.space(30); height: Style.space(30)
             radius: Style.space(6)
-            color: root.showTimeline ? Color.accent : (root.activeDateFilter !== "" ? Util.alpha(Color.accent, 0.2) : Util.alpha(root.fg, 0.08))
+            color: root.showTimeline ? Color.accent : (root.activeDateFilter !== "" ? Util.alpha(Color.accent, 0.2) : (tlMouse.containsMouse ? Util.alpha(root.fg, 0.15) : Util.alpha(root.fg, 0.08)))
             border.width: 1
-            border.color: root.showTimeline || root.activeDateFilter !== "" ? Color.accent : Util.alpha(root.fg, 0.12)
+            border.color: root.showTimeline || root.activeDateFilter !== "" ? Color.accent : (tlMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.12))
             Text {
               text: "󰸗"
-              color: root.showTimeline ? "#fff" : (root.activeDateFilter !== "" ? Color.accent : root.fg)
+              color: root.showTimeline ? "#fff" : (root.activeDateFilter !== "" ? Color.accent : (tlMouse.containsMouse ? Color.accent : root.fg))
               font.family: root.fontFamily; font.pixelSize: Style.font.body
               anchors.centerIn: parent
             }
             MouseArea {
-              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              id: tlMouse
+              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
               onClicked: root.showTimeline = !root.showTimeline
+            }
+            PanelToolTip {
+              visible: tlMouse.containsMouse
+              text: root.showTimeline ? "Hide Timeline" : "Show Timeline & Calendar"
             }
           }
 
@@ -1317,18 +1322,23 @@ Panel {
           Rectangle {
             width: Style.space(30); height: Style.space(30)
             radius: Style.space(6)
-            color: root.bulkMode ? Color.accent : Util.alpha(root.fg, 0.08)
+            color: root.bulkMode ? Color.accent : (bulkMouse.containsMouse ? Util.alpha(root.fg, 0.15) : Util.alpha(root.fg, 0.08))
             border.width: 1
-            border.color: root.bulkMode ? Color.accent : Util.alpha(root.fg, 0.12)
+            border.color: root.bulkMode ? Color.accent : (bulkMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.12))
             Text {
               text: "󰒆"
-              color: root.bulkMode ? "#fff" : root.fg
+              color: root.bulkMode ? "#fff" : (bulkMouse.containsMouse ? Color.accent : root.fg)
               font.family: root.fontFamily; font.pixelSize: Style.font.body
               anchors.centerIn: parent
             }
             MouseArea {
-              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              id: bulkMouse
+              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
               onClicked: root.toggleBulkMode()
+            }
+            PanelToolTip {
+              visible: bulkMouse.containsMouse
+              text: root.bulkMode ? "Exit Multi-Select" : "Multi-Select Mode"
             }
           }
 
@@ -1336,16 +1346,23 @@ Panel {
           Rectangle {
             width: Style.space(30); height: Style.space(30)
             radius: Style.space(6)
-            color: Util.alpha(root.fg, 0.08)
-            border.width: 1; border.color: Util.alpha(root.fg, 0.12)
+            color: shotMouse.containsMouse ? Util.alpha(root.fg, 0.15) : Util.alpha(root.fg, 0.08)
+            border.width: 1
+            border.color: shotMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.12)
             Text {
               text: "󰄀"
-              color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body
+              color: shotMouse.containsMouse ? Color.accent : root.fg
+              font.family: root.fontFamily; font.pixelSize: Style.font.body
               anchors.centerIn: parent
             }
             MouseArea {
-              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              id: shotMouse
+              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
               onClicked: root.takeScreenshot()
+            }
+            PanelToolTip {
+              visible: shotMouse.containsMouse
+              text: "Take Screenshot"
             }
           }
 
@@ -1353,16 +1370,23 @@ Panel {
           Rectangle {
             width: Style.space(30); height: Style.space(30)
             radius: Style.space(6)
-            color: Util.alpha(root.fg, 0.08)
-            border.width: 1; border.color: Util.alpha(root.fg, 0.12)
+            color: ocrCapMouse.containsMouse ? Util.alpha(root.fg, 0.15) : Util.alpha(root.fg, 0.08)
+            border.width: 1
+            border.color: ocrCapMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.12)
             Text {
               text: "󰐳"
-              color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body
+              color: ocrCapMouse.containsMouse ? Color.accent : root.fg
+              font.family: root.fontFamily; font.pixelSize: Style.font.body
               anchors.centerIn: parent
             }
             MouseArea {
-              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              id: ocrCapMouse
+              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
               onClicked: root.captureOcrScreen()
+            }
+            PanelToolTip {
+              visible: ocrCapMouse.containsMouse
+              text: "Extract Text from Screen (OCR)"
             }
           }
 
@@ -1370,48 +1394,50 @@ Panel {
           Rectangle {
             width: Style.space(30); height: Style.space(30)
             radius: Style.space(6)
-            color: root.settingsOpen ? Color.accent : Util.alpha(root.fg, 0.08)
-            border.width: 1; border.color: root.settingsOpen ? Color.accent : Util.alpha(root.fg, 0.12)
+            color: root.settingsOpen ? Color.accent : (settingsBtnMouse.containsMouse ? Util.alpha(root.fg, 0.15) : Util.alpha(root.fg, 0.08))
+            border.width: 1
+            border.color: root.settingsOpen ? Color.accent : (settingsBtnMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.12))
             Text {
               text: "󰒓"
-              color: root.settingsOpen ? "#fff" : root.fg
+              color: root.settingsOpen ? "#fff" : (settingsBtnMouse.containsMouse ? Color.accent : root.fg)
               font.family: root.fontFamily; font.pixelSize: Style.font.body
               anchors.centerIn: parent
             }
             MouseArea {
-              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              id: settingsBtnMouse
+              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
               onClicked: root.settingsOpen = !root.settingsOpen
+            }
+            PanelToolTip {
+              visible: settingsBtnMouse.containsMouse
+              text: root.settingsOpen ? "Close Settings" : "Preferences & Settings"
             }
           }
 
-          // Incognito Toggle Pill
+          // Incognito Toggle Icon Button
           Rectangle {
-            width: incogRow.implicitWidth + Style.space(12); height: Style.space(30)
+            width: Style.space(30); height: Style.space(30)
             radius: Style.space(6)
-            color: root.incognito ? Util.alpha(Color.urgent, 0.2) : Util.alpha(root.fg, 0.08)
-            border.width: 1; border.color: root.incognito ? Color.urgent : Util.alpha(root.fg, 0.12)
+            color: root.incognito ? Util.alpha(Color.urgent, 0.2) : (incogMouse.containsMouse ? Util.alpha(root.fg, 0.15) : Util.alpha(root.fg, 0.08))
+            border.width: 1
+            border.color: root.incognito ? Color.urgent : (incogMouse.containsMouse ? (root.incognito ? Color.urgent : Color.accent) : Util.alpha(root.fg, 0.12))
 
-            Row {
-              id: incogRow
+            Text {
+              text: root.incognito ? "󰈈" : "󰈉"
+              color: root.incognito ? Color.urgent : (incogMouse.containsMouse ? Color.accent : root.fg)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
               anchors.centerIn: parent
-              spacing: Style.space(4)
-              Text {
-                text: root.incognito ? "󰈈" : "󰈉"
-                color: root.incognito ? Color.urgent : root.fg
-                font.family: root.fontFamily; font.pixelSize: Style.font.caption
-                anchors.verticalCenter: parent.verticalCenter
-              }
-              Text {
-                text: root.incognito ? "Incognito" : "Normal"
-                color: root.incognito ? Color.urgent : root.fg
-                font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true
-                anchors.verticalCenter: parent.verticalCenter
-              }
             }
 
             MouseArea {
-              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              id: incogMouse
+              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
               onClicked: root.toggleIncognito()
+            }
+            PanelToolTip {
+              visible: incogMouse.containsMouse
+              text: root.incognito ? "Incognito Active (Recording paused)" : "Toggle Incognito Mode"
             }
           }
 
@@ -1419,12 +1445,24 @@ Panel {
           Rectangle {
             width: Style.space(30); height: Style.space(30)
             radius: Style.space(6)
-            color: Util.alpha(root.fg, 0.08)
-            border.width: 1; border.color: Util.alpha(root.fg, 0.12)
-            Text { text: "✕"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+            color: closeMouse.containsMouse ? Util.alpha(root.fg, 0.15) : Util.alpha(root.fg, 0.08)
+            border.width: 1
+            border.color: closeMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.12)
+            Text {
+              text: "✕"
+              color: closeMouse.containsMouse ? Color.accent : root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              anchors.centerIn: parent
+            }
             MouseArea {
-              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+              id: closeMouse
+              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
               onClicked: root.close()
+            }
+            PanelToolTip {
+              visible: closeMouse.containsMouse
+              text: "Close (Esc)"
             }
           }
         }
@@ -1446,7 +1484,7 @@ Panel {
 
           Repeater {
             model: [
-              { id: 0, label: "History", icon: "󰅍", count: root.historyCount },
+              { id: 0, label: "Clips", icon: "󰅍", count: root.historyCount },
               { id: 1, label: "Pinned", icon: "󰐃", count: root.pinnedCount },
               { id: 2, label: "Snippets", icon: "󰅩", count: root.snippets.length },
               { id: 3, label: "Colors", icon: "󰏘", count: root.colorPalette.length },
