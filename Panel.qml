@@ -196,6 +196,7 @@ Panel {
     root.imageZoomOpen = false
     root.settingsOpen = false
     root.tagModalOpen = false
+    imageEditorModal.close()
     root.bulkMode = false
     root.bulkSelectedIndices = []
     root.activeMenuClipIndex = -1
@@ -221,6 +222,7 @@ Panel {
     root.imageZoomOpen = false
     root.settingsOpen = false
     root.tagModalOpen = false
+    imageEditorModal.close()
     root.bulkMode = false
     root.bulkSelectedIndices = []
     root.activeMenuClipIndex = -1
@@ -537,24 +539,19 @@ Panel {
     Quickshell.execDetached(["xdg-open", urlStr])
   }
 
-  // --- Image Zoom Helpers ---
+  // --- Unified Image Studio Helpers ---
   function openImageZoom(imgUriOrPath) {
     if (!imgUriOrPath) return
-    root.imageZoomPath = String(imgUriOrPath).replace(/^file:\/\//, "")
-    root.imageZoomScale = 1.0
-    root.imageZoomPanX = 0.0
-    root.imageZoomPanY = 0.0
-    root.imageZoomOpen = true
+    var cleanPath = String(imgUriOrPath).replace(/^file:\/\//, "")
+    imageEditorModal.open(cleanPath)
   }
 
   function closeImageZoom() {
-    root.imageZoomOpen = false
+    imageEditorModal.close()
   }
 
   function resetImageZoom() {
-    root.imageZoomScale = 1.0
-    root.imageZoomPanX = 0.0
-    root.imageZoomPanY = 0.0
+    imageEditorModal.resetZoom()
   }
 
   // --- Settings & Retention Helpers ---
@@ -5280,267 +5277,9 @@ Panel {
     }
 
     // ==========================================
-    // MODAL: IMAGE ZOOM / FULL PREVIEW MODAL
+    // NOTE: IMAGE VIEWING & ZOOMING UNIFIED INTO ImageEditorModal
     // ==========================================
-    Rectangle {
-      id: imageZoomModal
-      visible: root.imageZoomOpen
-      anchors.fill: parent
-      color: Util.alpha(Color.background, 0.95)
-      radius: Style.cornerRadius
-      z: 100
 
-      focus: root.imageZoomOpen
-      Keys.onPressed: function(event) {
-        if (event.key === Qt.Key_Escape) {
-          root.closeImageZoom()
-          event.accepted = true
-        } else if (event.key === Qt.Key_0) {
-          root.resetImageZoom()
-          event.accepted = true
-        } else if (event.key === Qt.Key_Plus || event.key === Qt.Key_Equal) {
-          root.imageZoomScale = Math.min(8.0, root.imageZoomScale * 1.3)
-          event.accepted = true
-        } else if (event.key === Qt.Key_Minus) {
-          root.imageZoomScale = Math.max(0.15, root.imageZoomScale / 1.3)
-          event.accepted = true
-        }
-      }
-
-      // Top Header Bar
-      Item {
-        id: zoomTopBar
-        anchors.top: parent.top
-        anchors.left: parent.left
-        anchors.right: parent.right
-        height: Style.space(46)
-        anchors.margins: Style.space(10)
-        z: 10
-
-        Row {
-          anchors.left: parent.left
-          anchors.verticalCenter: parent.verticalCenter
-          spacing: Style.space(8)
-
-          Rectangle {
-            width: Style.space(28); height: Style.space(28); radius: Style.space(6)
-            color: Util.alpha(Color.accent, 0.2)
-            Text { text: "󰍉"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.body; anchors.centerIn: parent }
-          }
-
-          Column {
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 1
-            Text {
-              text: root.imageZoomPath ? root.imageZoomPath.split("/").pop() : "Image Preview"
-              color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
-              elide: Text.ElideMiddle
-              width: Style.space(220)
-            }
-            Text {
-              text: "Wheel to zoom • Drag to pan • Esc to close"
-              color: Util.alpha(root.fg, 0.5); font.family: root.fontFamily; font.pixelSize: Style.space(8)
-            }
-          }
-        }
-
-        // Close Button
-        Rectangle {
-          anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
-          width: Style.space(30); height: Style.space(30); radius: Style.space(6)
-          color: Util.alpha(root.fg, 0.1)
-          Text { text: "✕"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
-          MouseArea {
-            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-            onClicked: root.closeImageZoom()
-          }
-        }
-      }
-
-      // Interactive Pan & Zoom Canvas
-      Item {
-        id: zoomCanvas
-        anchors.top: zoomTopBar.bottom
-        anchors.bottom: zoomBottomBar.top
-        anchors.left: parent.left
-        anchors.right: parent.right
-        clip: true
-
-        MouseArea {
-          id: zoomMouseArea
-          anchors.fill: parent
-          hoverEnabled: true
-          cursorShape: pressed ? Qt.ClosedHandCursor : (root.imageZoomScale > 1.0 ? Qt.OpenHandCursor : Qt.ArrowCursor)
-
-          property real lastX: 0
-          property real lastY: 0
-
-          onPressed: function(mouse) {
-            lastX = mouse.x
-            lastY = mouse.y
-          }
-
-          onPositionChanged: function(mouse) {
-            if (pressed) {
-              root.imageZoomPanX += (mouse.x - lastX)
-              root.imageZoomPanY += (mouse.y - lastY)
-              lastX = mouse.x
-              lastY = mouse.y
-            }
-          }
-
-          onWheel: function(wheel) {
-            var factor = wheel.angleDelta.y > 0 ? 1.25 : 0.8
-            root.imageZoomScale = Math.max(0.15, Math.min(8.0, root.imageZoomScale * factor))
-          }
-        }
-
-        Image {
-          id: fullZoomImg
-          source: root.imageZoomPath ? ("file://" + root.imageZoomPath) : ""
-          fillMode: Image.PreserveAspectFit
-          anchors.centerIn: parent
-          width: parent.width * 0.9
-          height: parent.height * 0.9
-          scale: root.imageZoomScale
-          transformOrigin: Item.Center
-          x: (parent.width - width) / 2 + root.imageZoomPanX
-          y: (parent.height - height) / 2 + root.imageZoomPanY
-          smooth: true
-        }
-      }
-
-      // Floating Bottom Controls Bar
-      Rectangle {
-        id: zoomBottomBar
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: Style.space(16)
-        anchors.horizontalCenter: parent.horizontalCenter
-        height: Style.space(42)
-        width: zoomBtnRow.implicitWidth + Style.space(24)
-        radius: Style.space(21)
-        color: root.bg
-        border.width: 1
-        border.color: Util.alpha(root.fg, 0.16)
-        z: 10
-
-        Row {
-          id: zoomBtnRow
-          anchors.centerIn: parent
-          spacing: Style.space(8)
-
-          // Zoom Out
-          Rectangle {
-            width: Style.space(28); height: Style.space(28); radius: Style.space(14)
-            color: Util.alpha(root.fg, 0.08)
-            Text { text: "−"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true; anchors.centerIn: parent }
-            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.imageZoomScale = Math.max(0.15, root.imageZoomScale / 1.3) }
-          }
-
-          // Percentage & Reset
-          Rectangle {
-            height: Style.space(28); width: Style.space(52); radius: Style.space(14)
-            color: Util.alpha(Color.accent, 0.15)
-            Text {
-              text: Math.round(root.imageZoomScale * 100) + "%"
-              color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true
-              anchors.centerIn: parent
-            }
-            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.resetImageZoom() }
-          }
-
-          // Zoom In
-          Rectangle {
-            width: Style.space(28); height: Style.space(28); radius: Style.space(14)
-            color: Util.alpha(root.fg, 0.08)
-            Text { text: "+"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true; anchors.centerIn: parent }
-            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.imageZoomScale = Math.min(8.0, root.imageZoomScale * 1.3) }
-          }
-
-          // Divider
-          Rectangle { width: 1; height: Style.space(20); color: Util.alpha(root.fg, 0.15); anchors.verticalCenter: parent.verticalCenter }
-
-          // Copy Image
-          Rectangle {
-            height: Style.space(28); width: copyImgTxt.implicitWidth + Style.space(16); radius: Style.space(14)
-            color: Util.alpha(root.fg, 0.08)
-            Row {
-              id: copyImgTxt
-              anchors.centerIn: parent; spacing: Style.space(4)
-              Text { text: "󰆏"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
-              Text { text: "Copy Image"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
-            }
-            MouseArea {
-              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-              onClicked: {
-                if (root.imageZoomPath) {
-                  Quickshell.execDetached(["bash", "-c", "wl-copy --type image/png < " + Util.shellQuote(root.imageZoomPath) + " && notify-send -a 'ReClip' 'Image Copied' 'Image loaded to clipboard'"])
-                }
-              }
-            }
-          }
-
-          // Extract Text (OCR)
-          Rectangle {
-            height: Style.space(28); width: ocrImgTxt.implicitWidth + Style.space(16); radius: Style.space(14)
-            color: Util.alpha(Color.accent, 0.2)
-            border.width: 1; border.color: Color.accent
-            Row {
-              id: ocrImgTxt
-              anchors.centerIn: parent; spacing: Style.space(4)
-              Text { text: "󰐳"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
-              Text { text: "Extract Text (OCR)"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
-            }
-            MouseArea {
-              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-              onClicked: {
-                if (root.imageZoomPath) root.runOcrOnImage(root.imageZoomPath)
-              }
-            }
-          }
-
-          // Annotate Image Studio
-          Rectangle {
-            height: Style.space(28); width: annotateZoomTxt.implicitWidth + Style.space(16); radius: Style.space(14)
-            color: Util.alpha(Color.accent, 0.2)
-            border.width: 1; border.color: Color.accent
-            Row {
-              id: annotateZoomTxt
-              anchors.centerIn: parent; spacing: Style.space(4)
-              Text { text: "󰏫"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
-              Text { text: "Annotate Image"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
-            }
-            MouseArea {
-              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-              onClicked: {
-                var p = root.imageZoomPath
-                root.closeImageZoom()
-                if (p) root.openImageAnnotation(p)
-              }
-            }
-          }
-
-          // Open in Viewer
-          Rectangle {
-            height: Style.space(28); width: openExtTxt.implicitWidth + Style.space(14); radius: Style.space(14)
-            color: Util.alpha(root.fg, 0.08)
-            Row {
-              id: openExtTxt
-              anchors.centerIn: parent; spacing: Style.space(4)
-              Text { text: "󰅍"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
-              Text { text: "Viewer"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.verticalCenter: parent.verticalCenter }
-            }
-            MouseArea {
-              anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-              onClicked: {
-                if (root.imageZoomPath) root.openUrlInBrowser(root.imageZoomPath)
-              }
-            }
-          }
-        }
-      }
-    }
 
     // ==========================================
     // MODAL: SETTINGS & PRIVACY PREFERENCES
@@ -5568,13 +5307,14 @@ Panel {
           spacing: Style.space(14)
 
           // Header
-          Row {
+          Item {
             width: parent.width
             height: Style.space(32)
 
             Row {
-              spacing: Style.space(8)
+              anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(8)
               Rectangle {
                 width: Style.space(28); height: Style.space(28); radius: Style.space(6)
                 color: Util.alpha(Color.accent, 0.15)
@@ -5588,9 +5328,9 @@ Panel {
               }
             }
 
-            Item { Layout.fillWidth: true }
-
             Rectangle {
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
               width: Style.space(28); height: Style.space(28); radius: Style.space(6)
               color: Util.alpha(root.fg, 0.08)
               Text { text: "✕"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
@@ -6561,12 +6301,23 @@ Panel {
           anchors.margins: Style.space(16)
           spacing: Style.space(10)
 
-          Row {
+          Item {
             width: parent.width
-            Text { text: "󰋚 Manage Tags"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.title; font.bold: true }
-            Item { Layout.fillWidth: true }
+            height: Style.space(28)
+            Text {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "󰋚 Manage Tags"
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+            }
             Rectangle {
-              width: Style.space(24); height: Style.space(24); radius: Style.space(4); color: Util.alpha(root.fg, 0.08)
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              width: Style.space(24); height: Style.space(24); radius: Style.space(4)
+              color: Util.alpha(root.fg, 0.08)
               Text { text: "✕"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); anchors.centerIn: parent }
               MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.tagModalOpen = false }
             }
@@ -6737,11 +6488,14 @@ Panel {
           spacing: Style.space(12)
 
           // Header
-          Row {
+          Item {
             width: parent.width
+            height: Style.space(32)
+
             Row {
-              spacing: Style.space(8)
+              anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(8)
               Rectangle {
                 width: Style.space(28); height: Style.space(28); radius: Style.space(6)
                 color: Util.alpha(Color.accent, 0.2)
@@ -6754,9 +6508,9 @@ Panel {
               }
             }
 
-            Item { Layout.fillWidth: true }
-
             Rectangle {
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
               width: Style.space(28); height: Style.space(28); radius: Style.space(6)
               color: Util.alpha(root.fg, 0.08)
               Text { text: "✕"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
@@ -6913,6 +6667,9 @@ Panel {
           capturedAt: new Date().toISOString(),
           tags: ["annotated"]
         })
+      }
+      onRunOcr: function(path) {
+        root.runOcrOnImage(path)
       }
     }
   }

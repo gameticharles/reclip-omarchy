@@ -10,24 +10,29 @@ Rectangle {
   id: root
   visible: false
   anchors.fill: parent
-  color: Util.alpha(Color.popups.background || Color.background, 0.96)
+  color: Util.alpha(Color.popups.background || Color.background, 0.98)
   radius: Style.cornerRadius
   z: 105
 
   // Signals
   signal savedToClipboard(string path)
   signal savedToHistory(string path)
+  signal runOcr(string path)
   signal closed()
 
   // Properties
   property string imagePath: ""
-  property string currentTool: "pen" // "pen", "highlighter", "arrow", "rect", "circle", "line", "blur", "text", "stamp", "eraser"
+  property string currentTool: "pan" // "pan", "pen", "highlighter", "arrow", "rect", "circle", "line", "blur", "text", "stamp", "eraser"
   property color currentColor: "#EF4444"
   property int strokeWidth: 4
   property bool fillShape: false
   property string currentStamp: "number" // "number", "check", "cross", "star", "warn", "bug", "fire"
   property int stampCounter: 1
 
+  // Zoom & Pan state
+  property real zoomScale: 1.0
+
+  // Annotation stacks
   property var actions: []
   property var redoStack: []
   property var currentAction: null
@@ -64,6 +69,7 @@ Rectangle {
     { id: "fire", label: "🔥", name: "Fire" }
   ]
 
+  // Lifecycle
   function open(path) {
     root.imagePath = path || ""
     root.actions = []
@@ -72,9 +78,13 @@ Rectangle {
     root.isDrawing = false
     root.textInputActive = false
     root.stampCounter = 1
+    root.currentTool = "pan"
+    root.zoomScale = 1.0
     root.visible = true
     root.forceActiveFocus()
-    annotationCanvas.requestPaint()
+    Qt.callLater(function() {
+      root.fitZoom()
+    })
   }
 
   function close() {
@@ -82,6 +92,34 @@ Rectangle {
     root.closed()
   }
 
+  // Zoom Helpers
+  function zoomIn() {
+    root.zoomScale = Math.min(6.0, root.zoomScale * 1.25)
+    annotationCanvas.requestPaint()
+  }
+
+  function zoomOut() {
+    root.zoomScale = Math.max(0.15, root.zoomScale / 1.25)
+    annotationCanvas.requestPaint()
+  }
+
+  function resetZoom() {
+    root.zoomScale = 1.0
+    annotationCanvas.requestPaint()
+  }
+
+  function fitZoom() {
+    if (baseImage.implicitWidth > 0 && baseImage.implicitHeight > 0 && canvasFlickable.width > 0 && canvasFlickable.height > 0) {
+      var wRatio = (canvasFlickable.width - 24) / baseImage.implicitWidth
+      var hRatio = (canvasFlickable.height - 24) / baseImage.implicitHeight
+      root.zoomScale = Math.max(0.15, Math.min(1.0, Math.min(wRatio, hRatio)))
+    } else {
+      root.zoomScale = 1.0
+    }
+    annotationCanvas.requestPaint()
+  }
+
+  // History operations
   function undo() {
     if (root.actions.length === 0) return
     var nextActions = root.actions.slice()
@@ -118,7 +156,7 @@ Rectangle {
       var act = {
         tool: "text",
         text: str,
-        color: root.currentColor,
+        color: String(root.currentColor),
         size: Math.max(14, root.strokeWidth * 4),
         pos: { x: root.textInputPos.x, y: root.textInputPos.y }
       }
@@ -143,21 +181,29 @@ Rectangle {
       targetFile = homeDir + "/Pictures/Screenshots/reclip_annotated_" + timeStr + ".png"
     }
 
-    // Capture the composite item
-    compositeContainer.grabToImage(function(result) {
-      if (!result) return
-      result.saveToFile(targetFile)
+    var prevZoom = root.zoomScale
+    root.zoomScale = 1.0
+    annotationCanvas.requestPaint()
 
-      if (saveMode === "clipboard" || saveMode === "history") {
-        Quickshell.execDetached(["bash", "-c", "wl-copy --type image/png < " + Util.shellQuote(targetFile) + " && notify-send -a 'ReClip' 'Annotated Image Copied' 'Loaded to clipboard'"])
-        root.savedToClipboard(targetFile)
-        if (saveMode === "history") {
-          root.savedToHistory(targetFile)
+    Qt.callLater(function() {
+      compositeContainer.grabToImage(function(result) {
+        root.zoomScale = prevZoom
+        annotationCanvas.requestPaint()
+
+        if (!result) return
+        result.saveToFile(targetFile)
+
+        if (saveMode === "clipboard" || saveMode === "history") {
+          Quickshell.execDetached(["bash", "-c", "wl-copy --type image/png < " + Util.shellQuote(targetFile) + " && notify-send -a \"ReClip\" \"Annotated Image Copied\" \"Loaded to clipboard\""])
+          root.savedToClipboard(targetFile)
+          if (saveMode === "history") {
+            root.savedToHistory(targetFile)
+          }
+        } else if (saveMode === "file") {
+          Quickshell.execDetached(["notify-send", "-a", "ReClip", "Annotated Image Saved", "Saved to " + targetFile])
         }
-      } else if (saveMode === "file") {
-        Quickshell.execDetached(["notify-send", "-a", "ReClip", "Annotated Image Saved", "Saved to " + targetFile])
-      }
-      root.close()
+        root.close()
+      })
     })
   }
 
@@ -180,6 +226,21 @@ Rectangle {
       event.accepted = true
     } else if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_Y || ((event.modifiers & Qt.ShiftModifier) && event.key === Qt.Key_Z))) {
       root.redo()
+      event.accepted = true
+    } else if (event.key === Qt.Key_Plus || event.key === Qt.Key_Equal) {
+      root.zoomIn()
+      event.accepted = true
+    } else if (event.key === Qt.Key_Minus) {
+      root.zoomOut()
+      event.accepted = true
+    } else if (event.key === Qt.Key_0) {
+      root.fitZoom()
+      event.accepted = true
+    } else if (event.key === Qt.Key_1) {
+      root.resetZoom()
+      event.accepted = true
+    } else if (event.key === Qt.Key_V) {
+      root.currentTool = "pan"
       event.accepted = true
     } else if (event.key === Qt.Key_P) {
       root.currentTool = "pen"
@@ -219,20 +280,20 @@ Rectangle {
     spacing: 0
 
     // ==========================================
-    // TOP HEADER & CONTROLS TOOLBAR
+    // TOP HEADER: TITLE, ZOOM CONTROLS, ACTIONS
     // ==========================================
     Rectangle {
       Layout.fillWidth: true
-      height: Style.space(48)
+      height: Style.space(46)
       color: Util.alpha(Color.popups.background || Color.background, 0.98)
       border.width: 1
-      border.color: Util.alpha(Color.popups.border || Color.border, 0.5)
+      border.color: Util.alpha(Color.popups.border || Color.border, 0.4)
 
       RowLayout {
         anchors.fill: parent
-        anchors.leftMargin: Style.space(14)
-        anchors.rightMargin: Style.space(14)
-        spacing: Style.space(10)
+        anchors.leftMargin: Style.space(12)
+        anchors.rightMargin: Style.space(12)
+        spacing: Style.space(8)
 
         // Title icon + label
         Row {
@@ -240,7 +301,7 @@ Rectangle {
           Layout.alignment: Qt.AlignVCenter
 
           Rectangle {
-            width: Style.space(30); height: Style.space(30); radius: Style.space(6)
+            width: Style.space(28); height: Style.space(28); radius: Style.space(6)
             color: Util.alpha(Color.accent, 0.2)
             anchors.verticalCenter: parent.verticalCenter
             Text {
@@ -254,16 +315,18 @@ Rectangle {
 
           Column {
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 1
+            spacing: 0
             Text {
-              text: "Screenshot & Annotation Studio"
+              text: root.imagePath ? root.imagePath.split("/").pop() : "Image Studio"
               color: Color.popups.text || Color.text
               font.family: Style.font.menuFamily
               font.pixelSize: Style.font.caption
               font.bold: true
+              elide: Text.ElideMiddle
+              width: Style.space(160)
             }
             Text {
-              text: "Draw, highlight, redact sensitive data, and add numbered callouts"
+              text: baseImage.implicitWidth > 0 ? (baseImage.implicitWidth + " × " + baseImage.implicitHeight + " px") : "Viewer & Annotation Studio"
               color: Util.alpha(Color.popups.text || Color.text, 0.5)
               font.family: Style.font.menuFamily
               font.pixelSize: Style.space(8)
@@ -271,275 +334,310 @@ Rectangle {
           }
         }
 
-        Item { Layout.fillWidth: true }
+        // Separator
+        Rectangle { width: 1; height: Style.space(20); color: Util.alpha(Color.popups.text || Color.text, 0.12) }
 
-        // Undo Button
-        Rectangle {
-          width: Style.space(30); height: Style.space(30); radius: Style.space(6)
-          color: root.actions.length > 0 ? Util.alpha(Color.popups.text || Color.text, 0.08) : Util.alpha(Color.popups.text || Color.text, 0.03)
-          opacity: root.actions.length > 0 ? 1.0 : 0.4
-          Text {
-            text: "󰕌"
-            color: Color.popups.text || Color.text
-            font.family: Style.font.menuFamily
-            font.pixelSize: Style.font.caption
-            anchors.centerIn: parent
+        // Zoom Controls
+        Row {
+          spacing: Style.space(3)
+          Layout.alignment: Qt.AlignVCenter
+
+          // Zoom Out (-)
+          Rectangle {
+            width: Style.space(26); height: Style.space(26); radius: Style.space(4)
+            color: Util.alpha(Color.popups.text || Color.text, 0.08)
+            Text { text: "−"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(12); font.bold: true; anchors.centerIn: parent }
+            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.zoomOut() }
           }
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: root.actions.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
-            onClicked: root.undo()
+
+          // Zoom Level Indicator / Reset
+          Rectangle {
+            height: Style.space(26); width: Style.space(48); radius: Style.space(4)
+            color: Util.alpha(Color.popups.text || Color.text, 0.05)
+            Text {
+              text: Math.round(root.zoomScale * 100) + "%"
+              color: Color.popups.text || Color.text
+              font.family: "monospace"
+              font.pixelSize: Style.space(8)
+              font.bold: true
+              anchors.centerIn: parent
+            }
+            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.resetZoom() }
+          }
+
+          // Zoom In (+)
+          Rectangle {
+            width: Style.space(26); height: Style.space(26); radius: Style.space(4)
+            color: Util.alpha(Color.popups.text || Color.text, 0.08)
+            Text { text: "+"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(12); font.bold: true; anchors.centerIn: parent }
+            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.zoomIn() }
+          }
+
+          // Fit to Window
+          Rectangle {
+            height: Style.space(26); width: fitTxt.implicitWidth + Style.space(10); radius: Style.space(4)
+            color: Util.alpha(Color.popups.text || Color.text, 0.08)
+            Text {
+              id: fitTxt
+              text: "Fit"
+              color: Color.popups.text || Color.text
+              font.family: Style.font.menuFamily
+              font.pixelSize: Style.space(8)
+              font.bold: true
+              anchors.centerIn: parent
+            }
+            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.fitZoom() }
           }
         }
 
-        // Redo Button
+        Item { Layout.fillWidth: true }
+
+        // External System Editor (Tensaku)
         Rectangle {
-          width: Style.space(30); height: Style.space(30); radius: Style.space(6)
-          color: root.redoStack.length > 0 ? Util.alpha(Color.popups.text || Color.text, 0.08) : Util.alpha(Color.popups.text || Color.text, 0.03)
-          opacity: root.redoStack.length > 0 ? 1.0 : 0.4
-          Text {
-            text: "󰑎"
-            color: Color.popups.text || Color.text
-            font.family: Style.font.menuFamily
-            font.pixelSize: Style.font.caption
-            anchors.centerIn: parent
+          height: Style.space(26); width: tensakuBtnTxt.implicitWidth + Style.space(14); radius: Style.space(4)
+          color: Util.alpha(Color.popups.text || Color.text, 0.08)
+          border.width: 1
+          border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
+          Row {
+            id: tensakuBtnTxt
+            anchors.centerIn: parent; spacing: Style.space(4)
+            Text { text: "󰏫"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(9); anchors.verticalCenter: parent.verticalCenter }
+            Text { text: "Tensaku"; color: Color.popups.text || Color.text; font.family: Style.font.menuFamily; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
           }
           MouseArea {
-            anchors.fill: parent
-            cursorShape: root.redoStack.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
-            onClicked: root.redo()
+            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              if (root.imagePath) {
+                Quickshell.execDetached(["tensaku-edit", root.imagePath])
+                root.close()
+              }
+            }
           }
+        }
+
+        // OCR Action Button
+        Rectangle {
+          height: Style.space(26); width: ocrBtnTxt.implicitWidth + Style.space(12); radius: Style.space(4)
+          color: Util.alpha(Color.popups.text || Color.text, 0.08)
+          border.width: 1
+          border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
+          Row {
+            id: ocrBtnTxt
+            anchors.centerIn: parent; spacing: Style.space(3)
+            Text { text: "󰍉"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(9); anchors.verticalCenter: parent.verticalCenter }
+            Text { text: "OCR"; color: Color.popups.text || Color.text; font.family: Style.font.menuFamily; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+          }
+          MouseArea {
+            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              if (root.imagePath) {
+                root.runOcr(root.imagePath)
+                root.close()
+              }
+            }
+          }
+        }
+
+        // Separator
+        Rectangle { width: 1; height: Style.space(20); color: Util.alpha(Color.popups.text || Color.text, 0.12) }
+
+        // Undo
+        Rectangle {
+          width: Style.space(26); height: Style.space(26); radius: Style.space(4)
+          color: root.actions.length > 0 ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.03)
+          opacity: root.actions.length > 0 ? 1.0 : 0.4
+          Text { text: "󰕌"; color: Color.popups.text || Color.text; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+          MouseArea { anchors.fill: parent; cursorShape: root.actions.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor; onClicked: root.undo() }
+        }
+
+        // Redo
+        Rectangle {
+          width: Style.space(26); height: Style.space(26); radius: Style.space(4)
+          color: root.redoStack.length > 0 ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.03)
+          opacity: root.redoStack.length > 0 ? 1.0 : 0.4
+          Text { text: "󰑎"; color: Color.popups.text || Color.text; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+          MouseArea { anchors.fill: parent; cursorShape: root.redoStack.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor; onClicked: root.redo() }
         }
 
         // Clear Canvas
         Rectangle {
-          width: Style.space(30); height: Style.space(30); radius: Style.space(6)
+          width: Style.space(26); height: Style.space(26); radius: Style.space(4)
           color: Util.alpha(Color.urgent, 0.12)
-          Text {
-            text: "󰃢"
-            color: Color.urgent
-            font.family: Style.font.menuFamily
-            font.pixelSize: Style.font.caption
-            anchors.centerIn: parent
-          }
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.clearAll()
-          }
+          Text { text: "󰃢"; color: Color.urgent; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+          MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.clearAll() }
         }
 
-        Rectangle { width: 1; height: Style.space(22); color: Util.alpha(Color.popups.text || Color.text, 0.15) }
+        // Separator
+        Rectangle { width: 1; height: Style.space(20); color: Util.alpha(Color.popups.text || Color.text, 0.12) }
 
-        // Close Button
+        // Header Close Button (Strictly Right Aligned)
         Rectangle {
-          width: Style.space(30); height: Style.space(30); radius: Style.space(6)
+          width: Style.space(28); height: Style.space(28); radius: Style.space(6)
           color: Util.alpha(Color.popups.text || Color.text, 0.08)
-          Text {
-            text: "✕"
-            color: Color.popups.text || Color.text
-            font.family: Style.font.menuFamily
-            font.pixelSize: Style.font.caption
-            anchors.centerIn: parent
-          }
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.close()
-          }
+          Text { text: "✕"; color: Color.popups.text || Color.text; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+          MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.close() }
         }
       }
     }
 
     // ==========================================
-    // SECONDARY TOOLBAR: TOOL PALETTE & ATTRIBUTES
+    // TOOLBAR ROW 2: TOOLS, COLORS, STROKES
     // ==========================================
     Rectangle {
       Layout.fillWidth: true
-      height: Style.space(42)
+      height: Style.space(44)
       color: Util.alpha(Color.popups.background || Color.background, 0.94)
       border.width: 1
-      border.color: Util.alpha(Color.popups.border || Color.border, 0.35)
+      border.color: Util.alpha(Color.popups.border || Color.border, 0.3)
 
-      Flickable {
+      RowLayout {
         anchors.fill: parent
         anchors.leftMargin: Style.space(12)
         anchors.rightMargin: Style.space(12)
-        contentWidth: toolRowLayout.implicitWidth
-        contentHeight: height
-        clip: true
+        spacing: Style.space(6)
 
+        // 1. Tool Selector Buttons
         Row {
-          id: toolRowLayout
-          anchors.verticalCenter: parent.verticalCenter
-          spacing: Style.space(8)
+          spacing: Style.space(3)
+          Layout.alignment: Qt.AlignVCenter
 
-          // 1. Tool Selection Buttons
-          Row {
-            spacing: Style.space(4)
-            anchors.verticalCenter: parent.verticalCenter
+          Repeater {
+            model: [
+              { id: "pan", label: "✋", name: "Pan / View (V)" },
+              { id: "pen", label: "✏", name: "Pen (P)" },
+              { id: "highlighter", label: "🖍", name: "Highlighter (H)" },
+              { id: "arrow", label: "↗", name: "Arrow (A)" },
+              { id: "rect", label: "□", name: "Rectangle (R)" },
+              { id: "circle", label: "○", name: "Circle (C)" },
+              { id: "line", label: "—", name: "Line (L)" },
+              { id: "blur", label: "▒", name: "Redaction / Blur (B)" },
+              { id: "text", label: "🔤", name: "Text (T)" },
+              { id: "stamp", label: "①", name: "Callout Stamp (S)" },
+              { id: "eraser", label: "⌫", name: "Eraser (E)" }
+            ]
 
-            Repeater {
-              model: [
-                { id: "pen", icon: "󰏫", tip: "Pen (P)" },
-                { id: "highlighter", icon: "󰏬", tip: "Highlight (H)" },
-                { id: "arrow", icon: "󰁔", tip: "Arrow (A)" },
-                { id: "rect", icon: "󰹢", tip: "Rectangle (R)" },
-                { id: "circle", icon: "󰝦", tip: "Circle (C)" },
-                { id: "line", icon: "󰘨", tip: "Line (L)" },
-                { id: "blur", icon: "󰐳", tip: "Redact Blur (B)" },
-                { id: "text", icon: "󰗊", tip: "Text (T)" },
-                { id: "stamp", icon: "󰋚", tip: "Stamp (S)" },
-                { id: "eraser", icon: "󰆴", tip: "Eraser (E)" }
-              ]
+            Rectangle {
+              required property var modelData
+              width: Style.space(26); height: Style.space(26); radius: Style.space(4)
+              color: root.currentTool === modelData.id ? Color.accent : (tMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.05))
+              border.width: 1
+              border.color: root.currentTool === modelData.id ? Color.accent : "transparent"
 
-              Rectangle {
-                required property var modelData
-                width: Style.space(30); height: Style.space(30); radius: Style.space(5)
-                color: root.currentTool === modelData.id ? Color.accent : (toolMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.08) : "transparent")
-                border.width: 1
-                border.color: root.currentTool === modelData.id ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.1)
-
-                Text {
-                  text: parent.modelData.icon
-                  color: root.currentTool === parent.modelData.id ? "#FFFFFF" : (Color.popups.text || Color.text)
-                  font.family: Style.font.menuFamily
-                  font.pixelSize: Style.font.caption
-                  anchors.centerIn: parent
-                }
-
-                MouseArea {
-                  id: toolMouse
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.currentTool = parent.modelData.id
-                }
+              Text {
+                text: parent.modelData.label
+                color: root.currentTool === parent.modelData.id ? "#FFFFFF" : (Color.popups.text || Color.text)
+                font.pixelSize: Style.space(10)
+                font.bold: true
+                anchors.centerIn: parent
               }
-            }
-          }
 
-          // Separator
-          Rectangle { width: 1; height: Style.space(22); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
-
-          // 2. Stroke Width Selector
-          Row {
-            spacing: Style.space(4)
-            anchors.verticalCenter: parent.verticalCenter
-
-            Repeater {
-              model: root.strokeSizes
-              Rectangle {
-                required property var modelData
-                width: Style.space(28); height: Style.space(26); radius: Style.space(4)
-                color: root.strokeWidth === modelData.val ? Util.alpha(Color.accent, 0.25) : "transparent"
-                border.width: 1
-                border.color: root.strokeWidth === modelData.val ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.1)
-
-                Text {
-                  text: parent.modelData.label
-                  color: root.strokeWidth === parent.modelData.val ? Color.accent : (Color.popups.text || Color.text)
-                  font.family: Style.font.menuFamily
-                  font.pixelSize: Style.space(8)
-                  font.bold: root.strokeWidth === parent.modelData.val
-                  anchors.centerIn: parent
-                }
-
-                MouseArea {
-                  anchors.fill: parent
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.strokeWidth = parent.modelData.val
-                }
-              }
-            }
-          }
-
-          // Separator
-          Rectangle { width: 1; height: Style.space(22); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
-
-          // 3. Fill Shape Toggle (visible for rect & circle)
-          Rectangle {
-            visible: root.currentTool === "rect" || root.currentTool === "circle"
-            height: Style.space(26); width: fillTxt.implicitWidth + Style.space(12); radius: Style.space(4)
-            color: root.fillShape ? Util.alpha(Color.accent, 0.25) : "transparent"
-            border.width: 1
-            border.color: root.fillShape ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.12)
-            anchors.verticalCenter: parent.verticalCenter
-
-            Text {
-              id: fillTxt
-              text: root.fillShape ? "Fill: On" : "Fill: Off"
-              color: root.fillShape ? Color.accent : (Color.popups.text || Color.text)
-              font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(8)
-              font.bold: root.fillShape
-              anchors.centerIn: parent
-            }
-
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.fillShape = !root.fillShape
-            }
-          }
-
-          // Stamp Selector (visible for stamp tool)
-          Row {
-            visible: root.currentTool === "stamp"
-            spacing: Style.space(4)
-            anchors.verticalCenter: parent.verticalCenter
-
-            Repeater {
-              model: root.stampOptions
-              Rectangle {
-                required property var modelData
-                width: Style.space(28); height: Style.space(26); radius: Style.space(4)
-                color: root.currentStamp === modelData.id ? Util.alpha(Color.accent, 0.25) : "transparent"
-                border.width: 1
-                border.color: root.currentStamp === modelData.id ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.1)
-
-                Text {
-                  text: parent.modelData.label
-                  font.pixelSize: Style.space(11)
-                  anchors.centerIn: parent
-                }
-
-                MouseArea {
-                  anchors.fill: parent
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.currentStamp = parent.modelData.id
-                }
-              }
-            }
-          }
-
-          // Separator
-          Rectangle { width: 1; height: Style.space(22); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
-
-          // 4. Color Palette
-          Row {
-            spacing: Style.space(4)
-            anchors.verticalCenter: parent.verticalCenter
-
-            Repeater {
-              model: root.colorPalette
-              Rectangle {
-                required property color modelData
-                width: Style.space(18); height: Style.space(18); radius: Style.space(9)
-                color: modelData
-                border.width: root.currentColor === modelData ? 2 : 1
-                border.color: root.currentColor === modelData ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.2)
-                scale: root.currentColor === modelData ? 1.25 : 1.0
-
-                MouseArea {
-                  anchors.fill: parent
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.currentColor = parent.modelData
+              MouseArea {
+                id: tMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.currentTool = parent.modelData.id
+                  if (root.textInputActive) root.commitText()
                 }
               }
             }
           }
         }
+
+        // Fill toggle (for rect / circle)
+        Rectangle {
+          visible: root.currentTool === "rect" || root.currentTool === "circle"
+          width: fillBtnTxt.implicitWidth + Style.space(10); height: Style.space(26); radius: Style.space(4)
+          color: root.fillShape ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.08)
+          Row {
+            id: fillBtnTxt
+            anchors.centerIn: parent; spacing: Style.space(3)
+            Text { text: "⬛"; font.pixelSize: Style.space(7); color: root.fillShape ? "#fff" : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
+            Text { text: root.fillShape ? "Fill" : "Outline"; color: root.fillShape ? "#fff" : (Color.popups.text || Color.text); font.family: Style.font.menuFamily; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+          }
+          MouseArea {
+            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+            onClicked: root.fillShape = !root.fillShape
+          }
+        }
+
+        // Stamp options (when stamp tool active)
+        Row {
+          visible: root.currentTool === "stamp"
+          spacing: Style.space(2)
+          Repeater {
+            model: root.stampOptions
+            Rectangle {
+              required property var modelData
+              width: Style.space(24); height: Style.space(24); radius: Style.space(4)
+              color: root.currentStamp === modelData.id ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.06)
+              Text { text: parent.modelData.label; font.pixelSize: Style.space(9); anchors.centerIn: parent }
+              MouseArea {
+                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                onClicked: root.currentStamp = parent.modelData.id
+              }
+            }
+          }
+        }
+
+        // Separator
+        Rectangle { width: 1; height: Style.space(18); color: Util.alpha(Color.popups.text || Color.text, 0.12) }
+
+        // Stroke width selector
+        Row {
+          spacing: Style.space(3)
+          Repeater {
+            model: root.strokeSizes
+            Rectangle {
+              required property var modelData
+              width: Style.space(26); height: Style.space(24); radius: Style.space(4)
+              color: root.strokeWidth === modelData.val ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.05)
+              border.width: 1
+              border.color: root.strokeWidth === modelData.val ? Color.accent : "transparent"
+
+              Text {
+                text: parent.modelData.label
+                color: root.strokeWidth === parent.modelData.val ? Color.accent : (Color.popups.text || Color.text)
+                font.family: Style.font.menuFamily
+                font.pixelSize: Style.space(8)
+                font.bold: true
+                anchors.centerIn: parent
+              }
+
+              MouseArea {
+                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                onClicked: root.strokeWidth = parent.modelData.val
+              }
+            }
+          }
+        }
+
+        // Separator
+        Rectangle { width: 1; height: Style.space(18); color: Util.alpha(Color.popups.text || Color.text, 0.12) }
+
+        // Color Palette
+        Row {
+          spacing: Style.space(4)
+          Repeater {
+            model: root.colorPalette
+            Rectangle {
+              required property string modelData
+              width: Style.space(18); height: Style.space(18); radius: Style.space(9)
+              color: modelData
+              border.width: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? 2 : 1
+              border.color: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.2)
+              scale: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? 1.25 : 1.0
+
+              MouseArea {
+                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                onClicked: root.currentColor = parent.modelData
+              }
+            }
+          }
+        }
+
+        Item { Layout.fillWidth: true }
       }
     }
 
@@ -557,12 +655,24 @@ Rectangle {
         contentWidth: Math.max(width, compositeContainer.width)
         contentHeight: Math.max(height, compositeContainer.height)
         clip: true
+        interactive: root.currentTool === "pan"
+
+        // Mouse Wheel to Zoom
+        WheelHandler {
+          id: wheelHandler
+          onWheel: function(event) {
+            if (event.angleDelta.y > 0) root.zoomIn()
+            else if (event.angleDelta.y < 0) root.zoomOut()
+          }
+        }
 
         // COMPOSITE CONTAINER (Source image + Canvas overlay)
         Item {
           id: compositeContainer
-          width: baseImage.implicitWidth > 0 ? baseImage.implicitWidth : canvasFlickable.width
-          height: baseImage.implicitHeight > 0 ? baseImage.implicitHeight : canvasFlickable.height
+          readonly property real baseW: baseImage.implicitWidth > 0 ? baseImage.implicitWidth : canvasFlickable.width
+          readonly property real baseH: baseImage.implicitHeight > 0 ? baseImage.implicitHeight : canvasFlickable.height
+          width: baseW * root.zoomScale
+          height: baseH * root.zoomScale
           x: Math.max(0, (canvasFlickable.width - width) / 2)
           y: Math.max(0, (canvasFlickable.height - height) / 2)
 
@@ -570,12 +680,12 @@ Rectangle {
           Image {
             id: baseImage
             source: root.imagePath ? ("file://" + root.imagePath) : ""
-            fillMode: Image.PreserveAspectFit
+            fillMode: Image.Stretch
             anchors.fill: parent
             smooth: true
             onStatusChanged: {
               if (status === Image.Ready) {
-                annotationCanvas.requestPaint()
+                root.fitZoom()
               }
             }
           }
@@ -588,6 +698,8 @@ Rectangle {
             onPaint: {
               var ctx = getContext("2d")
               ctx.clearRect(0, 0, width, height)
+              ctx.save()
+              ctx.scale(root.zoomScale, root.zoomScale)
 
               // Render finished actions
               for (var i = 0; i < root.actions.length; i++) {
@@ -598,23 +710,37 @@ Rectangle {
               if (root.currentAction) {
                 root.renderAction(ctx, root.currentAction)
               }
+              ctx.restore()
             }
           }
 
-          // 3. Interactive Drawing MouseArea
+          // 3. Interactive Drawing & Pan MouseArea
           MouseArea {
             id: drawMouseArea
             anchors.fill: parent
             hoverEnabled: true
-            cursorShape: root.currentTool === "eraser" ? Qt.ForbiddenCursor : (root.currentTool === "text" ? Qt.IBeamCursor : Qt.CrossCursor)
+            preventStealing: root.currentTool !== "pan"
+            cursorShape: root.currentTool === "pan" ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : (root.currentTool === "eraser" ? Qt.ForbiddenCursor : (root.currentTool === "text" ? Qt.IBeamCursor : Qt.CrossCursor))
+
+            property real lastPanX: 0
+            property real lastPanY: 0
 
             onPressed: function(mouse) {
+              if (root.currentTool === "pan" || mouse.button === Qt.MiddleButton) {
+                lastPanX = mouse.x
+                lastPanY = mouse.y
+                return
+              }
+
               if (root.textInputActive) {
                 root.commitText()
                 return
               }
 
-              var pt = { x: mouse.x, y: mouse.y }
+              // Store unscaled coordinates on base image
+              var z = root.zoomScale > 0 ? root.zoomScale : 1.0
+              var pt = { x: mouse.x / z, y: mouse.y / z }
+              var actColor = String(root.currentColor)
 
               // Text tool
               if (root.currentTool === "text") {
@@ -630,8 +756,8 @@ Rectangle {
                   tool: "stamp",
                   stampType: root.currentStamp,
                   num: root.stampCounter,
-                  color: root.currentColor,
-                  width: root.strokeWidth,
+                  color: actColor,
+                  width: Number(root.strokeWidth),
                   pos: pt
                 }
                 if (root.currentStamp === "number") {
@@ -658,16 +784,16 @@ Rectangle {
               if (root.currentTool === "pen" || root.currentTool === "highlighter") {
                 root.currentAction = {
                   tool: root.currentTool,
-                  color: root.currentColor,
-                  width: root.strokeWidth,
+                  color: actColor,
+                  width: Number(root.strokeWidth),
                   points: [pt]
                 }
               } else {
                 root.currentAction = {
                   tool: root.currentTool,
-                  color: root.currentColor,
-                  width: root.strokeWidth,
-                  filled: root.fillShape,
+                  color: actColor,
+                  width: Number(root.strokeWidth),
+                  filled: Boolean(root.fillShape),
                   start: pt,
                   end: pt
                 }
@@ -676,7 +802,19 @@ Rectangle {
             }
 
             onPositionChanged: function(mouse) {
-              var pt = { x: mouse.x, y: mouse.y }
+              if ((root.currentTool === "pan" || mouse.buttons & Qt.MiddleButton) && pressed) {
+                var dx = mouse.x - lastPanX
+                var dy = mouse.y - lastPanY
+                canvasFlickable.contentX = Math.max(0, canvasFlickable.contentX - dx)
+                canvasFlickable.contentY = Math.max(0, canvasFlickable.contentY - dy)
+                lastPanX = mouse.x
+                lastPanY = mouse.y
+                return
+              }
+
+              var z = root.zoomScale > 0 ? root.zoomScale : 1.0
+              var pt = { x: mouse.x / z, y: mouse.y / z }
+
               if (root.currentTool === "eraser" && pressed) {
                 root.eraseNearPoint(pt)
                 return
@@ -693,6 +831,17 @@ Rectangle {
             }
 
             onReleased: function(mouse) {
+              if (root.isDrawing && root.currentAction) {
+                var finalActs = root.actions.slice()
+                finalActs.push(root.currentAction)
+                root.actions = finalActs
+                root.currentAction = null
+                root.isDrawing = false
+                annotationCanvas.requestPaint()
+              }
+            }
+
+            onCanceled: function() {
               if (root.isDrawing && root.currentAction) {
                 var finalActs = root.actions.slice()
                 finalActs.push(root.currentAction)
@@ -746,24 +895,25 @@ Rectangle {
     }
 
     // ==========================================
-    // BOTTOM ACTION BAR: EXPORT & SAVE
+    // BOTTOM ACTION BAR: VIEWER & EXPORT CONTROLS
     // ==========================================
     Rectangle {
       Layout.fillWidth: true
-      height: Style.space(48)
+      height: Style.space(46)
       color: Util.alpha(Color.popups.background || Color.background, 0.98)
       border.width: 1
-      border.color: Util.alpha(Color.popups.border || Color.border, 0.5)
+      border.color: Util.alpha(Color.popups.border || Color.border, 0.4)
 
       RowLayout {
         anchors.fill: parent
         anchors.leftMargin: Style.space(16)
         anchors.rightMargin: Style.space(16)
+        spacing: Style.space(10)
 
-        // Actions status info
+        // Annotations count info
         Text {
           text: root.actions.length + " annotations • Tool: " + root.currentTool.toUpperCase()
-          color: Util.alpha(Color.popups.text || Color.text, 0.5)
+          color: Util.alpha(Color.popups.text || Color.text, 0.6)
           font.family: Style.font.menuFamily
           font.pixelSize: Style.space(9)
           Layout.alignment: Qt.AlignVCenter
@@ -773,7 +923,7 @@ Rectangle {
 
         // Cancel / Dismiss
         Rectangle {
-          height: Style.space(30); width: Style.space(70); radius: Style.space(4)
+          height: Style.space(28); width: Style.space(68); radius: Style.space(4)
           color: Util.alpha(Color.popups.text || Color.text, 0.08)
           Text {
             text: "Cancel"
@@ -789,9 +939,32 @@ Rectangle {
           }
         }
 
+        // Copy Clean Original
+        Rectangle {
+          height: Style.space(28); width: copyOrigTxt.implicitWidth + Style.space(16); radius: Style.space(4)
+          color: Util.alpha(Color.popups.text || Color.text, 0.08)
+          border.width: 1
+          border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
+          Row {
+            id: copyOrigTxt
+            anchors.centerIn: parent; spacing: Style.space(4)
+            Text { text: "󰆏"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(9); anchors.verticalCenter: parent.verticalCenter }
+            Text { text: "Copy Original"; color: Color.popups.text || Color.text; font.family: Style.font.menuFamily; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+          }
+          MouseArea {
+            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              if (root.imagePath) {
+                Quickshell.execDetached(["bash", "-c", "wl-copy --type image/png < " + Util.shellQuote(root.imagePath) + " && notify-send -a \"ReClip\" \"Original Image Copied\" \"Loaded to clipboard\""])
+                root.close()
+              }
+            }
+          }
+        }
+
         // Save to File (Pictures/Screenshots)
         Rectangle {
-          height: Style.space(30); width: saveFileTxt.implicitWidth + Style.space(18); radius: Style.space(4)
+          height: Style.space(28); width: saveFileTxt.implicitWidth + Style.space(16); radius: Style.space(4)
           color: Util.alpha(Color.popups.text || Color.text, 0.1)
           border.width: 1
           border.color: Util.alpha(Color.popups.text || Color.text, 0.2)
@@ -805,7 +978,7 @@ Rectangle {
               text: "Save to File"
               color: Color.popups.text || Color.text
               font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(9)
+              font.pixelSize: Style.space(8)
               font.bold: true
               anchors.verticalCenter: parent.verticalCenter
             }
@@ -820,7 +993,7 @@ Rectangle {
 
         // Copy to Clipboard (wl-copy)
         Rectangle {
-          height: Style.space(30); width: copyClipTxt.implicitWidth + Style.space(20); radius: Style.space(4)
+          height: Style.space(28); width: copyClipTxt.implicitWidth + Style.space(18); radius: Style.space(4)
           color: Color.accent
 
           Row {
@@ -832,7 +1005,7 @@ Rectangle {
               text: "Copy & Save to Feed"
               color: "#FFFFFF"
               font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(9)
+              font.pixelSize: Style.space(8)
               font.bold: true
               anchors.verticalCenter: parent.verticalCenter
             }
@@ -853,139 +1026,151 @@ Rectangle {
     if (!act) return
     ctx.save()
 
-    if (act.tool === "pen") {
-      ctx.beginPath()
-      ctx.strokeStyle = act.color
-      ctx.lineWidth = act.width
-      ctx.lineCap = "round"
-      ctx.lineJoin = "round"
-      var pts = act.points
-      if (pts.length === 1) {
-        ctx.arc(pts[0].x, pts[0].y, act.width / 2, 0, Math.PI * 2)
-        ctx.fillStyle = act.color
-        ctx.fill()
-      } else if (pts.length >= 2) {
-        ctx.moveTo(pts[0].x, pts[0].y)
-        for (var j = 1; j < pts.length; j++) {
-          ctx.lineTo(pts[j].x, pts[j].y)
-        }
-        ctx.stroke()
-      }
-    } else if (act.tool === "highlighter") {
-      ctx.globalAlpha = 0.35
-      ctx.beginPath()
-      ctx.strokeStyle = act.color
-      ctx.lineWidth = act.width * 3
-      ctx.lineCap = "square"
-      var hpts = act.points
-      if (hpts.length >= 2) {
-        ctx.moveTo(hpts[0].x, hpts[0].y)
-        for (var k = 1; k < hpts.length; k++) {
-          ctx.lineTo(hpts[k].x, hpts[k].y)
-        }
-        ctx.stroke()
-      }
-    } else if (act.tool === "rect" && act.start && act.end) {
-      ctx.beginPath()
-      ctx.strokeStyle = act.color
-      ctx.lineWidth = act.width
-      var rx = Math.min(act.start.x, act.end.x)
-      var ry = Math.min(act.start.y, act.end.y)
-      var rw = Math.abs(act.end.x - act.start.x)
-      var rh = Math.abs(act.end.y - act.start.y)
-      if (act.filled) {
-        ctx.fillStyle = act.color
-        ctx.globalAlpha = 0.25
-        ctx.fillRect(rx, ry, rw, rh)
-        ctx.globalAlpha = 1.0
-      }
-      ctx.strokeRect(rx, ry, rw, rh)
-    } else if (act.tool === "circle" && act.start && act.end) {
-      ctx.beginPath()
-      ctx.strokeStyle = act.color
-      ctx.lineWidth = act.width
-      var crx = (act.end.x - act.start.x) / 2
-      var cry = (act.end.y - act.start.y) / 2
-      var ccx = act.start.x + crx
-      var ccy = act.start.y + cry
-      ctx.ellipse(ccx, ccy, Math.abs(crx), Math.abs(cry), 0, 0, Math.PI * 2)
-      if (act.filled) {
-        ctx.fillStyle = act.color
-        ctx.globalAlpha = 0.25
-        ctx.fill()
-        ctx.globalAlpha = 1.0
-      }
-      ctx.stroke()
-    } else if (act.tool === "line" && act.start && act.end) {
-      ctx.beginPath()
-      ctx.strokeStyle = act.color
-      ctx.lineWidth = act.width
-      ctx.lineCap = "round"
-      ctx.moveTo(act.start.x, act.start.y)
-      ctx.lineTo(act.end.x, act.end.y)
-      ctx.stroke()
-    } else if (act.tool === "arrow" && act.start && act.end) {
-      ctx.beginPath()
-      ctx.strokeStyle = act.color
-      ctx.fillStyle = act.color
-      ctx.lineWidth = act.width
-      ctx.lineCap = "round"
-      ctx.moveTo(act.start.x, act.start.y)
-      ctx.lineTo(act.end.x, act.end.y)
-      ctx.stroke()
+    var actColor = String(act.color || "#EF4444")
+    var actWidth = Number(act.width || 4)
 
-      var angle = Math.atan2(act.end.y - act.start.y, act.end.x - act.start.x)
-      var headLen = Math.max(12, act.width * 3.5)
-      ctx.beginPath()
-      ctx.moveTo(act.end.x, act.end.y)
-      ctx.lineTo(act.end.x - headLen * Math.cos(angle - Math.PI / 6), act.end.y - headLen * Math.sin(angle - Math.PI / 6))
-      ctx.lineTo(act.end.x - headLen * Math.cos(angle + Math.PI / 6), act.end.y - headLen * Math.sin(angle + Math.PI / 6))
-      ctx.closePath()
-      ctx.fill()
-    } else if (act.tool === "blur" && act.start && act.end) {
-      var bx = Math.min(act.start.x, act.end.x)
-      var by = Math.min(act.start.y, act.end.y)
-      var bw = Math.abs(act.end.x - act.start.x)
-      var bh = Math.abs(act.end.y - act.start.y)
-      ctx.fillStyle = "#0A0A0A"
-      ctx.fillRect(bx, by, bw, bh)
-      ctx.strokeStyle = "rgba(255,255,255,0.25)"
-      ctx.lineWidth = 1
-      ctx.strokeRect(bx, by, bw, bh)
-    } else if (act.tool === "text" && act.pos && act.text) {
-      var fs = act.size || 18
-      ctx.font = "bold " + fs + "px sans-serif"
-      ctx.textBaseline = "top"
-      ctx.strokeStyle = "rgba(0,0,0,0.7)"
-      ctx.lineWidth = 3
-      ctx.strokeText(act.text, act.pos.x, act.pos.y)
-      ctx.fillStyle = act.color || "#FFFFFF"
-      ctx.fillText(act.text, act.pos.x, act.pos.y)
-    } else if (act.tool === "stamp" && act.pos) {
-      var sx = act.pos.x
-      var sy = act.pos.y
-      var sr = Math.max(14, (act.width || 4) * 3)
-      if (act.stampType === "number") {
-        ctx.fillStyle = act.color || "#3B82F6"
+    try {
+      if (act.tool === "pen") {
         ctx.beginPath()
-        ctx.arc(sx, sy, sr, 0, Math.PI * 2)
-        ctx.fill()
-        ctx.strokeStyle = "#FFFFFF"
-        ctx.lineWidth = 2
+        ctx.strokeStyle = actColor
+        ctx.lineWidth = actWidth
+        ctx.lineCap = "round"
+        ctx.lineJoin = "round"
+        var pts = act.points || []
+        if (pts.length === 1) {
+          ctx.arc(pts[0].x, pts[0].y, actWidth / 2, 0, Math.PI * 2)
+          ctx.fillStyle = actColor
+          ctx.fill()
+        } else if (pts.length >= 2) {
+          ctx.moveTo(pts[0].x, pts[0].y)
+          for (var j = 1; j < pts.length; j++) {
+            ctx.lineTo(pts[j].x, pts[j].y)
+          }
+          ctx.stroke()
+        }
+      } else if (act.tool === "highlighter") {
+        ctx.globalAlpha = 0.35
+        ctx.beginPath()
+        ctx.strokeStyle = actColor
+        ctx.lineWidth = actWidth * 3
+        ctx.lineCap = "square"
+        var hpts = act.points || []
+        if (hpts.length >= 2) {
+          ctx.moveTo(hpts[0].x, hpts[0].y)
+          for (var k = 1; k < hpts.length; k++) {
+            ctx.lineTo(hpts[k].x, hpts[k].y)
+          }
+          ctx.stroke()
+        }
+      } else if (act.tool === "rect" && act.start && act.end) {
+        ctx.beginPath()
+        ctx.strokeStyle = actColor
+        ctx.lineWidth = actWidth
+        var rx = Math.min(act.start.x, act.end.x)
+        var ry = Math.min(act.start.y, act.end.y)
+        var rw = Math.abs(act.end.x - act.start.x)
+        var rh = Math.abs(act.end.y - act.start.y)
+        if (act.filled) {
+          ctx.fillStyle = actColor
+          ctx.globalAlpha = 0.25
+          ctx.fillRect(rx, ry, rw, rh)
+          ctx.globalAlpha = 1.0
+        }
+        ctx.strokeRect(rx, ry, rw, rh)
+      } else if (act.tool === "circle" && act.start && act.end) {
+        ctx.beginPath()
+        ctx.strokeStyle = actColor
+        ctx.lineWidth = actWidth
+        var crx = (act.end.x - act.start.x) / 2
+        var cry = (act.end.y - act.start.y) / 2
+        var ccx = act.start.x + crx
+        var ccy = act.start.y + cry
+        if (typeof ctx.ellipse === "function") {
+          ctx.ellipse(ccx, ccy, Math.abs(crx), Math.abs(cry), 0, 0, Math.PI * 2)
+        } else {
+          var r = Math.max(Math.abs(crx), Math.abs(cry))
+          ctx.arc(ccx, ccy, r, 0, Math.PI * 2)
+        }
+        if (act.filled) {
+          ctx.fillStyle = actColor
+          ctx.globalAlpha = 0.25
+          ctx.fill()
+          ctx.globalAlpha = 1.0
+        }
         ctx.stroke()
-        ctx.fillStyle = "#FFFFFF"
-        ctx.font = "bold " + Math.round(sr * 1.1) + "px sans-serif"
-        ctx.textAlign = "center"
-        ctx.textBaseline = "middle"
-        ctx.fillText(String(act.num || 1), sx, sy)
-      } else {
-        var iconMap = { check: "✅", cross: "❌", star: "⭐", warn: "⚠️", bug: "🐛", fire: "🔥" }
-        var emoji = iconMap[act.stampType] || "⭐"
-        ctx.font = Math.round(sr * 1.6) + "px sans-serif"
-        ctx.textAlign = "center"
-        ctx.textBaseline = "middle"
-        ctx.fillText(emoji, sx, sy)
+      } else if (act.tool === "line" && act.start && act.end) {
+        ctx.beginPath()
+        ctx.strokeStyle = actColor
+        ctx.lineWidth = actWidth
+        ctx.lineCap = "round"
+        ctx.moveTo(act.start.x, act.start.y)
+        ctx.lineTo(act.end.x, act.end.y)
+        ctx.stroke()
+      } else if (act.tool === "arrow" && act.start && act.end) {
+        ctx.beginPath()
+        ctx.strokeStyle = actColor
+        ctx.fillStyle = actColor
+        ctx.lineWidth = actWidth
+        ctx.lineCap = "round"
+        ctx.moveTo(act.start.x, act.start.y)
+        ctx.lineTo(act.end.x, act.end.y)
+        ctx.stroke()
+
+        var angle = Math.atan2(act.end.y - act.start.y, act.end.x - act.start.x)
+        var headLen = Math.max(12, actWidth * 3.5)
+        ctx.beginPath()
+        ctx.moveTo(act.end.x, act.end.y)
+        ctx.lineTo(act.end.x - headLen * Math.cos(angle - Math.PI / 6), act.end.y - headLen * Math.sin(angle - Math.PI / 6))
+        ctx.lineTo(act.end.x - headLen * Math.cos(angle + Math.PI / 6), act.end.y - headLen * Math.sin(angle + Math.PI / 6))
+        ctx.closePath()
+        ctx.fill()
+      } else if (act.tool === "blur" && act.start && act.end) {
+        var bx = Math.min(act.start.x, act.end.x)
+        var by = Math.min(act.start.y, act.end.y)
+        var bw = Math.abs(act.end.x - act.start.x)
+        var bh = Math.abs(act.end.y - act.start.y)
+        ctx.fillStyle = "#0A0A0A"
+        ctx.fillRect(bx, by, bw, bh)
+        ctx.strokeStyle = "rgba(255,255,255,0.25)"
+        ctx.lineWidth = 1
+        ctx.strokeRect(bx, by, bw, bh)
+      } else if (act.tool === "text" && act.pos && act.text) {
+        var fs = act.size || 18
+        ctx.font = "bold " + fs + "px sans-serif"
+        ctx.textBaseline = "top"
+        ctx.strokeStyle = "rgba(0,0,0,0.7)"
+        ctx.lineWidth = 3
+        ctx.strokeText(act.text, act.pos.x, act.pos.y)
+        ctx.fillStyle = actColor
+        ctx.fillText(act.text, act.pos.x, act.pos.y)
+      } else if (act.tool === "stamp" && act.pos) {
+        var sx = act.pos.x
+        var sy = act.pos.y
+        var sr = Math.max(14, actWidth * 3)
+        if (act.stampType === "number") {
+          ctx.fillStyle = actColor
+          ctx.beginPath()
+          ctx.arc(sx, sy, sr, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.strokeStyle = "#FFFFFF"
+          ctx.lineWidth = 2
+          ctx.stroke()
+          ctx.fillStyle = "#FFFFFF"
+          ctx.font = "bold " + Math.round(sr * 1.1) + "px sans-serif"
+          ctx.textAlign = "center"
+          ctx.textBaseline = "middle"
+          ctx.fillText(String(act.num || 1), sx, sy)
+        } else {
+          var iconMap = { check: "✅", cross: "❌", star: "⭐", warn: "⚠️", bug: "🐛", fire: "🔥" }
+          var emoji = iconMap[act.stampType] || "⭐"
+          ctx.font = Math.round(sr * 1.6) + "px sans-serif"
+          ctx.textAlign = "center"
+          ctx.textBaseline = "middle"
+          ctx.fillText(emoji, sx, sy)
+        }
       }
+    } catch (e) {
+      console.warn("Error rendering action:", e)
     }
 
     ctx.restore()
