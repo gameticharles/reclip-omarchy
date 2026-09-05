@@ -51,6 +51,18 @@ Panel {
   property int settingsMaxClips: 500
   property int settingsRetainDays: 30
   property bool settingsIgnoreSensitive: true
+  property int settingsImagePaletteLimit: 8
+  property string paletteScript: pluginDir + "/extract-palette.sh"
+  property var imagePalettes: ({})
+  property var paletteQueue: []
+  property string lastCopiedColorHex: ""
+
+  Timer {
+    id: copiedTimer
+    interval: 1800
+    repeat: false
+    onTriggered: root.lastCopiedColorHex = ""
+  }
 
   // Automations & Regex Rules State
   property var automationRules: []
@@ -217,6 +229,8 @@ Panel {
     root.activeMenuClipIndex = -1
     if (payload && payload.tab !== undefined) root.activeTab = payload.tab
     if (payload && payload.subTab !== undefined) root.colorStudioSubTab = payload.subTab
+    if (payload && payload.category !== undefined) root.categoryFilter = payload.category
+    if (payload && payload.filter !== undefined) root.filterText = payload.filter
     if (payload && payload.settingsOpen !== undefined) root.settingsOpen = payload.settingsOpen
     if (payload && payload.settingsSection !== undefined) root.settingsActiveSection = payload.settingsSection
     if (payload && payload.templatePickerOpen !== undefined) root.snippetTemplatePickerOpen = payload.templatePickerOpen
@@ -331,6 +345,14 @@ Panel {
 
   function loadHistory(raw) {
     root.history = ClipboardHistory.parseHistory(raw)
+    var pMap = Object.assign({}, root.imagePalettes)
+    for (var i = 0; i < root.history.length; i++) {
+      var it = root.history[i]
+      if (it && it.type === "image" && it.path && Array.isArray(it.colors) && it.colors.length > 0) {
+        pMap[it.path] = it.colors
+      }
+    }
+    root.imagePalettes = pMap
     root.colorPalette = ClipboardHistory.extractColors(root.history)
     if (root.colorPalette.length > 0 && root.activeColorHex === "#3B82F6") {
       root.selectColor(root.colorPalette[0].hex)
@@ -347,6 +369,12 @@ Panel {
     if (root.incognito) return
     var normalized = ClipboardHistory.normalizeEntry(entry)
     if (!normalized) return
+
+    if (normalized.type === "image" && normalized.path && Array.isArray(normalized.colors) && normalized.colors.length > 0) {
+      var pMapEntry = Object.assign({}, root.imagePalettes)
+      pMapEntry[normalized.path] = normalized.colors
+      root.imagePalettes = pMapEntry
+    }
 
     // Evaluate Automation & Regex Rules
     if (normalized.type === "text" && normalized.text) {
@@ -701,6 +729,7 @@ Panel {
       if (s.maxClips !== undefined) root.settingsMaxClips = s.maxClips
       if (s.retainDays !== undefined) root.settingsRetainDays = s.retainDays
       if (s.ignoreSensitive !== undefined) root.settingsIgnoreSensitive = s.ignoreSensitive
+      if (s.imagePaletteLimit !== undefined) root.settingsImagePaletteLimit = s.imagePaletteLimit
     } catch(e) {}
   }
 
@@ -708,7 +737,8 @@ Panel {
     var obj = {
       maxClips: root.settingsMaxClips,
       retainDays: root.settingsRetainDays,
-      ignoreSensitive: root.settingsIgnoreSensitive
+      ignoreSensitive: root.settingsIgnoreSensitive,
+      imagePaletteLimit: root.settingsImagePaletteLimit
     }
     settingsFile.setText(JSON.stringify(obj, null, 2) + "\n")
   }
@@ -877,6 +907,16 @@ Panel {
       var rows = ClipboardHistory.displayRows(root.history, root.filterText, cat, root.activeDateFilter, 100)
       for (var i = 0; i < rows.length; i++) {
         var r = rows[i]
+        var imgPalette = ""
+        if (r.entryType === "image" && r.path) {
+          if (r.colors && Array.isArray(r.colors) && r.colors.length > 0) {
+            imgPalette = r.colors.slice(0, root.settingsImagePaletteLimit).join(",")
+          } else if (root.imagePalettes[r.path] && Array.isArray(root.imagePalettes[r.path]) && root.imagePalettes[r.path].length > 0) {
+            imgPalette = root.imagePalettes[r.path].slice(0, root.settingsImagePaletteLimit).join(",")
+          } else {
+            root.queueImagePaletteExtraction(r.path, r.index)
+          }
+        }
         displayModel.append({
           itemType: "history",
           entryType: r.entryType,
@@ -887,6 +927,7 @@ Panel {
           fullText: r.fullText,
           previewText: r.previewText,
           previewImage: r.previewImage ? Util.fileUrl(r.previewImage) : "",
+          imagePaletteStr: imgPalette,
           path: r.path,
           mime: r.mime,
           timeAgo: r.timeAgo || "",
@@ -918,6 +959,7 @@ Panel {
           fullText: s.content,
           previewText: s.preview,
           previewImage: "",
+          imagePaletteStr: "",
           path: "",
           mime: "text/plain",
           timeAgo: "",
@@ -941,6 +983,14 @@ Panel {
         if (qIdx >= 0 && qIdx < root.history.length) {
           var qEntry = root.history[qIdx]
           var qTxt = ClipboardHistory.fullText(qEntry)
+          var qImgPal = ""
+          if (qEntry.type === "image") {
+            if (qEntry.colors && Array.isArray(qEntry.colors) && qEntry.colors.length > 0) {
+              qImgPal = qEntry.colors.slice(0, root.settingsImagePaletteLimit).join(",")
+            } else if (root.imagePalettes[qEntry.path] && Array.isArray(root.imagePalettes[qEntry.path]) && root.imagePalettes[qEntry.path].length > 0) {
+              qImgPal = root.imagePalettes[qEntry.path].slice(0, root.settingsImagePaletteLimit).join(",")
+            }
+          }
           displayModel.append({
             itemType: "queue",
             entryType: qEntry.type,
@@ -951,6 +1001,7 @@ Panel {
             fullText: qTxt,
             previewText: (q + 1) + ". " + ClipboardHistory.previewText(qEntry),
             previewImage: qEntry.type === "image" ? Util.fileUrl(qEntry.path) : "",
+            imagePaletteStr: qImgPal,
             path: qEntry.path || "",
             mime: qEntry.mime || "text/plain",
             timeAgo: ClipboardHistory.formatTimeAgo(qEntry.capturedAt),
@@ -1218,7 +1269,7 @@ Panel {
   Process {
     id: currentProc
     command: [root.captureScript]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: function(t) { root.addClipboardJson(t) } }
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.addClipboardJson(text) }
   }
 
   Process {
@@ -1249,8 +1300,8 @@ Panel {
     command: ["sh", "-c", "pkill hyprpicker 2>/dev/null; hyprpicker -a"]
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: function(t) {
-        var picked = (t || "").trim()
+      onStreamFinished: {
+        var picked = String(text || "").trim()
         if (picked) {
           root.selectColor(picked)
           if (colorPickerModal && colorPickerModal.visible) {
@@ -1263,6 +1314,74 @@ Panel {
 
   function pickScreenColor() {
     hyprPickerProc.running = true
+  }
+
+  Process {
+    id: paletteExtractProc
+    property string activePath: ""
+    property int activeIdx: -1
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var raw = String(text || "").trim()
+        try {
+          var arr = JSON.parse(raw)
+          if (Array.isArray(arr) && arr.length > 0 && paletteExtractProc.activePath) {
+            root.setImagePalette(paletteExtractProc.activePath, paletteExtractProc.activeIdx, arr)
+          }
+        } catch(e) {}
+      }
+    }
+    onExited: function(code) {
+      paletteExtractProc.activePath = ""
+      paletteExtractProc.activeIdx = -1
+      paletteQueueTimer.restart()
+    }
+  }
+
+  Timer {
+    id: paletteQueueTimer
+    interval: 50
+    repeat: false
+    onTriggered: root.processPaletteQueue()
+  }
+
+  function queueImagePaletteExtraction(path, hIdx) {
+    if (!path) return
+    if (root.imagePalettes[path] && root.imagePalettes[path].length > 0) return
+    for (var i = 0; i < root.paletteQueue.length; i++) {
+      if (root.paletteQueue[i].path === path) return
+    }
+    root.paletteQueue.push({ path: path, hIdx: hIdx })
+    if (!paletteExtractProc.running && !paletteQueueTimer.running) {
+      paletteQueueTimer.restart()
+    }
+  }
+
+  function processPaletteQueue() {
+    if (paletteExtractProc.running) return
+    if (root.paletteQueue.length === 0) return
+    var next = root.paletteQueue.shift()
+    paletteExtractProc.activePath = next.path
+    paletteExtractProc.activeIdx = next.hIdx
+    paletteExtractProc.command = ["bash", root.paletteScript, next.path, String(root.settingsImagePaletteLimit)]
+    paletteExtractProc.running = true
+  }
+
+  function setImagePalette(path, hIdx, colors) {
+    var pMap = Object.assign({}, root.imagePalettes)
+    pMap[path] = colors
+    root.imagePalettes = pMap
+
+    for (var i = 0; i < root.history.length; i++) {
+      var item = root.history[i]
+      if (item && item.type === "image" && item.path === path) {
+        item.colors = colors
+        root.saveHistory()
+        break
+      }
+    }
+    root.rebuildDisplay()
   }
 
   Process {
@@ -4230,6 +4349,7 @@ Panel {
             required property string fullText
             required property string previewText
             required property string previewImage
+            required property string imagePaletteStr
             required property string path
             required property string mime
             required property string timeAgo
@@ -4555,8 +4675,9 @@ Panel {
                 }
               }
 
-              // Preview Content
+              // Preview Content (for text clips)
               Text {
+                visible: cardItem.entryType !== "image"
                 width: parent.width
                 text: cardItem.previewText
                 color: cardItem.isSelected ? root.selFg : Util.alpha(root.fg, 0.9)
@@ -4565,6 +4686,84 @@ Panel {
                 elide: Text.ElideRight
                 maximumLineCount: cardItem.kind === "code" ? 2 : 1
                 wrapMode: Text.WrapAnywhere
+              }
+
+              // Extracted Color Palette (for image / screenshot clips)
+              Row {
+                visible: cardItem.entryType === "image"
+                spacing: Style.space(6)
+                anchors.left: parent.left
+
+                property var colorArray: {
+                  var s = cardItem.imagePaletteStr || ""
+                  if (s.length > 0) {
+                    return s.split(",").filter(function(c) { return c.length > 0 })
+                  }
+                  if (cardItem.path) {
+                    var cached = root.imagePalettes[cardItem.path]
+                    if (cached && Array.isArray(cached) && cached.length > 0) return cached.slice(0, root.settingsImagePaletteLimit)
+                  }
+                  return []
+                }
+
+                Text {
+                  visible: parent.colorArray.length === 0
+                  text: "󰏘 Extracting colors..."
+                  color: Util.alpha(root.fg, 0.35)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.space(8)
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+
+                Repeater {
+                  model: parent.colorArray
+
+                  Rectangle {
+                    id: paletteDot
+                    required property string modelData
+                    required property int index
+                    width: Style.space(16)
+                    height: Style.space(16)
+                    radius: Style.space(8)
+                    color: modelData
+                    border.width: dotMouse.containsMouse ? 2 : 1
+                    border.color: dotMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.3)
+                    scale: dotMouse.containsMouse ? 1.25 : 1.0
+                    Behavior on scale { NumberAnimation { duration: 100 } }
+
+                    Text {
+                      visible: root.lastCopiedColorHex === paletteDot.modelData
+                      text: "✓"
+                      color: ColorStudio.getContrastRatio(paletteDot.modelData, "#FFFFFF") > 3.0 ? "#FFFFFF" : "#000000"
+                      font.pixelSize: Style.space(8)
+                      font.bold: true
+                      anchors.centerIn: parent
+                    }
+
+                    MouseArea {
+                      id: dotMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      acceptedButtons: Qt.LeftButton | Qt.RightButton
+                      onClicked: function(mouse) {
+                        if (mouse.button === Qt.RightButton) {
+                          root.selectColor(paletteDot.modelData)
+                          root.activeTab = 3
+                        } else {
+                          root.copyText(paletteDot.modelData)
+                          root.lastCopiedColorHex = paletteDot.modelData
+                          copiedTimer.restart()
+                        }
+                      }
+                    }
+
+                    PanelToolTip {
+                      visible: dotMouse.containsMouse
+                      text: paletteDot.modelData + " (Click: Copy • Right-click: Inspect)"
+                    }
+                  }
+                }
               }
 
               // Stats (lines / characters)
@@ -5779,6 +5978,44 @@ Panel {
                             onClicked: {
                               root.settingsRetainDays = parent.modelData.days
                               root.saveSettings()
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  // Image Color Palette Limit Option
+                  Column {
+                    width: parent.width; spacing: Style.space(4)
+                    Text { text: "Image color palette limit (extracted colors):"; color: Util.alpha(root.fg, 0.7); font.family: root.fontFamily; font.pixelSize: Style.space(10) }
+                    Row {
+                      spacing: Style.space(6)
+                      Repeater {
+                        model: [
+                          { limit: 4, label: "4" },
+                          { limit: 6, label: "6" },
+                          { limit: 8, label: "8 (Default)" },
+                          { limit: 12, label: "12" },
+                          { limit: 16, label: "16" }
+                        ]
+                        Rectangle {
+                          required property var modelData
+                          width: Style.space(74); height: Style.space(26); radius: Style.space(4)
+                          color: root.settingsImagePaletteLimit === modelData.limit ? Color.accent : Util.alpha(root.fg, 0.06)
+                          border.width: 1; border.color: root.settingsImagePaletteLimit === modelData.limit ? Color.accent : Util.alpha(root.fg, 0.1)
+                          Text {
+                            text: parent.modelData.label
+                            color: root.settingsImagePaletteLimit === parent.modelData.limit ? "#fff" : root.fg
+                            font.family: root.fontFamily; font.pixelSize: Style.space(8.5); font.bold: true
+                            anchors.centerIn: parent
+                          }
+                          MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.settingsImagePaletteLimit = parent.modelData.limit
+                              root.saveSettings()
+                              root.rebuildDisplay()
                             }
                           }
                         }

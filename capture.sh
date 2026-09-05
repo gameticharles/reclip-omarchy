@@ -38,8 +38,17 @@ emit_image() {
     mv "$tmp" "$file"
   fi
 
-  jq -cn --arg mime "$mime" --arg path "$file" --arg captured_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-    '{type:"image", mime:$mime, path:$path, capturedAt:$captured_at}'
+  local colors="[]"
+  if command -v magick &>/dev/null; then
+    colors=$(magick "$file" -resize 64x64\! -quantize RGB +dither -colors 8 -unique-colors txt:- 2>/dev/null \
+      | grep -oE '#[0-9A-Fa-f]{6}' | tr '[:lower:]' '[:upper:]' | head -n 8 | jq -R . | jq -s . 2>/dev/null || echo "[]")
+  elif command -v convert &>/dev/null; then
+    colors=$(convert "$file" -resize 64x64\! -quantize RGB +dither -colors 8 -unique-colors txt:- 2>/dev/null \
+      | grep -oE '#[0-9A-Fa-f]{6}' | tr '[:lower:]' '[:upper:]' | head -n 8 | jq -R . | jq -s . 2>/dev/null || echo "[]")
+  fi
+
+  jq -cn --arg mime "$mime" --arg path "$file" --arg captured_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" --argjson colors "$colors" \
+    '{type:"image", mime:$mime, path:$path, capturedAt:$captured_at, colors:$colors}'
 }
 
 emit_text() {
