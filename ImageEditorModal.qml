@@ -84,12 +84,12 @@ Rectangle {
 
   // Stamp presets
   readonly property var stampOptions: [
-    { id: "number", label: "①", name: "Counter (1,2,3...)" },
-    { id: "check", label: "✅", name: "Check" },
-    { id: "cross", label: "❌", name: "Cross" },
-    { id: "star", label: "⭐", name: "Star" },
-    { id: "warn", label: "⚠️", name: "Warning" },
-    { id: "bug", label: "🐛", name: "Bug" },
+    { id: "number", label: "①", name: "Counter (1, 2, 3...)" },
+    { id: "check", label: "✓", name: "Checkmark" },
+    { id: "cross", label: "✕", name: "Cross" },
+    { id: "star", label: "★", name: "Star" },
+    { id: "warn", label: "⚠", name: "Warning" },
+    { id: "bug", label: "🪲", name: "Bug" },
     { id: "fire", label: "🔥", name: "Fire" }
   ]
 
@@ -149,6 +149,9 @@ Rectangle {
     if (root.actions.length === 0) return
     var nextActions = root.actions.slice()
     var popped = nextActions.pop()
+    if (popped && popped.tool === "stamp" && popped.stampType === "number" && root.stampCounter > 1) {
+      root.stampCounter--
+    }
     var nextRedo = root.redoStack.slice()
     nextRedo.push(popped)
     root.actions = nextActions
@@ -160,6 +163,9 @@ Rectangle {
     if (root.redoStack.length === 0) return
     var nextRedo = root.redoStack.slice()
     var popped = nextRedo.pop()
+    if (popped && popped.tool === "stamp" && popped.stampType === "number") {
+      root.stampCounter++
+    }
     var nextActions = root.actions.slice()
     nextActions.push(popped)
     root.actions = nextActions
@@ -632,7 +638,16 @@ Rectangle {
                 required property var modelData
                 width: Style.space(22); height: Style.space(22); radius: Style.space(4)
                 color: root.currentStamp === modelData.id ? Color.accent : (sMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.06))
-                Text { text: parent.modelData.label; font.pixelSize: Style.space(8.5); anchors.centerIn: parent }
+                border.width: 1
+                border.color: root.currentStamp === modelData.id ? Color.accent : "transparent"
+
+                Text {
+                  text: parent.modelData.label
+                  color: root.currentStamp === parent.modelData.id ? "#FFFFFF" : (Color.popups.text || Color.text)
+                  font.pixelSize: Style.space(9)
+                  font.bold: true
+                  anchors.centerIn: parent
+                }
                 MouseArea {
                   id: sMouse
                   anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
@@ -640,6 +655,49 @@ Rectangle {
                 }
                 PanelToolTip { visible: sMouse.containsMouse; text: parent.modelData.name }
               }
+            }
+
+            // Counter indicator & reset button when number stamp is active
+            Rectangle {
+              visible: root.currentStamp === "number"
+              width: counterResetRow.implicitWidth + Style.space(8)
+              height: Style.space(22)
+              radius: Style.space(4)
+              color: crMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06)
+              border.width: 1
+              border.color: Util.alpha(Color.popups.text || Color.text, 0.12)
+
+              Row {
+                id: counterResetRow
+                anchors.centerIn: parent
+                spacing: Style.space(3)
+                Text {
+                  text: "#" + root.stampCounter
+                  color: Color.accent
+                  font.family: Style.font.menuFamily
+                  font.pixelSize: Style.space(8)
+                  font.bold: true
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+                Text {
+                  text: "↺"
+                  color: Color.popups.text || Color.text
+                  font.pixelSize: Style.space(8)
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+              }
+
+              MouseArea {
+                id: crMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.stampCounter = 1
+                  root.showFeedback("Counter reset to 1")
+                }
+              }
+              PanelToolTip { visible: crMouse.containsMouse; text: "Reset counter to 1" }
             }
           }
         }
@@ -1367,27 +1425,134 @@ Rectangle {
         var sx = act.pos.x
         var sy = act.pos.y
         var sr = Math.max(14, actWidth * 3)
+
+        ctx.save()
+        // Circular badge background (shared across all stamps for visual consistency)
+        ctx.fillStyle = actColor
+        ctx.beginPath()
+        ctx.arc(sx, sy, sr, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.strokeStyle = "#FFFFFF"
+        ctx.lineWidth = Math.max(1.5, Math.round(sr * 0.12))
+        ctx.stroke()
+
         if (act.stampType === "number") {
-          ctx.fillStyle = actColor
-          ctx.beginPath()
-          ctx.arc(sx, sy, sr, 0, Math.PI * 2)
-          ctx.fill()
-          ctx.strokeStyle = "#FFFFFF"
-          ctx.lineWidth = 2
-          ctx.stroke()
           ctx.fillStyle = "#FFFFFF"
           ctx.font = "bold " + Math.round(sr * 1.1) + "px sans-serif"
           ctx.textAlign = "center"
           ctx.textBaseline = "middle"
           ctx.fillText(String(act.num || 1), sx, sy)
+        } else if (act.stampType === "check") {
+          // Checkmark ✓
+          ctx.strokeStyle = "#FFFFFF"
+          ctx.lineWidth = Math.max(2, Math.round(sr * 0.22))
+          ctx.lineCap = "round"
+          ctx.lineJoin = "round"
+          ctx.beginPath()
+          ctx.moveTo(sx - sr * 0.44, sy + sr * 0.02)
+          ctx.lineTo(sx - sr * 0.10, sy + sr * 0.38)
+          ctx.lineTo(sx + sr * 0.44, sy - sr * 0.36)
+          ctx.stroke()
+        } else if (act.stampType === "cross") {
+          // Cross ✕
+          ctx.strokeStyle = "#FFFFFF"
+          ctx.lineWidth = Math.max(2, Math.round(sr * 0.22))
+          ctx.lineCap = "round"
+          var cd = sr * 0.38
+          ctx.beginPath()
+          ctx.moveTo(sx - cd, sy - cd)
+          ctx.lineTo(sx + cd, sy + cd)
+          ctx.moveTo(sx + cd, sy - cd)
+          ctx.lineTo(sx - cd, sy + cd)
+          ctx.stroke()
+        } else if (act.stampType === "star") {
+          // 5-point star ★
+          ctx.fillStyle = "#FFFFFF"
+          ctx.beginPath()
+          var starPts = 5
+          var outerR = sr * 0.62
+          var innerR = outerR * 0.45
+          for (var sp = 0; sp < starPts * 2; sp++) {
+            var srad = (sp % 2 === 0) ? outerR : innerR
+            var sang = (sp * Math.PI / starPts) - (Math.PI / 2)
+            var spx = sx + Math.cos(sang) * srad
+            var spy = sy + Math.sin(sang) * srad
+            if (sp === 0) ctx.moveTo(spx, spy)
+            else ctx.lineTo(spx, spy)
+          }
+          ctx.closePath()
+          ctx.fill()
+        } else if (act.stampType === "warn") {
+          // Warning ! (exclamation mark)
+          ctx.strokeStyle = "#FFFFFF"
+          ctx.fillStyle = "#FFFFFF"
+          ctx.lineWidth = Math.max(2.5, Math.round(sr * 0.22))
+          ctx.lineCap = "round"
+          ctx.beginPath()
+          ctx.moveTo(sx, sy - sr * 0.48)
+          ctx.lineTo(sx, sy + sr * 0.10)
+          ctx.stroke()
+          ctx.beginPath()
+          ctx.arc(sx, sy + sr * 0.38, Math.max(1.5, sr * 0.12), 0, Math.PI * 2)
+          ctx.fill()
+        } else if (act.stampType === "bug") {
+          // Bug icon
+          ctx.fillStyle = "#FFFFFF"
+          ctx.strokeStyle = "#FFFFFF"
+          ctx.lineWidth = Math.max(1.5, Math.round(sr * 0.12))
+          ctx.lineCap = "round"
+          // Body
+          ctx.beginPath()
+          ctx.arc(sx, sy + sr * 0.08, sr * 0.32, 0, Math.PI * 2)
+          ctx.fill()
+          // Head
+          ctx.beginPath()
+          ctx.arc(sx, sy - sr * 0.32, sr * 0.18, 0, Math.PI * 2)
+          ctx.fill()
+          // Antennae
+          ctx.beginPath()
+          ctx.moveTo(sx - sr * 0.08, sy - sr * 0.42)
+          ctx.lineTo(sx - sr * 0.28, sy - sr * 0.62)
+          ctx.moveTo(sx + sr * 0.08, sy - sr * 0.42)
+          ctx.lineTo(sx + sr * 0.28, sy - sr * 0.62)
+          // Legs
+          ctx.moveTo(sx - sr * 0.20, sy - sr * 0.08)
+          ctx.lineTo(sx - sr * 0.52, sy - sr * 0.22)
+          ctx.moveTo(sx - sr * 0.25, sy + sr * 0.08)
+          ctx.lineTo(sx - sr * 0.55, sy + sr * 0.08)
+          ctx.moveTo(sx - sr * 0.20, sy + sr * 0.24)
+          ctx.lineTo(sx - sr * 0.52, sy + sr * 0.38)
+          ctx.moveTo(sx + sr * 0.20, sy - sr * 0.08)
+          ctx.lineTo(sx + sr * 0.52, sy - sr * 0.22)
+          ctx.moveTo(sx + sr * 0.25, sy + sr * 0.08)
+          ctx.lineTo(sx + sr * 0.55, sy + sr * 0.08)
+          ctx.moveTo(sx + sr * 0.20, sy + sr * 0.24)
+          ctx.lineTo(sx + sr * 0.52, sy + sr * 0.38)
+          ctx.stroke()
+        } else if (act.stampType === "fire") {
+          // Flame icon
+          ctx.fillStyle = "#FFFFFF"
+          ctx.beginPath()
+          ctx.moveTo(sx, sy - sr * 0.58)
+          ctx.bezierCurveTo(sx + sr * 0.48, sy - sr * 0.15, sx + sr * 0.48, sy + sr * 0.38, sx, sy + sr * 0.52)
+          ctx.bezierCurveTo(sx - sr * 0.48, sy + sr * 0.38, sx - sr * 0.48, sy - sr * 0.15, sx, sy - sr * 0.58)
+          ctx.closePath()
+          ctx.fill()
+          // Inner flame cut-out
+          ctx.fillStyle = actColor
+          ctx.beginPath()
+          ctx.moveTo(sx, sy - sr * 0.15)
+          ctx.bezierCurveTo(sx + sr * 0.22, sy + sr * 0.05, sx + sr * 0.22, sy + sr * 0.32, sx, sy + sr * 0.38)
+          ctx.bezierCurveTo(sx - sr * 0.22, sy + sr * 0.32, sx - sr * 0.22, sy + sr * 0.05, sx, sy - sr * 0.15)
+          ctx.closePath()
+          ctx.fill()
         } else {
-          var iconMap = { check: "✅", cross: "❌", star: "⭐", warn: "⚠️", bug: "🐛", fire: "🔥" }
-          var emoji = iconMap[act.stampType] || "⭐"
-          ctx.font = Math.round(sr * 1.6) + "px sans-serif"
-          ctx.textAlign = "center"
-          ctx.textBaseline = "middle"
-          ctx.fillText(emoji, sx, sy)
+          ctx.fillStyle = "#FFFFFF"
+          ctx.beginPath()
+          ctx.arc(sx, sy, sr * 0.4, 0, Math.PI * 2)
+          ctx.fill()
         }
+        ctx.restore()
       }
     } catch (e) {
       console.warn("Error rendering action:", e)
