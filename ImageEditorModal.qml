@@ -14,6 +14,17 @@ Rectangle {
   radius: Style.cornerRadius
   z: 105
 
+  // Root MouseArea: Absorbs all clicks on modal background so nothing ever reaches underlying views
+  MouseArea {
+    anchors.fill: parent
+    hoverEnabled: true
+    preventStealing: true
+    onClicked: function(mouse) { mouse.accepted = true }
+    onPressed: function(mouse) { mouse.accepted = true }
+    onReleased: function(mouse) { mouse.accepted = true }
+    onWheel: function(wheel) { wheel.accepted = true }
+  }
+
   // Signals
   signal savedToClipboard(string path)
   signal savedToHistory(string path)
@@ -28,6 +39,19 @@ Rectangle {
   property bool fillShape: false
   property string currentStamp: "number" // "number", "check", "cross", "star", "warn", "bug", "fire"
   property int stampCounter: 1
+  property string actionFeedback: ""
+
+  Timer {
+    id: feedbackTimer
+    interval: 2200
+    repeat: false
+    onTriggered: root.actionFeedback = ""
+  }
+
+  function showFeedback(msg) {
+    root.actionFeedback = msg
+    feedbackTimer.restart()
+  }
 
   // Zoom & Pan state
   property real zoomScale: 1.0
@@ -80,6 +104,7 @@ Rectangle {
     root.stampCounter = 1
     root.currentTool = "pan"
     root.zoomScale = 1.0
+    root.actionFeedback = ""
     root.visible = true
     root.forceActiveFocus()
     Qt.callLater(function() {
@@ -196,13 +221,11 @@ Rectangle {
         if (saveMode === "clipboard" || saveMode === "history") {
           Quickshell.execDetached(["bash", "-c", "wl-copy --type image/png < " + Util.shellQuote(targetFile) + " && notify-send -a \"ReClip\" \"Annotated Image Copied\" \"Loaded to clipboard\""])
           root.savedToClipboard(targetFile)
-          if (saveMode === "history") {
-            root.savedToHistory(targetFile)
-          }
+          root.showFeedback("✓ Copied & saved to clips!")
         } else if (saveMode === "file") {
           Quickshell.execDetached(["notify-send", "-a", "ReClip", "Annotated Image Saved", "Saved to " + targetFile])
+          root.showFeedback("✓ Saved to Screenshots!")
         }
-        root.close()
       })
     })
   }
@@ -407,7 +430,7 @@ Rectangle {
             onClicked: {
               if (root.imagePath) {
                 Quickshell.execDetached(["tensaku-edit", root.imagePath])
-                root.close()
+                root.showFeedback("󰏫 Opened in Tensaku!")
               }
             }
           }
@@ -426,7 +449,7 @@ Rectangle {
             onClicked: {
               if (root.imagePath) {
                 root.runOcr(root.imagePath)
-                root.close()
+                root.showFeedback("󰐳 Text extracted to clipboard!")
               }
             }
           }
@@ -766,7 +789,7 @@ Rectangle {
         contentWidth: Math.max(width, compositeContainer.width)
         contentHeight: Math.max(height, compositeContainer.height)
         clip: true
-        interactive: root.currentTool === "pan"
+        interactive: false
 
         // Mouse Wheel to Zoom
         WheelHandler {
@@ -775,6 +798,35 @@ Rectangle {
             if (event.angleDelta.y > 0) root.zoomIn()
             else if (event.angleDelta.y < 0) root.zoomOut()
           }
+        }
+
+        // Viewport Background MouseArea: Handles panning in space beyond image and absorbs unhandled clicks
+        MouseArea {
+          id: viewportBgMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: root.currentTool === "pan" ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
+          property real lastX: 0
+          property real lastY: 0
+          onPressed: function(mouse) {
+            lastX = mouse.x
+            lastY = mouse.y
+            mouse.accepted = true
+          }
+          onPositionChanged: function(mouse) {
+            if ((root.currentTool === "pan" || (mouse.buttons & Qt.MiddleButton)) && pressed) {
+              var dx = mouse.x - lastX
+              var dy = mouse.y - lastY
+              var maxX = Math.max(0, canvasFlickable.contentWidth - canvasFlickable.width)
+              var maxY = Math.max(0, canvasFlickable.contentHeight - canvasFlickable.height)
+              canvasFlickable.contentX = Math.max(0, Math.min(maxX, canvasFlickable.contentX - dx))
+              canvasFlickable.contentY = Math.max(0, Math.min(maxY, canvasFlickable.contentY - dy))
+              lastX = mouse.x
+              lastY = mouse.y
+            }
+          }
+          onClicked: function(mouse) { mouse.accepted = true }
+          onDoubleClicked: function(mouse) { mouse.accepted = true }
         }
 
         // COMPOSITE CONTAINER (Source image + Canvas overlay)
@@ -840,6 +892,7 @@ Rectangle {
               if (root.currentTool === "pan" || mouse.button === Qt.MiddleButton) {
                 lastPanX = mouse.x
                 lastPanY = mouse.y
+                mouse.accepted = true
                 return
               }
 
@@ -913,11 +966,13 @@ Rectangle {
             }
 
             onPositionChanged: function(mouse) {
-              if ((root.currentTool === "pan" || mouse.buttons & Qt.MiddleButton) && pressed) {
+              if ((root.currentTool === "pan" || (mouse.buttons & Qt.MiddleButton)) && pressed) {
                 var dx = mouse.x - lastPanX
                 var dy = mouse.y - lastPanY
-                canvasFlickable.contentX = Math.max(0, canvasFlickable.contentX - dx)
-                canvasFlickable.contentY = Math.max(0, canvasFlickable.contentY - dy)
+                var maxX = Math.max(0, canvasFlickable.contentWidth - canvasFlickable.width)
+                var maxY = Math.max(0, canvasFlickable.contentHeight - canvasFlickable.height)
+                canvasFlickable.contentX = Math.max(0, Math.min(maxX, canvasFlickable.contentX - dx))
+                canvasFlickable.contentY = Math.max(0, Math.min(maxY, canvasFlickable.contentY - dy))
                 lastPanX = mouse.x
                 lastPanY = mouse.y
                 return
@@ -950,6 +1005,11 @@ Rectangle {
                 root.isDrawing = false
                 annotationCanvas.requestPaint()
               }
+              mouse.accepted = true
+            }
+
+            onClicked: function(mouse) {
+              mouse.accepted = true
             }
 
             onCanceled: function() {
@@ -1021,7 +1081,7 @@ Rectangle {
         anchors.rightMargin: Style.space(12)
         spacing: Style.space(8)
 
-        // Annotations count info
+        // Annotations count info & Feedback Badge
         Row {
           spacing: Style.space(5)
           Layout.alignment: Qt.AlignVCenter
@@ -1041,6 +1101,28 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             Layout.maximumWidth: Style.space(80)
             elide: Text.ElideRight
+          }
+
+          // In-modal Toast Feedback Badge
+          Rectangle {
+            visible: root.actionFeedback !== ""
+            height: Style.space(20)
+            width: fbText.implicitWidth + Style.space(12)
+            radius: Style.space(4)
+            color: Util.alpha(Color.accent, 0.2)
+            border.width: 1
+            border.color: Color.accent
+            anchors.verticalCenter: parent.verticalCenter
+
+            Text {
+              id: fbText
+              text: root.actionFeedback
+              color: Color.accent
+              font.family: Style.font.menuFamily
+              font.pixelSize: Style.space(8)
+              font.bold: true
+              anchors.centerIn: parent
+            }
           }
         }
 
@@ -1091,7 +1173,7 @@ Rectangle {
               onClicked: {
                 if (root.imagePath) {
                   Quickshell.execDetached(["bash", "-c", "wl-copy --type image/png < " + Util.shellQuote(root.imagePath) + " && notify-send -a \"ReClip\" \"Original Image Copied\" \"Loaded to clipboard\""])
-                  root.close()
+                  root.showFeedback("✓ Original copied to clipboard!")
                 }
               }
             }

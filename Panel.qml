@@ -4391,6 +4391,9 @@ Panel {
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
               onClicked: {
+                if (imageEditorModal && imageEditorModal.visible) return
+                if (colorPickerModal && colorPickerModal.visible) return
+                if (root.settingsOpen) return
                 root.selectedIndex = parent.index
                 if (root.bulkMode && cardItem.itemType === "history") {
                   root.toggleBulkSelect(cardItem.historyIndex)
