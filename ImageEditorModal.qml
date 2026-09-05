@@ -418,6 +418,12 @@ Rectangle {
     } else if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_Y || ((event.modifiers & Qt.ShiftModifier) && event.key === Qt.Key_Z))) {
       root.redo()
       event.accepted = true
+    } else if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_S) {
+      root.exportImage("file")
+      event.accepted = true
+    } else if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_C || event.key === Qt.Key_Return || event.key === Qt.Key_Enter)) {
+      root.exportImage("clipboard")
+      event.accepted = true
     } else if (event.key === Qt.Key_Plus || event.key === Qt.Key_Equal) {
       root.zoomIn()
       event.accepted = true
