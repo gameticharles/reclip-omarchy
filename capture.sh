@@ -38,13 +38,24 @@ emit_image() {
     mv "$tmp" "$file"
   fi
 
+  local limit=12
+  if [[ -f "$STATE_DIR/settings.json" ]]; then
+    local conf_limit
+    conf_limit=$(jq -r '.imagePaletteLimit // empty' "$STATE_DIR/settings.json" 2>/dev/null || true)
+    if [[ -n "$conf_limit" && "$conf_limit" != "null" && "$conf_limit" =~ ^[0-9]+$ ]]; then
+      limit="$conf_limit"
+    fi
+  fi
+  local fetch_count=$(( limit * 3 ))
+  (( fetch_count < 24 )) && fetch_count=24
+
   local colors="[]"
   if command -v magick &>/dev/null; then
-    colors=$(magick "$file" -resize 64x64\! -quantize RGB +dither -colors 8 -unique-colors txt:- 2>/dev/null \
-      | grep -oE '#[0-9A-Fa-f]{6}' | tr '[:lower:]' '[:upper:]' | head -n 8 | jq -R . | jq -s . 2>/dev/null || echo "[]")
+    colors=$(magick "$file" -resize 64x64\! -quantize RGB +dither -colors "$fetch_count" -unique-colors txt:- 2>/dev/null \
+      | grep -oE '#[0-9A-Fa-f]{6}' | tr '[:lower:]' '[:upper:]' | awk '!seen[$0]++' | head -n "$limit" | jq -R . | jq -s . 2>/dev/null || echo "[]")
   elif command -v convert &>/dev/null; then
-    colors=$(convert "$file" -resize 64x64\! -quantize RGB +dither -colors 8 -unique-colors txt:- 2>/dev/null \
-      | grep -oE '#[0-9A-Fa-f]{6}' | tr '[:lower:]' '[:upper:]' | head -n 8 | jq -R . | jq -s . 2>/dev/null || echo "[]")
+    colors=$(convert "$file" -resize 64x64\! -quantize RGB +dither -colors "$fetch_count" -unique-colors txt:- 2>/dev/null \
+      | grep -oE '#[0-9A-Fa-f]{6}' | tr '[:lower:]' '[:upper:]' | awk '!seen[$0]++' | head -n "$limit" | jq -R . | jq -s . 2>/dev/null || echo "[]")
   fi
 
   jq -cn --arg mime "$mime" --arg path "$file" --arg captured_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" --argjson colors "$colors" \

@@ -6,7 +6,7 @@
 set -eo pipefail
 
 IMAGE="$1"
-LIMIT="${2:-8}"
+LIMIT="${2:-12}"
 
 if [[ -z "$IMAGE" || ! -f "$IMAGE" ]]; then
   echo "[]"

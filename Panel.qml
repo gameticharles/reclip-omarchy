@@ -51,7 +51,7 @@ Panel {
   property int settingsMaxClips: 500
   property int settingsRetainDays: 30
   property bool settingsIgnoreSensitive: true
-  property int settingsImagePaletteLimit: 8
+  property int settingsImagePaletteLimit: 12
   property string paletteScript: pluginDir + "/extract-palette.sh"
   property var imagePalettes: ({})
   property var paletteQueue: []
@@ -5995,8 +5995,8 @@ Panel {
                         model: [
                           { limit: 4, label: "4" },
                           { limit: 6, label: "6" },
-                          { limit: 8, label: "8 (Default)" },
-                          { limit: 12, label: "12" },
+                          { limit: 8, label: "8" },
+                          { limit: 12, label: "12 (Default)" },
                           { limit: 16, label: "16" }
                         ]
                         Rectangle {
