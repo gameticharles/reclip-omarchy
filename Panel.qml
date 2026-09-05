@@ -4043,7 +4043,7 @@ Panel {
             readonly property bool isHovered: cardMouse.containsMouse
 
             width: list.width - Style.space(6)
-            height: kind === "code" ? Style.space(78) : (entryType === "image" ? Style.space(80) : Style.space(62))
+            height: kind === "code" ? Style.space(78) : Style.space(62)
             radius: Style.space(8)
             color: isBulkChecked ? Util.alpha(Color.accent, 0.18) : (isSelected ? root.selBg : (isHovered ? Util.alpha(root.fg, 0.06) : Util.alpha(root.fg, 0.03)))
             border.width: 1
