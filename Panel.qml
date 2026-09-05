@@ -1307,6 +1307,10 @@ Panel {
           if (colorPickerModal && colorPickerModal.visible) {
             colorPickerModal.setColor(picked)
           }
+          if (imageEditorModal && imageEditorModal.visible) {
+            imageEditorModal.currentColor = picked
+            imageEditorModal.showFeedback("󰈊 Picked " + picked)
+          }
         }
       }
     }
@@ -7752,6 +7756,13 @@ Panel {
       onRunOcr: function(path) {
         root.runOcrOnImage(path)
       }
+      onRequestScreenPick: function() {
+        root.pickScreenColor()
+      }
+      onRequestColorPicker: function() {
+        colorPickerModal.z = 120
+        colorPickerModal.open(imageEditorModal.currentColor, root.clipboardItems)
+      }
     }
 
     // ==========================================
@@ -7761,9 +7772,16 @@ Panel {
       id: colorPickerModal
       onColorSelected: function(hex) {
         root.selectColor(hex)
+        if (imageEditorModal && imageEditorModal.visible) {
+          imageEditorModal.currentColor = hex
+          imageEditorModal.showFeedback("Color set: " + hex)
+        }
       }
       onRequestScreenPick: function() {
         root.pickScreenColor()
+      }
+      onClosed: function() {
+        colorPickerModal.z = 100
       }
     }
   }

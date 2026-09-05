@@ -29,6 +29,8 @@ Rectangle {
   signal savedToClipboard(string path)
   signal savedToHistory(string path)
   signal runOcr(string path)
+  signal requestScreenPick()
+  signal requestColorPicker()
   signal closed()
 
   // Properties
@@ -38,6 +40,7 @@ Rectangle {
   property color currentColor: "#EF4444"
   property int strokeWidth: 4
   property bool fillShape: false
+  property bool textBox: false
   property string currentStamp: "number" // "number", "check", "cross", "star", "warn", "bug", "fire"
   property int stampCounter: 1
   property string actionFeedback: ""
@@ -45,6 +48,52 @@ Rectangle {
   property var imageRedoStack: []
   property var cropRect: null
   property var cropStartPt: null
+  property string cropRatio: "free" // "free", "1:1", "16:9", "4:3", "9:16"
+
+  readonly property var cropRatios: [
+    { id: "free", label: "Free", ratio: 0 },
+    { id: "1:1", label: "1:1", ratio: 1.0 },
+    { id: "16:9", label: "16:9", ratio: 16.0 / 9.0 },
+    { id: "4:3", label: "4:3", ratio: 4.0 / 3.0 },
+    { id: "9:16", label: "9:16", ratio: 9.0 / 16.0 }
+  ]
+
+  function setCropRatio(ratioId) {
+    root.cropRatio = ratioId
+    if (!root.cropRect) root.initCropRect()
+    if (ratioId === "free") return
+
+    var targetRatio = 1.0
+    for (var i = 0; i < root.cropRatios.length; i++) {
+      if (root.cropRatios[i].id === ratioId) {
+        targetRatio = root.cropRatios[i].ratio
+        break
+      }
+    }
+
+    var imgW = (baseImage.implicitWidth > 0 ? baseImage.implicitWidth : 800)
+    var imgH = (baseImage.implicitHeight > 0 ? baseImage.implicitHeight : 600)
+    var curW = root.cropRect.width
+    var curH = root.cropRect.height
+    var curCX = root.cropRect.x + curW / 2
+    var curCY = root.cropRect.y + curH / 2
+
+    var newW = curW
+    var newH = Math.round(newW / targetRatio)
+    if (newH > imgH) {
+      newH = imgH
+      newW = Math.round(newH * targetRatio)
+    }
+    if (newW > imgW) {
+      newW = imgW
+      newH = Math.round(newW / targetRatio)
+    }
+    var newX = Math.max(0, Math.min(imgW - newW, Math.round(curCX - newW / 2)))
+    var newY = Math.max(0, Math.min(imgH - newH, Math.round(curCY - newH / 2)))
+
+    root.cropRect = { x: newX, y: newY, width: newW, height: newH }
+    root.showFeedback("✂ Ratio: " + ratioId)
+  }
 
   Timer {
     id: feedbackTimer
@@ -131,6 +180,8 @@ Rectangle {
     root.isDrawing = false
     root.textInputActive = false
     root.stampCounter = 1
+    root.cropRatio = "free"
+    root.textBox = false
     root.currentTool = "pan"
     root.zoomScale = 1.0
     root.actionFeedback = ""
@@ -268,6 +319,22 @@ Rectangle {
     var imgH = (baseImage.implicitHeight > 0 ? baseImage.implicitHeight : 600)
     var cw = Math.round(imgW * 0.8)
     var ch = Math.round(imgH * 0.8)
+    if (root.cropRatio !== "free") {
+      var targetRatio = 1.0
+      for (var i = 0; i < root.cropRatios.length; i++) {
+        if (root.cropRatios[i].id === root.cropRatio) {
+          targetRatio = root.cropRatios[i].ratio
+          break
+        }
+      }
+      if (targetRatio > 0) {
+        ch = Math.round(cw / targetRatio)
+        if (ch > imgH) {
+          ch = imgH
+          cw = Math.round(ch * targetRatio)
+        }
+      }
+    }
     var cx = Math.round((imgW - cw) / 2)
     var cy = Math.round((imgH - ch) / 2)
     root.cropRect = { x: cx, y: cy, width: cw, height: ch }
@@ -338,6 +405,7 @@ Rectangle {
         text: str,
         color: String(root.currentColor),
         size: Math.max(14, root.strokeWidth * 4),
+        box: Boolean(root.textBox),
         pos: { x: root.textInputPos.x, y: root.textInputPos.y }
       }
       var next = root.actions.slice()
@@ -935,9 +1003,9 @@ Rectangle {
           anchors.leftMargin: Style.space(10)
           spacing: Style.space(6)
 
-          // Stroke Label
+          // Stroke / Font Size Label
           Text {
-            text: "Size:"
+            text: root.currentTool === "text" ? "Font Size:" : "Size:"
             color: Util.alpha(Color.popups.text || Color.text, 0.6)
             font.family: Style.font.menuFamily
             font.pixelSize: Style.space(8)
@@ -945,7 +1013,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
           }
 
-          // Stroke width selector
+          // Stroke / Font size selector
           Row {
             spacing: Style.space(2)
             anchors.verticalCenter: parent.verticalCenter
@@ -953,13 +1021,14 @@ Rectangle {
               model: root.strokeSizes
               Rectangle {
                 required property var modelData
+                required property int index
                 width: Style.space(24); height: Style.space(20); radius: Style.space(3)
                 color: root.strokeWidth === modelData.val ? Util.alpha(Color.accent, 0.3) : (szMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
                 border.width: 1
                 border.color: root.strokeWidth === modelData.val ? Color.accent : "transparent"
 
                 Text {
-                  text: parent.modelData.label
+                  text: root.currentTool === "text" ? ["S", "M", "L", "XL"][parent.index] : parent.modelData.label
                   color: root.strokeWidth === parent.modelData.val ? Color.accent : (Color.popups.text || Color.text)
                   font.family: Style.font.menuFamily
                   font.pixelSize: Style.space(7.5)
@@ -972,9 +1041,38 @@ Rectangle {
                   anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                   onClicked: root.strokeWidth = parent.modelData.val
                 }
-                PanelToolTip { visible: szMouse.containsMouse; text: "Stroke: " + parent.modelData.val + "px" }
+                PanelToolTip {
+                  visible: szMouse.containsMouse
+                  text: root.currentTool === "text" ? ("Text: " + ["Small (14px)", "Medium (20px)", "Large (28px)", "Extra Large (40px)"][parent.index]) : ("Stroke: " + parent.modelData.val + "px")
+                }
               }
             }
+          }
+
+          // Card Box Toggle (for Text Tool)
+          Rectangle {
+            visible: root.currentTool === "text"
+            width: badgeBtnRow.implicitWidth + Style.space(8)
+            height: Style.space(20)
+            radius: Style.space(3)
+            color: root.textBox ? Util.alpha(Color.accent, 0.3) : (cardBoxMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
+            border.width: 1
+            border.color: root.textBox ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.15)
+            anchors.verticalCenter: parent.verticalCenter
+
+            Row {
+              id: badgeBtnRow
+              anchors.centerIn: parent
+              spacing: Style.space(3)
+              Text { text: "■"; color: root.textBox ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.6); font.pixelSize: Style.space(7.5); anchors.verticalCenter: parent.verticalCenter }
+              Text { text: "Card Box"; color: root.textBox ? Color.accent : (Color.popups.text || Color.text); font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+            }
+            MouseArea {
+              id: cardBoxMouse
+              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+              onClicked: root.textBox = !root.textBox
+            }
+            PanelToolTip { visible: cardBoxMouse.containsMouse; text: root.textBox ? "Text card background active" : "Toggle solid high-contrast card box behind text" }
           }
 
           // Separator
@@ -1014,25 +1112,93 @@ Rectangle {
             }
           }
 
-          // Current Color Preview dot + Hex
-          Row {
-            spacing: Style.space(4)
+          // Eyedropper Button (pick from screen/image)
+          Rectangle {
+            width: Style.space(20); height: Style.space(20); radius: Style.space(10)
+            color: eyedropMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
+            border.width: 1
+            border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
             anchors.verticalCenter: parent.verticalCenter
 
-            Rectangle {
-              width: Style.space(14); height: Style.space(14); radius: Style.space(7)
-              color: root.currentColor
-              border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.3)
-              anchors.verticalCenter: parent.verticalCenter
+            Text {
+              text: "󰈊"
+              color: Color.popups.text || Color.text
+              font.pixelSize: Style.space(9.5)
+              anchors.centerIn: parent
             }
+            MouseArea {
+              id: eyedropMouse
+              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+              onClicked: root.requestScreenPick()
+            }
+            PanelToolTip { visible: eyedropMouse.containsMouse; text: "Eyedropper: pick any color from screen or image" }
+          }
+
+          // Color Studio Picker Button (opens full Color Studio modal)
+          Rectangle {
+            width: Style.space(20); height: Style.space(20); radius: Style.space(10)
+            color: studioColorMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.06)
+            border.width: 1
+            border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
+            anchors.verticalCenter: parent.verticalCenter
 
             Text {
-              text: String(root.currentColor).toUpperCase()
-              color: Util.alpha(Color.popups.text || Color.text, 0.7)
-              font.family: "monospace"
-              font.pixelSize: Style.space(7.5)
-              font.bold: true
-              anchors.verticalCenter: parent.verticalCenter
+              text: "󰏘"
+              color: studioColorMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text)
+              font.pixelSize: Style.space(9.5)
+              anchors.centerIn: parent
+            }
+            MouseArea {
+              id: studioColorMouse
+              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+              onClicked: root.requestColorPicker()
+            }
+            PanelToolTip { visible: studioColorMouse.containsMouse; text: "Open Color Studio: custom palette, harmonies & shades" }
+          }
+
+          // Current Color Swatch + Interactive Hex Input
+          Rectangle {
+            height: Style.space(20)
+            width: hexEditRow.implicitWidth + Style.space(10)
+            radius: Style.space(10)
+            color: Util.alpha(Color.popups.text || Color.text, 0.06)
+            border.width: 1
+            border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
+            anchors.verticalCenter: parent.verticalCenter
+
+            Row {
+              id: hexEditRow
+              anchors.centerIn: parent
+              spacing: Style.space(4)
+
+              Rectangle {
+                width: Style.space(12); height: Style.space(12); radius: Style.space(6)
+                color: root.currentColor
+                border.width: 1; border.color: Util.alpha("#000000", 0.3)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              TextInput {
+                id: hexInput
+                text: String(root.currentColor).toUpperCase()
+                color: Color.popups.text || Color.text
+                font.family: "monospace"
+                font.pixelSize: Style.space(7.5)
+                font.bold: true
+                maximumLength: 7
+                selectByMouse: true
+                anchors.verticalCenter: parent.verticalCenter
+                onAccepted: {
+                  var val = text.trim()
+                  if (val.indexOf("#") !== 0) val = "#" + val
+                  if (/^#[0-9A-Fa-f]{6}$/.test(val)) {
+                    root.currentColor = val
+                    root.showFeedback("Color set: " + val)
+                  } else {
+                    text = String(root.currentColor).toUpperCase()
+                  }
+                }
+              }
             }
           }
         }
@@ -1171,6 +1337,41 @@ Rectangle {
                 }
               }
               PanelToolTip { visible: cancelCropMouse.containsMouse; text: "Cancel crop (Esc)" }
+            }
+          }
+
+          // Aspect Ratio Presets (shown when crop tool active)
+          Row {
+            visible: root.currentTool === "crop"
+            spacing: Style.space(2)
+            anchors.verticalCenter: parent.verticalCenter
+
+            Repeater {
+              model: root.cropRatios
+              Rectangle {
+                required property var modelData
+                width: ratioTxt.implicitWidth + Style.space(8); height: Style.space(22); radius: Style.space(4)
+                color: root.cropRatio === modelData.id ? Color.accent : (ratioMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.05))
+                border.width: 1
+                border.color: root.cropRatio === modelData.id ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.1)
+                anchors.verticalCenter: parent.verticalCenter
+
+                Text {
+                  id: ratioTxt
+                  anchors.centerIn: parent
+                  text: parent.modelData.label
+                  color: root.cropRatio === parent.modelData.id ? "#FFFFFF" : (Color.popups.text || Color.text)
+                  font.family: Style.font.menuFamily
+                  font.pixelSize: Style.space(7.5)
+                  font.bold: true
+                }
+                MouseArea {
+                  id: ratioMouse
+                  anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.setCropRatio(parent.modelData.id)
+                }
+                PanelToolTip { visible: ratioMouse.containsMouse; text: "Lock aspect ratio: " + parent.modelData.label }
+              }
             }
           }
 
@@ -1638,9 +1839,9 @@ Rectangle {
             width: Math.max(Style.space(160), textEditorInput.implicitWidth + Style.space(24))
             height: Style.space(34)
             radius: Style.space(4)
-            color: Util.alpha(Color.popups.background || Color.background, 0.95)
-            border.width: 1
-            border.color: Color.accent
+            color: root.textBox ? Util.alpha("#0F172A", 0.90) : Util.alpha(Color.popups.background || Color.background, 0.95)
+            border.width: root.textBox ? 1.5 : 1
+            border.color: root.textBox ? root.currentColor : Color.accent
             z: 20
 
             TextInput {
@@ -1728,6 +1929,31 @@ Rectangle {
                 }
                 if (activeHandle === "bl" || activeHandle === "b" || activeHandle === "br") {
                   nh = Math.max(minSize, Math.min(imgH - startCrop.y, startCrop.height + dy))
+                }
+
+                if (root.cropRatio !== "free") {
+                  var targetRatio = 1.0
+                  for (var r = 0; r < root.cropRatios.length; r++) {
+                    if (root.cropRatios[r].id === root.cropRatio) {
+                      targetRatio = root.cropRatios[r].ratio
+                      break
+                    }
+                  }
+                  if (targetRatio > 0) {
+                    if (activeHandle === "t" || activeHandle === "b") {
+                      nw = Math.max(minSize, Math.round(nh * targetRatio))
+                      if (nx + nw > imgW) {
+                        nw = imgW - nx
+                        nh = Math.round(nw / targetRatio)
+                      }
+                    } else {
+                      nh = Math.max(minSize, Math.round(nw / targetRatio))
+                      if (ny + nh > imgH) {
+                        nh = imgH - ny
+                        nw = Math.round(nh * targetRatio)
+                      }
+                    }
+                  }
                 }
               }
 
@@ -1905,7 +2131,7 @@ Rectangle {
                 Text {
                   id: cropDimText
                   anchors.centerIn: parent
-                  text: root.cropRect ? (Math.round(root.cropRect.width) + " × " + Math.round(root.cropRect.height) + " px") : ""
+                  text: root.cropRect ? (Math.round(root.cropRect.width) + " × " + Math.round(root.cropRect.height) + " px" + (root.cropRatio !== "free" ? (" (" + root.cropRatio + ")") : "")) : ""
                   color: "#FFFFFF"
                   font.family: "monospace"
                   font.pixelSize: Style.space(7.5)
@@ -2360,9 +2586,22 @@ Rectangle {
         var fs = act.size || 18
         ctx.font = "bold " + fs + "px sans-serif"
         ctx.textBaseline = "top"
-        ctx.strokeStyle = "rgba(0,0,0,0.7)"
-        ctx.lineWidth = 3
-        ctx.strokeText(act.text, act.pos.x, act.pos.y)
+        if (act.box) {
+          var padX = Math.round(fs * 0.45)
+          var padY = Math.round(fs * 0.25)
+          var tw = ctx.measureText(act.text).width
+          ctx.save()
+          ctx.fillStyle = "rgba(15, 23, 42, 0.88)"
+          ctx.fillRect(act.pos.x - padX, act.pos.y - padY, tw + padX * 2, fs + padY * 2)
+          ctx.strokeStyle = actColor
+          ctx.lineWidth = 1.5
+          ctx.strokeRect(act.pos.x - padX, act.pos.y - padY, tw + padX * 2, fs + padY * 2)
+          ctx.restore()
+        } else {
+          ctx.strokeStyle = "rgba(0,0,0,0.7)"
+          ctx.lineWidth = 3
+          ctx.strokeText(act.text, act.pos.x, act.pos.y)
+        }
         ctx.fillStyle = actColor
         ctx.fillText(act.text, act.pos.x, act.pos.y)
       } else if (act.tool === "stamp" && act.pos) {
