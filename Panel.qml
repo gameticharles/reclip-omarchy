@@ -210,6 +210,7 @@ Panel {
     root.tagModalOpen = false
     root.snippetTemplatePickerOpen = false
     root.varPromptOpen = false
+    if (colorPickerModal) colorPickerModal.close()
     imageEditorModal.close()
     root.bulkMode = false
     root.bulkSelectedIndices = []
@@ -223,10 +224,65 @@ Panel {
       root.openVariablePrompt(payload.varPromptTitle || "Template", payload.varPromptTemplate, !!payload.varPromptAutoPaste)
     }
     if (payload && payload.annotatePath) root.openImageAnnotation(payload.annotatePath)
+    if (payload && payload.colorPickerOpen) {
+      colorPickerModal.open(payload.colorHex || root.activeColorHex, root.history)
+    }
     root.rebuildDisplay()
     if (root.activeTab !== 3) {
       Qt.callLater(function() { searchInput.forceActiveFocus() })
     }
+  }
+
+  function handleCloseRequested() {
+    if (colorPickerModal && colorPickerModal.visible) {
+      colorPickerModal.close()
+      return
+    }
+    if (imageEditorModal && imageEditorModal.visible) {
+      imageEditorModal.close()
+      return
+    }
+    if (root.settingsOpen) {
+      root.settingsOpen = false
+      return
+    }
+    if (root.tagModalOpen) {
+      root.tagModalOpen = false
+      return
+    }
+    if (root.snippetTemplatePickerOpen) {
+      root.snippetTemplatePickerOpen = false
+      return
+    }
+    if (root.varPromptOpen) {
+      root.varPromptOpen = false
+      return
+    }
+    if (root.qrOpen) {
+      root.qrOpen = false
+      return
+    }
+    if (root.transformOpen) {
+      root.transformOpen = false
+      return
+    }
+    if (root.mergeDialogOpen) {
+      root.mergeDialogOpen = false
+      return
+    }
+    if (root.clipEditOpen) {
+      root.clipEditOpen = false
+      return
+    }
+    if (root.snippetEditOpen) {
+      root.snippetEditOpen = false
+      return
+    }
+    if (root.clearConfirmOpen) {
+      root.clearConfirmOpen = false
+      return
+    }
+    root.close()
   }
 
   function close() {
@@ -242,6 +298,7 @@ Panel {
     root.tagModalOpen = false
     root.snippetTemplatePickerOpen = false
     root.varPromptOpen = false
+    if (colorPickerModal) colorPickerModal.close()
     imageEditorModal.close()
     root.bulkMode = false
     root.bulkSelectedIndices = []
@@ -422,7 +479,7 @@ Panel {
   }
 
   function selectColor(hex) {
-    var parsed = ColorStudio.parseColor(hex) || hex
+    var parsed = ClipboardHistory.extractColorHex(hex) || ColorStudio.parseColor(hex) || hex
     var clean = ColorStudio.analyzeColor(parsed)
     if (clean) {
       root.activeColorHex = clean.hex
@@ -1188,6 +1245,27 @@ Panel {
   }
 
   Process {
+    id: hyprPickerProc
+    command: ["sh", "-c", "pkill hyprpicker 2>/dev/null; hyprpicker -a"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: function(t) {
+        var picked = (t || "").trim()
+        if (picked) {
+          root.selectColor(picked)
+          if (colorPickerModal && colorPickerModal.visible) {
+            colorPickerModal.setColor(picked)
+          }
+        }
+      }
+    }
+  }
+
+  function pickScreenColor() {
+    hyprPickerProc.running = true
+  }
+
+  Process {
     id: queueProc
     property var indices: []
     property int pending: 0
@@ -1222,7 +1300,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      onCloseRequested: root.close()
+      onCloseRequested: root.handleCloseRequested()
       onTabRequested: function(direction) {
         root.activeTab = (root.activeTab + direction + 5) % 5
         root.selectedIndex = 0
@@ -2608,10 +2686,53 @@ Panel {
               spacing: Style.space(12)
 
               Rectangle {
+                id: currentColorBox
                 width: Style.space(56); height: Style.space(56)
                 radius: Style.space(8)
                 color: root.activeColorHex
-                border.width: 1; border.color: Util.alpha(root.fg, 0.25)
+                border.width: curBoxMouse.containsMouse ? 2 : 1
+                border.color: curBoxMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.25)
+
+                Rectangle {
+                  anchors.fill: parent
+                  radius: Style.space(8)
+                  color: curBoxMouse.containsMouse ? Util.alpha("#000000", 0.4) : "transparent"
+                  Behavior on color { ColorAnimation { duration: 120 } }
+
+                  Column {
+                    anchors.centerIn: parent
+                    spacing: Style.space(1)
+                    visible: curBoxMouse.containsMouse
+                    Text {
+                      text: "󰏘"
+                      color: "#ffffff"
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.space(16)
+                      anchors.horizontalCenter: parent.horizontalCenter
+                    }
+                    Text {
+                      text: "PICK"
+                      color: "#ffffff"
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.space(7)
+                      font.bold: true
+                      anchors.horizontalCenter: parent.horizontalCenter
+                    }
+                  }
+                }
+
+                MouseArea {
+                  id: curBoxMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: colorPickerModal.open(root.activeColorHex, root.history)
+                }
+
+                PanelToolTip {
+                  visible: curBoxMouse.containsMouse
+                  text: "Click to open Color Picker"
+                }
               }
 
               Column {
@@ -2627,21 +2748,69 @@ Panel {
                 Row {
                   width: parent.width; spacing: Style.space(6)
                   Rectangle {
-                    width: parent.width - Style.space(76); height: Style.space(30); radius: Style.space(4)
+                    width: parent.width - Style.space(70 + 34 + 12); height: Style.space(30); radius: Style.space(4)
                     color: Util.alpha(root.fg, 0.06); border.width: 1; border.color: Util.alpha(root.fg, 0.15)
                     TextInput {
                       id: colorTextInput
                       anchors.fill: parent; anchors.margins: Style.space(4)
                       color: root.fg; font.family: "monospace"; font.pixelSize: Style.font.body; font.bold: true
                       text: root.activeColorHex
+                      selectByMouse: true
                       onAccepted: root.selectColor(text)
+                      Connections {
+                        target: root
+                        function onActiveColorHexChanged() {
+                          if (colorTextInput.text !== root.activeColorHex) {
+                            colorTextInput.text = root.activeColorHex
+                          }
+                        }
+                      }
                     }
                   }
+                  // Screen Eyedropper Button (Omarchy Hyprpicker)
                   Rectangle {
+                    id: screenDropBtn
+                    width: Style.space(34); height: Style.space(30); radius: Style.space(4)
+                    color: dropBtnMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(root.fg, 0.08)
+                    border.width: 1; border.color: dropBtnMouse.containsMouse ? Color.accent : Util.alpha(root.fg, 0.15)
+                    Behavior on color { ColorAnimation { duration: 120 } }
+                    Text {
+                      text: "󰃉"
+                      color: dropBtnMouse.containsMouse ? Color.accent : root.fg
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.space(13)
+                      anchors.centerIn: parent
+                    }
+                    MouseArea {
+                      id: dropBtnMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.pickScreenColor()
+                    }
+                    PanelToolTip {
+                      visible: dropBtnMouse.containsMouse
+                      text: "Pick Color from Screen (Eyedropper)"
+                    }
+                  }
+                  // Inspect Button
+                  Rectangle {
+                    id: inspectBtn
                     width: Style.space(70); height: Style.space(30); radius: Style.space(4)
-                    color: Color.accent
+                    color: inspectMouse.containsMouse ? Qt.lighter(Color.accent, 1.1) : Color.accent
+                    Behavior on color { ColorAnimation { duration: 120 } }
                     Text { text: "Inspect"; color: "#fff"; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true; anchors.centerIn: parent }
-                    MouseArea { anchors.fill: parent; onClicked: root.selectColor(colorTextInput.text); cursorShape: Qt.PointingHandCursor }
+                    MouseArea {
+                      id: inspectMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      onClicked: root.selectColor(colorTextInput.text)
+                      cursorShape: Qt.PointingHandCursor
+                    }
+                    PanelToolTip {
+                      visible: inspectMouse.containsMouse
+                      text: "Inspect & analyze color"
+                    }
                   }
                 }
               }
@@ -7364,6 +7533,19 @@ Panel {
       }
       onRunOcr: function(path) {
         root.runOcrOnImage(path)
+      }
+    }
+
+    // ==========================================
+    // MODAL: INTERACTIVE COLOR PICKER STUDIO
+    // ==========================================
+    ColorPickerModal {
+      id: colorPickerModal
+      onColorSelected: function(hex) {
+        root.selectColor(hex)
+      }
+      onRequestScreenPick: function() {
+        root.pickScreenColor()
       }
     }
   }
