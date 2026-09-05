@@ -1449,7 +1449,7 @@ Panel {
               { id: 0, label: "History", icon: "󰅍", count: root.historyCount },
               { id: 1, label: "Pinned", icon: "󰐃", count: root.pinnedCount },
               { id: 2, label: "Snippets", icon: "󰅩", count: root.snippets.length },
-              { id: 3, label: "Color Studio", icon: "󰏘", count: root.colorPalette.length },
+              { id: 3, label: "Colors", icon: "󰏘", count: root.colorPalette.length },
               { id: 4, label: "Queue", icon: "󰆒", count: root.pasteQueue.length }
             ]
 
