@@ -284,31 +284,31 @@ Rectangle {
     // ==========================================
     Rectangle {
       Layout.fillWidth: true
-      height: Style.space(46)
+      height: Style.space(42)
       color: Util.alpha(Color.popups.background || Color.background, 0.98)
       border.width: 1
       border.color: Util.alpha(Color.popups.border || Color.border, 0.4)
 
       RowLayout {
         anchors.fill: parent
-        anchors.leftMargin: Style.space(12)
-        anchors.rightMargin: Style.space(12)
-        spacing: Style.space(8)
+        anchors.leftMargin: Style.space(10)
+        anchors.rightMargin: Style.space(10)
+        spacing: Style.space(6)
 
         // Title icon + label
         Row {
-          spacing: Style.space(8)
+          spacing: Style.space(6)
           Layout.alignment: Qt.AlignVCenter
 
           Rectangle {
-            width: Style.space(28); height: Style.space(28); radius: Style.space(6)
+            width: Style.space(26); height: Style.space(26); radius: Style.space(5)
             color: Util.alpha(Color.accent, 0.2)
             anchors.verticalCenter: parent.verticalCenter
             Text {
               text: "󰏫"
               color: Color.accent
               font.family: Style.font.menuFamily
-              font.pixelSize: Style.font.body
+              font.pixelSize: Style.font.caption
               anchors.centerIn: parent
             }
           }
@@ -320,73 +320,76 @@ Rectangle {
               text: root.imagePath ? root.imagePath.split("/").pop() : "Image Studio"
               color: Color.popups.text || Color.text
               font.family: Style.font.menuFamily
-              font.pixelSize: Style.font.caption
+              font.pixelSize: Style.space(9)
               font.bold: true
               elide: Text.ElideMiddle
-              width: Style.space(160)
+              width: Math.min(implicitWidth, Style.space(90))
             }
             Text {
-              text: baseImage.implicitWidth > 0 ? (baseImage.implicitWidth + " × " + baseImage.implicitHeight + " px") : "Viewer & Annotation Studio"
+              text: baseImage.implicitWidth > 0 ? (baseImage.implicitWidth + "×" + baseImage.implicitHeight) : "Studio"
               color: Util.alpha(Color.popups.text || Color.text, 0.5)
               font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(8)
+              font.pixelSize: Style.space(7.5)
             }
           }
         }
 
         // Separator
-        Rectangle { width: 1; height: Style.space(20); color: Util.alpha(Color.popups.text || Color.text, 0.12) }
+        Rectangle { width: 1; height: Style.space(18); color: Util.alpha(Color.popups.text || Color.text, 0.12) }
 
         // Zoom Controls
         Row {
-          spacing: Style.space(3)
+          spacing: Style.space(2)
           Layout.alignment: Qt.AlignVCenter
 
           // Zoom Out (-)
           Rectangle {
-            width: Style.space(26); height: Style.space(26); radius: Style.space(4)
-            color: Util.alpha(Color.popups.text || Color.text, 0.08)
-            Text { text: "−"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(12); font.bold: true; anchors.centerIn: parent }
-            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.zoomOut() }
+            width: Style.space(22); height: Style.space(22); radius: Style.space(4)
+            color: zoomOutMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.08)
+            Text { text: "−"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(11); font.bold: true; anchors.centerIn: parent }
+            MouseArea { id: zoomOutMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.zoomOut() }
+            PanelToolTip { visible: zoomOutMouse.containsMouse; text: "Zoom out (-)" }
           }
 
           // Zoom Level Indicator / Reset
           Rectangle {
-            height: Style.space(26); width: Style.space(48); radius: Style.space(4)
-            color: Util.alpha(Color.popups.text || Color.text, 0.05)
+            height: Style.space(22); width: Style.space(38); radius: Style.space(4)
+            color: zoomResetMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.05)
             Text {
               text: Math.round(root.zoomScale * 100) + "%"
               color: Color.popups.text || Color.text
               font.family: "monospace"
-              font.pixelSize: Style.space(8)
+              font.pixelSize: Style.space(7.5)
               font.bold: true
               anchors.centerIn: parent
             }
-            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.resetZoom() }
+            MouseArea { id: zoomResetMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.resetZoom() }
+            PanelToolTip { visible: zoomResetMouse.containsMouse; text: "Reset zoom (1)" }
           }
 
           // Zoom In (+)
           Rectangle {
-            width: Style.space(26); height: Style.space(26); radius: Style.space(4)
-            color: Util.alpha(Color.popups.text || Color.text, 0.08)
-            Text { text: "+"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(12); font.bold: true; anchors.centerIn: parent }
-            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.zoomIn() }
+            width: Style.space(22); height: Style.space(22); radius: Style.space(4)
+            color: zoomInMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.08)
+            Text { text: "+"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(11); font.bold: true; anchors.centerIn: parent }
+            MouseArea { id: zoomInMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.zoomIn() }
+            PanelToolTip { visible: zoomInMouse.containsMouse; text: "Zoom in (+)" }
           }
 
           // Fit to Window
           Rectangle {
-            height: Style.space(26); width: fitTxt.implicitWidth + Style.space(10); radius: Style.space(4)
-            color: Util.alpha(Color.popups.text || Color.text, 0.08)
+            height: Style.space(22); width: Style.space(26); radius: Style.space(4)
+            color: fitMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.08)
             Text {
-              id: fitTxt
               text: "Fit"
               color: Color.popups.text || Color.text
               font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(8)
+              font.pixelSize: Style.space(7.5)
               font.bold: true
               anchors.centerIn: parent
             }
-            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.fitZoom() }
+            MouseArea { id: fitMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.fitZoom() }
+            PanelToolTip { visible: fitMouse.containsMouse; text: "Fit image to window (0)" }
           }
         }
 
@@ -394,18 +397,13 @@ Rectangle {
 
         // External System Editor (Tensaku)
         Rectangle {
-          height: Style.space(26); width: tensakuBtnTxt.implicitWidth + Style.space(14); radius: Style.space(4)
-          color: Util.alpha(Color.popups.text || Color.text, 0.08)
-          border.width: 1
-          border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
-          Row {
-            id: tensakuBtnTxt
-            anchors.centerIn: parent; spacing: Style.space(4)
-            Text { text: "󰏫"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(9); anchors.verticalCenter: parent.verticalCenter }
-            Text { text: "Tensaku"; color: Color.popups.text || Color.text; font.family: Style.font.menuFamily; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
-          }
+          width: Style.space(24); height: Style.space(24); radius: Style.space(4)
+          color: tensakuMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06)
+          border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.12)
+          Text { text: "󰏫"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(10); anchors.centerIn: parent }
           MouseArea {
-            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+            id: tensakuMouse
+            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
             onClicked: {
               if (root.imagePath) {
                 Quickshell.execDetached(["tensaku-edit", root.imagePath])
@@ -413,22 +411,18 @@ Rectangle {
               }
             }
           }
+          PanelToolTip { visible: tensakuMouse.containsMouse; text: "Open in Tensaku editor" }
         }
 
         // OCR Action Button
         Rectangle {
-          height: Style.space(26); width: ocrBtnTxt.implicitWidth + Style.space(12); radius: Style.space(4)
-          color: Util.alpha(Color.popups.text || Color.text, 0.08)
-          border.width: 1
-          border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
-          Row {
-            id: ocrBtnTxt
-            anchors.centerIn: parent; spacing: Style.space(3)
-            Text { text: "󰍉"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(9); anchors.verticalCenter: parent.verticalCenter }
-            Text { text: "OCR"; color: Color.popups.text || Color.text; font.family: Style.font.menuFamily; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
-          }
+          width: Style.space(24); height: Style.space(24); radius: Style.space(4)
+          color: ocrMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06)
+          border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.12)
+          Text { text: "󰐳"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(10); anchors.centerIn: parent }
           MouseArea {
-            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+            id: ocrMouse
+            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
             onClicked: {
               if (root.imagePath) {
                 root.runOcr(root.imagePath)
@@ -436,71 +430,101 @@ Rectangle {
               }
             }
           }
+          PanelToolTip { visible: ocrMouse.containsMouse; text: "Extract text (OCR)" }
         }
 
         // Separator
-        Rectangle { width: 1; height: Style.space(20); color: Util.alpha(Color.popups.text || Color.text, 0.12) }
+        Rectangle { width: 1; height: Style.space(18); color: Util.alpha(Color.popups.text || Color.text, 0.12) }
 
         // Undo
         Rectangle {
-          width: Style.space(26); height: Style.space(26); radius: Style.space(4)
-          color: root.actions.length > 0 ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.03)
+          width: Style.space(24); height: Style.space(24); radius: Style.space(4)
+          color: root.actions.length > 0 ? (undoMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.03)
           opacity: root.actions.length > 0 ? 1.0 : 0.4
-          Text { text: "󰕌"; color: Color.popups.text || Color.text; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
-          MouseArea { anchors.fill: parent; cursorShape: root.actions.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor; onClicked: root.undo() }
+          Text { text: "󰕌"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(11); anchors.centerIn: parent }
+          MouseArea {
+            id: undoMouse
+            anchors.fill: parent; hoverEnabled: true
+            cursorShape: root.actions.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: root.undo()
+          }
+          PanelToolTip { visible: undoMouse.containsMouse; text: "Undo (Ctrl+Z)" }
         }
 
         // Redo
         Rectangle {
-          width: Style.space(26); height: Style.space(26); radius: Style.space(4)
-          color: root.redoStack.length > 0 ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.03)
+          width: Style.space(24); height: Style.space(24); radius: Style.space(4)
+          color: root.redoStack.length > 0 ? (redoMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.03)
           opacity: root.redoStack.length > 0 ? 1.0 : 0.4
-          Text { text: "󰑎"; color: Color.popups.text || Color.text; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
-          MouseArea { anchors.fill: parent; cursorShape: root.redoStack.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor; onClicked: root.redo() }
+          Text { text: "󰑎"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(11); anchors.centerIn: parent }
+          MouseArea {
+            id: redoMouse
+            anchors.fill: parent; hoverEnabled: true
+            cursorShape: root.redoStack.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: root.redo()
+          }
+          PanelToolTip { visible: redoMouse.containsMouse; text: "Redo (Ctrl+Y)" }
         }
 
         // Clear Canvas
         Rectangle {
-          width: Style.space(26); height: Style.space(26); radius: Style.space(4)
-          color: Util.alpha(Color.urgent, 0.12)
-          Text { text: "󰃢"; color: Color.urgent; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
-          MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.clearAll() }
+          width: Style.space(24); height: Style.space(24); radius: Style.space(4)
+          color: clearMouse.containsMouse ? Util.alpha(Color.urgent, 0.22) : Util.alpha(Color.urgent, 0.12)
+          Text { text: "󰃢"; color: Color.urgent; font.pixelSize: Style.space(10); anchors.centerIn: parent }
+          MouseArea {
+            id: clearMouse
+            anchors.fill: parent; hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.clearAll()
+          }
+          PanelToolTip { visible: clearMouse.containsMouse; text: "Clear all annotations" }
         }
 
         // Separator
-        Rectangle { width: 1; height: Style.space(20); color: Util.alpha(Color.popups.text || Color.text, 0.12) }
+        Rectangle { width: 1; height: Style.space(18); color: Util.alpha(Color.popups.text || Color.text, 0.12) }
 
-        // Header Close Button (Strictly Right Aligned)
+        // Header Close Button
         Rectangle {
-          width: Style.space(28); height: Style.space(28); radius: Style.space(6)
-          color: Util.alpha(Color.popups.text || Color.text, 0.08)
-          Text { text: "✕"; color: Color.popups.text || Color.text; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
-          MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.close() }
+          width: Style.space(24); height: Style.space(24); radius: Style.space(4)
+          color: closeMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.08)
+          Text { text: "✕"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(9); font.bold: true; anchors.centerIn: parent }
+          MouseArea {
+            id: closeMouse
+            anchors.fill: parent; hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.close()
+          }
+          PanelToolTip { visible: closeMouse.containsMouse; text: "Close (Esc)" }
         }
       }
     }
 
     // ==========================================
-    // TOOLBAR ROW 2: TOOLS, COLORS, STROKES
+    // TOOLBAR ROW 2: DRAWING TOOLS & OPTIONS
     // ==========================================
     Rectangle {
       Layout.fillWidth: true
-      height: Style.space(44)
+      height: Style.space(34)
       color: Util.alpha(Color.popups.background || Color.background, 0.94)
       border.width: 1
       border.color: Util.alpha(Color.popups.border || Color.border, 0.3)
 
-      RowLayout {
+      Flickable {
         anchors.fill: parent
-        anchors.leftMargin: Style.space(12)
-        anchors.rightMargin: Style.space(12)
-        spacing: Style.space(6)
+        contentWidth: Math.max(width, toolsRowContent.width + Style.space(20))
+        contentHeight: height
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.HorizontalFlick
+        clip: true
 
-        // 1. Tool Selector Buttons
         Row {
+          id: toolsRowContent
+          anchors.verticalCenter: parent.verticalCenter
+          anchors.left: parent.left
+          anchors.leftMargin: Style.space(10)
           spacing: Style.space(3)
-          Layout.alignment: Qt.AlignVCenter
 
+          // 1. Tool Buttons
           Repeater {
             model: [
               { id: "pan", label: "✋", name: "Pan / View (V)" },
@@ -510,15 +534,15 @@ Rectangle {
               { id: "rect", label: "□", name: "Rectangle (R)" },
               { id: "circle", label: "○", name: "Circle (C)" },
               { id: "line", label: "—", name: "Line (L)" },
-              { id: "blur", label: "▒", name: "Redaction / Blur (B)" },
+              { id: "blur", label: "▒", name: "Blur / Redact (B)" },
               { id: "text", label: "🔤", name: "Text (T)" },
-              { id: "stamp", label: "①", name: "Callout Stamp (S)" },
+              { id: "stamp", label: "①", name: "Stamp (S)" },
               { id: "eraser", label: "⌫", name: "Eraser (E)" }
             ]
 
             Rectangle {
               required property var modelData
-              width: Style.space(26); height: Style.space(26); radius: Style.space(4)
+              width: Style.space(24); height: Style.space(24); radius: Style.space(4)
               color: root.currentTool === modelData.id ? Color.accent : (tMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.05))
               border.width: 1
               border.color: root.currentTool === modelData.id ? Color.accent : "transparent"
@@ -526,7 +550,7 @@ Rectangle {
               Text {
                 text: parent.modelData.label
                 color: root.currentTool === parent.modelData.id ? "#FFFFFF" : (Color.popups.text || Color.text)
-                font.pixelSize: Style.space(10)
+                font.pixelSize: Style.space(9.5)
                 font.bold: true
                 anchors.centerIn: parent
               }
@@ -541,103 +565,190 @@ Rectangle {
                   if (root.textInputActive) root.commitText()
                 }
               }
+              PanelToolTip { visible: tMouse.containsMouse; text: parent.modelData.name }
             }
           }
-        }
 
-        // Fill toggle (for rect / circle)
-        Rectangle {
-          visible: root.currentTool === "rect" || root.currentTool === "circle"
-          width: fillBtnTxt.implicitWidth + Style.space(10); height: Style.space(26); radius: Style.space(4)
-          color: root.fillShape ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.08)
+          // Separator when contextual options are active
+          Rectangle {
+            visible: root.currentTool === "rect" || root.currentTool === "circle" || root.currentTool === "stamp"
+            width: 1; height: Style.space(16); color: Util.alpha(Color.popups.text || Color.text, 0.15)
+            anchors.verticalCenter: parent.verticalCenter
+          }
+
+          // Fill toggle (for rect / circle)
+          Rectangle {
+            visible: root.currentTool === "rect" || root.currentTool === "circle"
+            width: fillBtnTxt.implicitWidth + Style.space(10); height: Style.space(24); radius: Style.space(4)
+            color: root.fillShape ? Color.accent : (fillMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.06))
+            border.width: 1; border.color: root.fillShape ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.12)
+            anchors.verticalCenter: parent.verticalCenter
+
+            Row {
+              id: fillBtnTxt
+              anchors.centerIn: parent; spacing: Style.space(3)
+              Text { text: "⬛"; font.pixelSize: Style.space(7); color: root.fillShape ? "#fff" : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
+              Text { text: root.fillShape ? "Fill" : "Outline"; color: root.fillShape ? "#fff" : (Color.popups.text || Color.text); font.family: Style.font.menuFamily; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+            }
+            MouseArea {
+              id: fillMouse
+              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+              onClicked: root.fillShape = !root.fillShape
+            }
+            PanelToolTip { visible: fillMouse.containsMouse; text: root.fillShape ? "Filled shape (click for outline)" : "Outline only (click for fill)" }
+          }
+
+          // Stamp options (when stamp tool active)
           Row {
-            id: fillBtnTxt
-            anchors.centerIn: parent; spacing: Style.space(3)
-            Text { text: "⬛"; font.pixelSize: Style.space(7); color: root.fillShape ? "#fff" : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
-            Text { text: root.fillShape ? "Fill" : "Outline"; color: root.fillShape ? "#fff" : (Color.popups.text || Color.text); font.family: Style.font.menuFamily; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
-          }
-          MouseArea {
-            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-            onClicked: root.fillShape = !root.fillShape
-          }
-        }
-
-        // Stamp options (when stamp tool active)
-        Row {
-          visible: root.currentTool === "stamp"
-          spacing: Style.space(2)
-          Repeater {
-            model: root.stampOptions
-            Rectangle {
-              required property var modelData
-              width: Style.space(24); height: Style.space(24); radius: Style.space(4)
-              color: root.currentStamp === modelData.id ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.06)
-              Text { text: parent.modelData.label; font.pixelSize: Style.space(9); anchors.centerIn: parent }
-              MouseArea {
-                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                onClicked: root.currentStamp = parent.modelData.id
+            visible: root.currentTool === "stamp"
+            spacing: Style.space(2)
+            anchors.verticalCenter: parent.verticalCenter
+            Repeater {
+              model: root.stampOptions
+              Rectangle {
+                required property var modelData
+                width: Style.space(22); height: Style.space(22); radius: Style.space(4)
+                color: root.currentStamp === modelData.id ? Color.accent : (sMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.06))
+                Text { text: parent.modelData.label; font.pixelSize: Style.space(8.5); anchors.centerIn: parent }
+                MouseArea {
+                  id: sMouse
+                  anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.currentStamp = parent.modelData.id
+                }
+                PanelToolTip { visible: sMouse.containsMouse; text: parent.modelData.name }
               }
             }
           }
         }
+      }
+    }
 
-        // Separator
-        Rectangle { width: 1; height: Style.space(18); color: Util.alpha(Color.popups.text || Color.text, 0.12) }
+    // ==========================================
+    // TOOLBAR ROW 3: STYLING (STROKE & COLOR)
+    // ==========================================
+    Rectangle {
+      Layout.fillWidth: true
+      height: Style.space(30)
+      color: Util.alpha(Color.popups.background || Color.background, 0.90)
+      border.width: 1
+      border.color: Util.alpha(Color.popups.border || Color.border, 0.2)
 
-        // Stroke width selector
+      Flickable {
+        anchors.fill: parent
+        contentWidth: Math.max(width, stylingRowContent.width + Style.space(20))
+        contentHeight: height
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.HorizontalFlick
+        clip: true
+
         Row {
-          spacing: Style.space(3)
-          Repeater {
-            model: root.strokeSizes
-            Rectangle {
-              required property var modelData
-              width: Style.space(26); height: Style.space(24); radius: Style.space(4)
-              color: root.strokeWidth === modelData.val ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.05)
-              border.width: 1
-              border.color: root.strokeWidth === modelData.val ? Color.accent : "transparent"
+          id: stylingRowContent
+          anchors.verticalCenter: parent.verticalCenter
+          anchors.left: parent.left
+          anchors.leftMargin: Style.space(10)
+          spacing: Style.space(6)
 
-              Text {
-                text: parent.modelData.label
-                color: root.strokeWidth === parent.modelData.val ? Color.accent : (Color.popups.text || Color.text)
-                font.family: Style.font.menuFamily
-                font.pixelSize: Style.space(8)
-                font.bold: true
-                anchors.centerIn: parent
-              }
+          // Stroke Label
+          Text {
+            text: "Size:"
+            color: Util.alpha(Color.popups.text || Color.text, 0.6)
+            font.family: Style.font.menuFamily
+            font.pixelSize: Style.space(8)
+            font.bold: true
+            anchors.verticalCenter: parent.verticalCenter
+          }
 
-              MouseArea {
-                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                onClicked: root.strokeWidth = parent.modelData.val
+          // Stroke width selector
+          Row {
+            spacing: Style.space(2)
+            anchors.verticalCenter: parent.verticalCenter
+            Repeater {
+              model: root.strokeSizes
+              Rectangle {
+                required property var modelData
+                width: Style.space(24); height: Style.space(20); radius: Style.space(3)
+                color: root.strokeWidth === modelData.val ? Util.alpha(Color.accent, 0.3) : (szMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
+                border.width: 1
+                border.color: root.strokeWidth === modelData.val ? Color.accent : "transparent"
+
+                Text {
+                  text: parent.modelData.label
+                  color: root.strokeWidth === parent.modelData.val ? Color.accent : (Color.popups.text || Color.text)
+                  font.family: Style.font.menuFamily
+                  font.pixelSize: Style.space(7.5)
+                  font.bold: true
+                  anchors.centerIn: parent
+                }
+
+                MouseArea {
+                  id: szMouse
+                  anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.strokeWidth = parent.modelData.val
+                }
+                PanelToolTip { visible: szMouse.containsMouse; text: "Stroke: " + parent.modelData.val + "px" }
               }
             }
           }
-        }
 
-        // Separator
-        Rectangle { width: 1; height: Style.space(18); color: Util.alpha(Color.popups.text || Color.text, 0.12) }
+          // Separator
+          Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
 
-        // Color Palette
-        Row {
-          spacing: Style.space(4)
-          Repeater {
-            model: root.colorPalette
-            Rectangle {
-              required property string modelData
-              width: Style.space(18); height: Style.space(18); radius: Style.space(9)
-              color: modelData
-              border.width: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? 2 : 1
-              border.color: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.2)
-              scale: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? 1.25 : 1.0
+          // Color Label
+          Text {
+            text: "Color:"
+            color: Util.alpha(Color.popups.text || Color.text, 0.6)
+            font.family: Style.font.menuFamily
+            font.pixelSize: Style.space(8)
+            font.bold: true
+            anchors.verticalCenter: parent.verticalCenter
+          }
 
-              MouseArea {
-                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                onClicked: root.currentColor = parent.modelData
+          // Color Palette Swatches
+          Row {
+            spacing: Style.space(3)
+            anchors.verticalCenter: parent.verticalCenter
+            Repeater {
+              model: root.colorPalette
+              Rectangle {
+                required property string modelData
+                width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                color: modelData
+                border.width: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? 2 : 1
+                border.color: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.2)
+                scale: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? 1.2 : 1.0
+
+                MouseArea {
+                  id: palMouse
+                  anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.currentColor = parent.modelData
+                }
+                PanelToolTip { visible: palMouse.containsMouse; text: modelData }
               }
             }
           }
-        }
 
-        Item { Layout.fillWidth: true }
+          // Current Color Preview dot + Hex
+          Row {
+            spacing: Style.space(4)
+            anchors.verticalCenter: parent.verticalCenter
+
+            Rectangle {
+              width: Style.space(14); height: Style.space(14); radius: Style.space(7)
+              color: root.currentColor
+              border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.3)
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Text {
+              text: String(root.currentColor).toUpperCase()
+              color: Util.alpha(Color.popups.text || Color.text, 0.7)
+              font.family: "monospace"
+              font.pixelSize: Style.space(7.5)
+              font.bold: true
+              anchors.verticalCenter: parent.verticalCenter
+            }
+          }
+        }
       }
     }
 
@@ -899,122 +1010,149 @@ Rectangle {
     // ==========================================
     Rectangle {
       Layout.fillWidth: true
-      height: Style.space(46)
+      height: Style.space(42)
       color: Util.alpha(Color.popups.background || Color.background, 0.98)
       border.width: 1
       border.color: Util.alpha(Color.popups.border || Color.border, 0.4)
 
       RowLayout {
         anchors.fill: parent
-        anchors.leftMargin: Style.space(16)
-        anchors.rightMargin: Style.space(16)
-        spacing: Style.space(10)
+        anchors.leftMargin: Style.space(12)
+        anchors.rightMargin: Style.space(12)
+        spacing: Style.space(8)
 
         // Annotations count info
-        Text {
-          text: root.actions.length + " annotations • Tool: " + root.currentTool.toUpperCase()
-          color: Util.alpha(Color.popups.text || Color.text, 0.6)
-          font.family: Style.font.menuFamily
-          font.pixelSize: Style.space(9)
+        Row {
+          spacing: Style.space(5)
           Layout.alignment: Qt.AlignVCenter
+
+          Rectangle {
+            width: Style.space(7); height: Style.space(7); radius: Style.space(3.5)
+            color: root.actions.length > 0 ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.25)
+            anchors.verticalCenter: parent.verticalCenter
+          }
+
+          Text {
+            text: root.actions.length > 0 ? (root.actions.length + (root.actions.length === 1 ? " edit" : " edits")) : "Clean"
+            color: Util.alpha(Color.popups.text || Color.text, 0.6)
+            font.family: Style.font.menuFamily
+            font.pixelSize: Style.space(8.5)
+            font.bold: true
+            anchors.verticalCenter: parent.verticalCenter
+            Layout.maximumWidth: Style.space(80)
+            elide: Text.ElideRight
+          }
         }
 
         Item { Layout.fillWidth: true }
 
-        // Cancel / Dismiss
-        Rectangle {
-          height: Style.space(28); width: Style.space(68); radius: Style.space(4)
-          color: Util.alpha(Color.popups.text || Color.text, 0.08)
-          Text {
-            text: "Cancel"
-            color: Color.popups.text || Color.text
-            font.family: Style.font.menuFamily
-            font.pixelSize: Style.font.caption
-            anchors.centerIn: parent
-          }
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.close()
-          }
-        }
+        // Action buttons
+        Row {
+          spacing: Style.space(5)
+          Layout.alignment: Qt.AlignVCenter
 
-        // Copy Clean Original
-        Rectangle {
-          height: Style.space(28); width: copyOrigTxt.implicitWidth + Style.space(16); radius: Style.space(4)
-          color: Util.alpha(Color.popups.text || Color.text, 0.08)
-          border.width: 1
-          border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
-          Row {
-            id: copyOrigTxt
-            anchors.centerIn: parent; spacing: Style.space(4)
-            Text { text: "󰆏"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(9); anchors.verticalCenter: parent.verticalCenter }
-            Text { text: "Copy Original"; color: Color.popups.text || Color.text; font.family: Style.font.menuFamily; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
-          }
-          MouseArea {
-            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-            onClicked: {
-              if (root.imagePath) {
-                Quickshell.execDetached(["bash", "-c", "wl-copy --type image/png < " + Util.shellQuote(root.imagePath) + " && notify-send -a \"ReClip\" \"Original Image Copied\" \"Loaded to clipboard\""])
-                root.close()
-              }
-            }
-          }
-        }
-
-        // Save to File (Pictures/Screenshots)
-        Rectangle {
-          height: Style.space(28); width: saveFileTxt.implicitWidth + Style.space(16); radius: Style.space(4)
-          color: Util.alpha(Color.popups.text || Color.text, 0.1)
-          border.width: 1
-          border.color: Util.alpha(Color.popups.text || Color.text, 0.2)
-
-          Row {
-            id: saveFileTxt
-            anchors.centerIn: parent
-            spacing: Style.space(4)
-            Text { text: "💾"; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
+          // Cancel / Dismiss
+          Rectangle {
+            height: Style.space(26); width: Style.space(54); radius: Style.space(4)
+            color: cancelMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.06)
+            border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.12)
             Text {
-              text: "Save to File"
+              text: "Cancel"
               color: Color.popups.text || Color.text
               font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(8)
+              font.pixelSize: Style.space(8.5)
               font.bold: true
-              anchors.verticalCenter: parent.verticalCenter
+              anchors.centerIn: parent
             }
-          }
-
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.exportImage("file")
-          }
-        }
-
-        // Copy to Clipboard (wl-copy)
-        Rectangle {
-          height: Style.space(28); width: copyClipTxt.implicitWidth + Style.space(18); radius: Style.space(4)
-          color: Color.accent
-
-          Row {
-            id: copyClipTxt
-            anchors.centerIn: parent
-            spacing: Style.space(4)
-            Text { text: "󰆏"; color: "#FFFFFF"; font.family: Style.font.menuFamily; font.pixelSize: Style.font.caption; anchors.verticalCenter: parent.verticalCenter }
-            Text {
-              text: "Copy & Save to Feed"
-              color: "#FFFFFF"
-              font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(8)
-              font.bold: true
-              anchors.verticalCenter: parent.verticalCenter
+            MouseArea {
+              id: cancelMouse
+              anchors.fill: parent; hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.close()
             }
+            PanelToolTip { visible: cancelMouse.containsMouse; text: "Discard edits and close (Esc)" }
           }
 
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.exportImage("clipboard")
+          // Copy Clean Original
+          Rectangle {
+            height: Style.space(26); width: copyOrigTxt.implicitWidth + Style.space(12); radius: Style.space(4)
+            color: origMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.08)
+            border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
+            Row {
+              id: copyOrigTxt
+              anchors.centerIn: parent; spacing: Style.space(4)
+              Text { text: "󰆏"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(9); anchors.verticalCenter: parent.verticalCenter }
+              Text { text: "Original"; color: Color.popups.text || Color.text; font.family: Style.font.menuFamily; font.pixelSize: Style.space(8.5); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+            }
+            MouseArea {
+              id: origMouse
+              anchors.fill: parent; hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                if (root.imagePath) {
+                  Quickshell.execDetached(["bash", "-c", "wl-copy --type image/png < " + Util.shellQuote(root.imagePath) + " && notify-send -a \"ReClip\" \"Original Image Copied\" \"Loaded to clipboard\""])
+                  root.close()
+                }
+              }
+            }
+            PanelToolTip { visible: origMouse.containsMouse; text: "Copy clean original to clipboard" }
+          }
+
+          // Save to File (Pictures/Screenshots)
+          Rectangle {
+            height: Style.space(26); width: saveFileTxt.implicitWidth + Style.space(12); radius: Style.space(4)
+            color: saveMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.08)
+            border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.2)
+
+            Row {
+              id: saveFileTxt
+              anchors.centerIn: parent; spacing: Style.space(4)
+              Text { text: "💾"; font.pixelSize: Style.space(8.5); anchors.verticalCenter: parent.verticalCenter }
+              Text {
+                text: "Save File"
+                color: Color.popups.text || Color.text
+                font.family: Style.font.menuFamily
+                font.pixelSize: Style.space(8.5)
+                font.bold: true
+                anchors.verticalCenter: parent.verticalCenter
+              }
+            }
+
+            MouseArea {
+              id: saveMouse
+              anchors.fill: parent; hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.exportImage("file")
+            }
+            PanelToolTip { visible: saveMouse.containsMouse; text: "Save to ~/Pictures/Screenshots/" }
+          }
+
+          // Copy to Clipboard (wl-copy)
+          Rectangle {
+            height: Style.space(26); width: copyClipTxt.implicitWidth + Style.space(14); radius: Style.space(4)
+            color: copyClipMouse.containsMouse ? Qt.lighter(Color.accent, 1.1) : Color.accent
+
+            Row {
+              id: copyClipTxt
+              anchors.centerIn: parent; spacing: Style.space(4)
+              Text { text: "󰆏"; color: "#FFFFFF"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(9); anchors.verticalCenter: parent.verticalCenter }
+              Text {
+                text: "Copy & Save"
+                color: "#FFFFFF"
+                font.family: Style.font.menuFamily
+                font.pixelSize: Style.space(8.5)
+                font.bold: true
+                anchors.verticalCenter: parent.verticalCenter
+              }
+            }
+
+            MouseArea {
+              id: copyClipMouse
+              anchors.fill: parent; hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.exportImage("clipboard")
+            }
+            PanelToolTip { visible: copyClipMouse.containsMouse; text: "Copy annotated image & save to feed" }
           }
         }
       }
