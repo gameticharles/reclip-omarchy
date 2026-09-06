@@ -213,31 +213,26 @@ Rectangle {
   property var currentAction: null
   property bool isDrawing: false
 
-  onCurrentColorChanged: {
-    root.addRecentColor(root.currentColor)
+  function applyPickedColor(hex) {
+    if (!hex) return
+    var col = String(hex)
+    root.currentColor = col
+    root.addRecentColor(col)
     if (root.activeColorTarget === "fill") {
-      root.setSelectedFillColor(root.currentColor)
+      root.setSelectedFillColor(col)
       root.activeColorTarget = "stroke"
       return
     }
     if (root.activeColorTarget === "shadow") {
-      root.setSelectedShadowColor(root.currentColor)
+      root.setSelectedShadowColor(col)
       root.activeColorTarget = "stroke"
       return
     }
-    if (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) {
-      var act = root.actions[root.selectedActionIndex]
-      if (act && String(act.color) !== String(root.currentColor)) {
-        root.pushUndoState()
-        var next = root.actions.slice()
-        var cloned = JSON.parse(JSON.stringify(act))
-        cloned.color = String(root.currentColor)
-        if (!cloned.fillColor) cloned.fillColor = String(root.currentColor)
-        next[root.selectedActionIndex] = cloned
-        root.actions = next
-        annotationCanvas.requestPaint()
-      }
-    }
+    root.setSelectedStrokeColor(col)
+  }
+
+  onCurrentColorChanged: {
+    root.applyPickedColor(root.currentColor)
   }
 
   onStrokeWidthChanged: {
@@ -2436,925 +2431,7 @@ Rectangle {
     }
 
     // ==========================================
-    // TOOLBAR ROW 3: STYLING (STROKE & COLOR)
-    // ==========================================
-    Rectangle {
-      Layout.fillWidth: true
-      height: Style.space(30)
-      color: Util.alpha(Color.popups.background || Color.background, 0.90)
-      border.width: 1
-      border.color: Util.alpha(Color.popups.border || Color.border, 0.2)
-
-      Flickable {
-        anchors.fill: parent
-        contentWidth: Math.max(width, stylingRowContent.width + Style.space(20))
-        contentHeight: height
-        boundsBehavior: Flickable.StopAtBounds
-        flickableDirection: Flickable.HorizontalFlick
-        clip: true
-
-        Row {
-          id: stylingRowContent
-          anchors.verticalCenter: parent.verticalCenter
-          anchors.left: parent.left
-          anchors.leftMargin: Style.space(10)
-          spacing: Style.space(6)
-
-          // ----------------------------------------------------
-          // 1. RECT & CIRCLE: INTELLIGENT STROKE & FILL SECTIONS
-          // ----------------------------------------------------
-          Row {
-            visible: root.currentTool === "rect" || root.currentTool === "circle"
-            spacing: Style.space(6)
-            anchors.verticalCenter: parent.verticalCenter
-
-            // A. Stroke Section
-            Row {
-              spacing: Style.space(3)
-              anchors.verticalCenter: parent.verticalCenter
-
-              Text {
-                text: "Stroke:"
-                color: Util.alpha(Color.popups.text || Color.text, 0.6)
-                font.family: Style.font.menuFamily
-                font.pixelSize: Style.space(8)
-                font.bold: true
-                anchors.verticalCenter: parent.verticalCenter
-              }
-
-              // Stroke width pills: 0 (None), 2, 4, 8, 14
-              Repeater {
-                model: root.shapeStrokeSizes
-                Rectangle {
-                  required property var modelData
-                  width: Style.space(22); height: Style.space(20); radius: Style.space(3)
-                  color: root.strokeWidth === modelData.val ? Util.alpha(Color.accent, 0.3) : (rswMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
-                  border.width: 1
-                  border.color: root.strokeWidth === modelData.val ? Color.accent : "transparent"
-                  anchors.verticalCenter: parent.verticalCenter
-
-                  Text {
-                    text: parent.modelData.label
-                    color: root.strokeWidth === parent.modelData.val ? Color.accent : (Color.popups.text || Color.text)
-                    font.family: Style.font.menuFamily
-                    font.pixelSize: Style.space(7.5)
-                    font.bold: true
-                    anchors.centerIn: parent
-                  }
-                  MouseArea {
-                    id: rswMouse
-                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.setSelectedStrokeWidth(parent.modelData.val)
-                  }
-                  PanelToolTip { visible: rswMouse.containsMouse; text: parent.modelData.tip }
-                }
-              }
-
-              // Stroke Color Swatches (visible when stroke width > 0)
-              Row {
-                visible: root.strokeWidth > 0
-                spacing: Style.space(2)
-                anchors.verticalCenter: parent.verticalCenter
-
-                Repeater {
-                  model: root.colorPalette
-                  Rectangle {
-                    required property string modelData
-                    width: Style.space(14); height: Style.space(14); radius: Style.space(7)
-                    color: modelData
-                    border.width: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? 2 : 1
-                    border.color: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.2)
-                    scale: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? 1.2 : 1.0
-                    anchors.verticalCenter: parent.verticalCenter
-
-                    MouseArea {
-                      id: rscMouse
-                      anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                      onClicked: root.setSelectedStrokeColor(parent.modelData)
-                    }
-                    PanelToolTip { visible: rscMouse.containsMouse; text: "Stroke: " + parent.modelData }
-                  }
-                }
-
-                // Stroke Eyedropper
-                Rectangle {
-                  width: Style.space(18); height: Style.space(18); radius: Style.space(9)
-                  color: rseMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
-                  border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
-                  anchors.verticalCenter: parent.verticalCenter
-                  Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(8.5); anchors.centerIn: parent }
-                  MouseArea {
-                    id: rseMouse
-                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                      root.activeColorTarget = "stroke"
-                      root.requestScreenPick()
-                    }
-                  }
-                  PanelToolTip { visible: rseMouse.containsMouse; text: "Pick stroke color from screen" }
-                }
-              }
-            }
-
-            // Separator between Stroke & Fill
-            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
-
-            // B. Fill Section
-            Row {
-              spacing: Style.space(3)
-              anchors.verticalCenter: parent.verticalCenter
-
-              Text {
-                text: "Fill:"
-                color: Util.alpha(Color.popups.text || Color.text, 0.6)
-                font.family: Style.font.menuFamily
-                font.pixelSize: Style.space(8)
-                font.bold: true
-                anchors.verticalCenter: parent.verticalCenter
-              }
-
-              // Fill Mode pills
-              Repeater {
-                model: root.fillModes
-                Rectangle {
-                  required property var modelData
-                  width: rfmRow.implicitWidth + Style.space(8); height: Style.space(20); radius: Style.space(3)
-                  color: root.fillMode === modelData.id ? Util.alpha(Color.accent, 0.3) : (rfmMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
-                  border.width: 1
-                  border.color: root.fillMode === modelData.id ? Color.accent : "transparent"
-                  anchors.verticalCenter: parent.verticalCenter
-
-                  Row {
-                    id: rfmRow
-                    anchors.centerIn: parent; spacing: Style.space(2)
-                    Text { text: parent.parent.modelData.icon; font.pixelSize: Style.space(7); color: root.fillMode === parent.parent.modelData.id ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
-                    Text { text: parent.parent.modelData.label; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true; color: root.fillMode === parent.parent.modelData.id ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
-                  }
-                  MouseArea {
-                    id: rfmMouse
-                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.setSelectedFillMode(parent.modelData.id)
-                  }
-                  PanelToolTip { visible: rfmMouse.containsMouse; text: parent.modelData.tip }
-                }
-              }
-
-              // Fill Color Swatches (INTELLIGENTLY VISIBLE ONLY WHEN FILL MODE IS NOT "none")
-              Row {
-                visible: root.fillMode !== "none"
-                spacing: Style.space(2)
-                anchors.verticalCenter: parent.verticalCenter
-
-                Repeater {
-                  model: root.colorPalette
-                  Rectangle {
-                    required property string modelData
-                    property string curFill: String(root.fillColor || root.currentColor)
-                    width: Style.space(14); height: Style.space(14); radius: Style.space(7)
-                    color: modelData
-                    border.width: curFill.toLowerCase() === String(modelData).toLowerCase() ? 2 : 1
-                    border.color: curFill.toLowerCase() === String(modelData).toLowerCase() ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.2)
-                    scale: curFill.toLowerCase() === String(modelData).toLowerCase() ? 1.2 : 1.0
-                    anchors.verticalCenter: parent.verticalCenter
-
-                    MouseArea {
-                      id: rfcMouse
-                      anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                      onClicked: root.setSelectedFillColor(parent.modelData)
-                    }
-                    PanelToolTip { visible: rfcMouse.containsMouse; text: "Fill: " + parent.modelData }
-                  }
-                }
-
-                // Fill Eyedropper
-                Rectangle {
-                  width: Style.space(18); height: Style.space(18); radius: Style.space(9)
-                  color: rfeMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
-                  border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
-                  anchors.verticalCenter: parent.verticalCenter
-                  Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(8.5); anchors.centerIn: parent }
-                  MouseArea {
-                    id: rfeMouse
-                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                      root.activeColorTarget = "fill"
-                      root.requestScreenPick()
-                    }
-                  }
-                  PanelToolTip { visible: rfeMouse.containsMouse; text: "Pick fill color from screen" }
-                }
-              }
-            }
-
-            // Separator between Fill & Shadow
-            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
-
-            // C. Drop Shadow Section
-            Row {
-              spacing: Style.space(3)
-              anchors.verticalCenter: parent.verticalCenter
-
-              // Shadow Toggle Button
-              Rectangle {
-                width: rshTogRow.implicitWidth + Style.space(8); height: Style.space(20); radius: Style.space(3)
-                color: root.dropShadow ? Util.alpha(Color.accent, 0.3) : (rshTogMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
-                border.width: 1
-                border.color: root.dropShadow ? Color.accent : "transparent"
-                anchors.verticalCenter: parent.verticalCenter
-
-                Row {
-                  id: rshTogRow
-                  anchors.centerIn: parent; spacing: Style.space(2)
-                  Text { text: "◩"; font.pixelSize: Style.space(7.5); color: root.dropShadow ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
-                  Text { text: "Shadow"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true; color: root.dropShadow ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
-                }
-                MouseArea {
-                  id: rshTogMouse
-                  anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                  onClicked: root.toggleSelectedShadow()
-                }
-                PanelToolTip { visible: rshTogMouse.containsMouse; text: root.dropShadow ? "Drop shadow enabled (click to disable)" : "Enable drop shadow" }
-              }
-
-              // Shadow quick controls when active
-              Row {
-                visible: root.dropShadow
-                spacing: Style.space(2)
-                anchors.verticalCenter: parent.verticalCenter
-
-                Repeater {
-                  model: root.shadowBlurPresets
-                  Rectangle {
-                    required property var modelData
-                    width: Style.space(16); height: Style.space(18); radius: Style.space(3)
-                    color: root.dropShadowBlur === modelData.val ? Util.alpha(Color.accent, 0.3) : (rsbMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
-                    border.width: 1; border.color: root.dropShadowBlur === modelData.val ? Color.accent : "transparent"
-                    anchors.verticalCenter: parent.verticalCenter
-                    Text { text: parent.modelData.label; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7); font.bold: true; color: root.dropShadowBlur === parent.modelData.val ? Color.accent : (Color.popups.text || Color.text); anchors.centerIn: parent }
-                    MouseArea { id: rsbMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setSelectedShadowBlur(parent.modelData.val) }
-                    PanelToolTip { visible: rsbMouse.containsMouse; text: parent.modelData.tip }
-                  }
-                }
-
-                Repeater {
-                  model: root.shadowColorPresets
-                  Rectangle {
-                    required property string modelData
-                    property string curCol: String(root.dropShadowColor)
-                    width: Style.space(14); height: Style.space(14); radius: Style.space(7)
-                    color: modelData
-                    border.width: curCol.toLowerCase() === String(modelData).toLowerCase() ? 2 : 1
-                    border.color: curCol.toLowerCase() === String(modelData).toLowerCase() ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.2)
-                    scale: curCol.toLowerCase() === String(modelData).toLowerCase() ? 1.2 : 1.0
-                    anchors.verticalCenter: parent.verticalCenter
-                    MouseArea { id: rscColMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setSelectedShadowColor(parent.modelData) }
-                    PanelToolTip { visible: rscColMouse.containsMouse; text: "Shadow: " + parent.modelData }
-                  }
-                }
-              }
-            }
-
-            // Separator before Studio & Hex
-            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
-          }
-
-          // ----------------------------------------------------
-          // 2. STROKE-ONLY TOOLS (LINE, ARROW, PEN, HIGHLIGHTER)
-          // ----------------------------------------------------
-          Row {
-            visible: root.currentTool === "line" || root.currentTool === "arrow" || root.currentTool === "pen" || root.currentTool === "highlighter"
-            spacing: Style.space(6)
-            anchors.verticalCenter: parent.verticalCenter
-
-            Text {
-              text: "Stroke:"
-              color: Util.alpha(Color.popups.text || Color.text, 0.6)
-              font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(8)
-              font.bold: true
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            // Widths: 2, 4, 8, 14
-            Row {
-              spacing: Style.space(2)
-              anchors.verticalCenter: parent.verticalCenter
-              Repeater {
-                model: root.strokeSizes
-                Rectangle {
-                  required property var modelData
-                  width: Style.space(24); height: Style.space(20); radius: Style.space(3)
-                  color: root.strokeWidth === modelData.val ? Util.alpha(Color.accent, 0.3) : (szMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
-                  border.width: 1
-                  border.color: root.strokeWidth === modelData.val ? Color.accent : "transparent"
-                  anchors.verticalCenter: parent.verticalCenter
-
-                  Text {
-                    text: parent.modelData.label
-                    color: root.strokeWidth === parent.modelData.val ? Color.accent : (Color.popups.text || Color.text)
-                    font.family: Style.font.menuFamily
-                    font.pixelSize: Style.space(7.5)
-                    font.bold: true
-                    anchors.centerIn: parent
-                  }
-                  MouseArea {
-                    id: szMouse
-                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.setSelectedStrokeWidth(parent.modelData.val)
-                  }
-                  PanelToolTip { visible: szMouse.containsMouse; text: "Stroke: " + parent.modelData.val + "px" }
-                }
-              }
-            }
-
-            // Separator
-            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
-
-            Text {
-              text: "Color:"
-              color: Util.alpha(Color.popups.text || Color.text, 0.6)
-              font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(8)
-              font.bold: true
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            // Color swatches
-            Row {
-              spacing: Style.space(3)
-              anchors.verticalCenter: parent.verticalCenter
-              Repeater {
-                model: root.colorPalette
-                Rectangle {
-                  required property string modelData
-                  width: Style.space(16); height: Style.space(16); radius: Style.space(8)
-                  color: modelData
-                  border.width: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? 2 : 1
-                  border.color: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.2)
-                  scale: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? 1.2 : 1.0
-                  anchors.verticalCenter: parent.verticalCenter
-
-                  MouseArea {
-                    id: palMouse
-                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.setSelectedStrokeColor(parent.modelData)
-                  }
-                  PanelToolTip { visible: palMouse.containsMouse; text: modelData }
-                }
-              }
-            }
-
-            // Eyedropper
-            Rectangle {
-              width: Style.space(20); height: Style.space(20); radius: Style.space(10)
-              color: eyedropMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
-              border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
-              anchors.verticalCenter: parent.verticalCenter
-              Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(9.5); anchors.centerIn: parent }
-              MouseArea {
-                id: eyedropMouse
-                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                  root.activeColorTarget = "stroke"
-                  root.requestScreenPick()
-                }
-              }
-              PanelToolTip { visible: eyedropMouse.containsMouse; text: "Eyedropper: pick stroke color from screen" }
-            }
-
-            // Separator between Stroke and Shadow
-            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
-
-            // Shadow Toggle for Line/Arrow/Pen
-            Rectangle {
-              visible: root.currentTool === "line" || root.currentTool === "arrow" || root.currentTool === "pen"
-              width: lshTogRow.implicitWidth + Style.space(8); height: Style.space(20); radius: Style.space(3)
-              color: root.dropShadow ? Util.alpha(Color.accent, 0.3) : (lshTogMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
-              border.width: 1; border.color: root.dropShadow ? Color.accent : "transparent"
-              anchors.verticalCenter: parent.verticalCenter
-
-              Row {
-                id: lshTogRow
-                anchors.centerIn: parent; spacing: Style.space(2)
-                Text { text: "◩"; font.pixelSize: Style.space(7.5); color: root.dropShadow ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
-                Text { text: "Shadow"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true; color: root.dropShadow ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
-              }
-              MouseArea {
-                id: lshTogMouse
-                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                onClicked: root.toggleSelectedShadow()
-              }
-              PanelToolTip { visible: lshTogMouse.containsMouse; text: root.dropShadow ? "Drop shadow enabled (click to disable)" : "Enable drop shadow" }
-            }
-
-            // Separator
-            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
-          }
-
-          // ----------------------------------------------------
-          // 3. TEXT TOOL
-          // ----------------------------------------------------
-          Row {
-            visible: root.currentTool === "text"
-            spacing: Style.space(6)
-            anchors.verticalCenter: parent.verticalCenter
-
-            Text {
-              text: "Font Size:"
-              color: Util.alpha(Color.popups.text || Color.text, 0.6)
-              font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(8)
-              font.bold: true
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Row {
-              spacing: Style.space(2)
-              anchors.verticalCenter: parent.verticalCenter
-              Repeater {
-                model: [
-                  { label: "S", val: 2, tip: "Small (14px)" },
-                  { label: "M", val: 4, tip: "Medium (20px)" },
-                  { label: "L", val: 8, tip: "Large (28px)" },
-                  { label: "XL", val: 14, tip: "Extra Large (40px)" }
-                ]
-                Rectangle {
-                  required property var modelData
-                  width: Style.space(24); height: Style.space(20); radius: Style.space(3)
-                  color: root.strokeWidth === modelData.val ? Util.alpha(Color.accent, 0.3) : (txtSzMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
-                  border.width: 1
-                  border.color: root.strokeWidth === modelData.val ? Color.accent : "transparent"
-                  anchors.verticalCenter: parent.verticalCenter
-
-                  Text {
-                    text: parent.modelData.label
-                    color: root.strokeWidth === parent.modelData.val ? Color.accent : (Color.popups.text || Color.text)
-                    font.family: Style.font.menuFamily
-                    font.pixelSize: Style.space(7.5)
-                    font.bold: true
-                    anchors.centerIn: parent
-                  }
-                  MouseArea {
-                    id: txtSzMouse
-                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.setSelectedWidth(parent.modelData.val)
-                  }
-                  PanelToolTip { visible: txtSzMouse.containsMouse; text: parent.modelData.tip }
-                }
-              }
-            }
-
-            // Card Box Toggle
-            Rectangle {
-              width: badgeBtnRow.implicitWidth + Style.space(8); height: Style.space(20); radius: Style.space(3)
-              color: root.textBox ? Util.alpha(Color.accent, 0.3) : (cardBoxMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
-              border.width: 1; border.color: root.textBox ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.15)
-              anchors.verticalCenter: parent.verticalCenter
-
-              Row {
-                id: badgeBtnRow
-                anchors.centerIn: parent; spacing: Style.space(3)
-                Text { text: "■"; color: root.textBox ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.6); font.pixelSize: Style.space(7.5); anchors.verticalCenter: parent.verticalCenter }
-                Text { text: "Card Box"; color: root.textBox ? Color.accent : (Color.popups.text || Color.text); font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
-              }
-              MouseArea {
-                id: cardBoxMouse
-                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                onClicked: root.textBox = !root.textBox
-              }
-              PanelToolTip { visible: cardBoxMouse.containsMouse; text: root.textBox ? "Card background enabled" : "Toggle solid high-contrast card box behind text" }
-            }
-
-            // Separator
-            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
-
-            Text {
-              text: "Text Color:"
-              color: Util.alpha(Color.popups.text || Color.text, 0.6)
-              font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(8)
-              font.bold: true
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Row {
-              spacing: Style.space(3)
-              anchors.verticalCenter: parent.verticalCenter
-              Repeater {
-                model: root.colorPalette
-                Rectangle {
-                  required property string modelData
-                  width: Style.space(16); height: Style.space(16); radius: Style.space(8)
-                  color: modelData
-                  border.width: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? 2 : 1
-                  border.color: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.2)
-                  scale: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? 1.2 : 1.0
-                  anchors.verticalCenter: parent.verticalCenter
-
-                  MouseArea {
-                    id: txtPalMouse
-                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.setSelectedColor(parent.modelData)
-                  }
-                  PanelToolTip { visible: txtPalMouse.containsMouse; text: modelData }
-                }
-              }
-            }
-
-            // Eyedropper
-            Rectangle {
-              width: Style.space(20); height: Style.space(20); radius: Style.space(10)
-              color: txtEdMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
-              border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
-              anchors.verticalCenter: parent.verticalCenter
-              Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(9.5); anchors.centerIn: parent }
-              MouseArea {
-                id: txtEdMouse
-                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                  root.activeColorTarget = "stroke"
-                  root.requestScreenPick()
-                }
-              }
-              PanelToolTip { visible: txtEdMouse.containsMouse; text: "Eyedropper: pick text color from screen" }
-            }
-
-            // Separator between Text Color and Shadow
-            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
-
-            // Shadow Toggle for Text
-            Rectangle {
-              width: tshTogRow.implicitWidth + Style.space(8); height: Style.space(20); radius: Style.space(3)
-              color: root.dropShadow ? Util.alpha(Color.accent, 0.3) : (tshTogMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
-              border.width: 1; border.color: root.dropShadow ? Color.accent : "transparent"
-              anchors.verticalCenter: parent.verticalCenter
-
-              Row {
-                id: tshTogRow
-                anchors.centerIn: parent; spacing: Style.space(2)
-                Text { text: "◩"; font.pixelSize: Style.space(7.5); color: root.dropShadow ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
-                Text { text: "Shadow"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true; color: root.dropShadow ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
-              }
-              MouseArea {
-                id: tshTogMouse
-                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                onClicked: root.toggleSelectedShadow()
-              }
-              PanelToolTip { visible: tshTogMouse.containsMouse; text: root.dropShadow ? "Drop shadow enabled (click to disable)" : "Enable drop shadow" }
-            }
-
-            // Separator
-            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
-          }
-
-          // ----------------------------------------------------
-          // 4. STAMP TOOL
-          // ----------------------------------------------------
-          Row {
-            visible: root.currentTool === "stamp"
-            spacing: Style.space(6)
-            anchors.verticalCenter: parent.verticalCenter
-
-            Text {
-              text: "Stamp Color:"
-              color: Util.alpha(Color.popups.text || Color.text, 0.6)
-              font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(8)
-              font.bold: true
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Row {
-              spacing: Style.space(3)
-              anchors.verticalCenter: parent.verticalCenter
-              Repeater {
-                model: root.colorPalette
-                Rectangle {
-                  required property string modelData
-                  width: Style.space(16); height: Style.space(16); radius: Style.space(8)
-                  color: modelData
-                  border.width: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? 2 : 1
-                  border.color: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.2)
-                  scale: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? 1.2 : 1.0
-                  anchors.verticalCenter: parent.verticalCenter
-
-                  MouseArea {
-                    id: stPalMouse
-                    anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                    onClicked: root.setSelectedColor(parent.modelData)
-                  }
-                  PanelToolTip { visible: stPalMouse.containsMouse; text: modelData }
-                }
-              }
-            }
-
-            // Eyedropper
-            Rectangle {
-              width: Style.space(20); height: Style.space(20); radius: Style.space(10)
-              color: stEdMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.16) : Util.alpha(Color.popups.text || Color.text, 0.06)
-              border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
-              anchors.verticalCenter: parent.verticalCenter
-              Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(9.5); anchors.centerIn: parent }
-              MouseArea {
-                id: stEdMouse
-                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                  root.activeColorTarget = "stroke"
-                  root.requestScreenPick()
-                }
-              }
-              PanelToolTip { visible: stEdMouse.containsMouse; text: "Eyedropper: pick stamp color" }
-            }
-
-            // Separator between Stamp Color and Shadow
-            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
-
-            // Shadow Toggle for Stamp
-            Rectangle {
-              width: stshTogRow.implicitWidth + Style.space(8); height: Style.space(20); radius: Style.space(3)
-              color: root.dropShadow ? Util.alpha(Color.accent, 0.3) : (stshTogMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.1) : Util.alpha(Color.popups.text || Color.text, 0.05))
-              border.width: 1; border.color: root.dropShadow ? Color.accent : "transparent"
-              anchors.verticalCenter: parent.verticalCenter
-
-              Row {
-                id: stshTogRow
-                anchors.centerIn: parent; spacing: Style.space(2)
-                Text { text: "◩"; font.pixelSize: Style.space(7.5); color: root.dropShadow ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
-                Text { text: "Shadow"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true; color: root.dropShadow ? Color.accent : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
-              }
-              MouseArea {
-                id: stshTogMouse
-                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                onClicked: root.toggleSelectedShadow()
-              }
-              PanelToolTip { visible: stshTogMouse.containsMouse; text: root.dropShadow ? "Drop shadow enabled (click to disable)" : "Enable drop shadow" }
-            }
-
-            // Separator
-            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
-          }
-
-          // ----------------------------------------------------
-          // 5. PIXELATE TOOL
-          // ----------------------------------------------------
-          Row {
-            visible: root.currentTool === "pixelate"
-            spacing: Style.space(4)
-            anchors.verticalCenter: parent.verticalCenter
-
-            Text {
-              text: "Mosaic Block Density:"
-              color: Util.alpha(Color.popups.text || Color.text, 0.65)
-              font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(8)
-              font.bold: true
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Repeater {
-              model: [
-                { label: "Fine (8px)", sz: 8 },
-                { label: "Medium (14px)", sz: 14 },
-                { label: "Coarse (22px)", sz: 22 }
-              ]
-              Rectangle {
-                required property var modelData
-                width: tpixTxt.implicitWidth + Style.space(8); height: Style.space(20); radius: Style.space(3)
-                color: (selectionOverlay.curAct && (selectionOverlay.curAct.pixelSize || 14) === modelData.sz) ? Color.accent : (tpixMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.05))
-                border.width: 1; border.color: (selectionOverlay.curAct && (selectionOverlay.curAct.pixelSize || 14) === modelData.sz) ? Color.accent : "transparent"
-                anchors.verticalCenter: parent.verticalCenter
-
-                Text {
-                  id: tpixTxt
-                  text: parent.modelData.label
-                  color: (selectionOverlay.curAct && (selectionOverlay.curAct.pixelSize || 14) === parent.modelData.sz) ? "#FFFFFF" : (Color.popups.text || Color.text)
-                  font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true
-                  anchors.centerIn: parent
-                }
-                MouseArea {
-                  id: tpixMouse
-                  anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                  onClicked: root.setSelectedPixelSize(parent.modelData.sz)
-                }
-                PanelToolTip { visible: tpixMouse.containsMouse; text: "Pixel block: " + parent.modelData.sz + "px" }
-              }
-            }
-          }
-
-          // ----------------------------------------------------
-          // 6. BLOCK HIGHLIGHT TOOL
-          // ----------------------------------------------------
-          Row {
-            visible: root.currentTool === "block_highlight"
-            spacing: Style.space(4)
-            anchors.verticalCenter: parent.verticalCenter
-
-            Text {
-              text: "Highlight Tint:"
-              color: Util.alpha(Color.popups.text || Color.text, 0.65)
-              font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(8)
-              font.bold: true
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Repeater {
-              model: ["#EF4444", "#F97316", "#EAB308", "#22C55E", "#06B6D4", "#3B82F6", "#8B5CF6"]
-              Rectangle {
-                required property string modelData
-                width: Style.space(16); height: Style.space(16); radius: Style.space(8)
-                color: modelData
-                border.width: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? 2 : 1
-                border.color: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.2)
-                scale: String(root.currentColor).toLowerCase() === String(modelData).toLowerCase() ? 1.2 : 1.0
-                anchors.verticalCenter: parent.verticalCenter
-                MouseArea {
-                  id: bhlPalMouse
-                  anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                  onClicked: root.setSelectedColor(parent.modelData)
-                }
-                PanelToolTip { visible: bhlPalMouse.containsMouse; text: modelData }
-              }
-            }
-
-            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.12); anchors.verticalCenter: parent.verticalCenter }
-          }
-
-          // ----------------------------------------------------
-          // 7. CROP TOOL
-          // ----------------------------------------------------
-          Row {
-            visible: root.currentTool === "crop"
-            spacing: Style.space(5)
-            anchors.verticalCenter: parent.verticalCenter
-
-            Text {
-              text: "Crop Ratio:"
-              color: Util.alpha(Color.popups.text || Color.text, 0.65)
-              font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(8)
-              font.bold: true
-              anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Repeater {
-              model: root.cropRatios
-              Rectangle {
-                required property var modelData
-                width: tcRatioTxt.implicitWidth + Style.space(8); height: Style.space(20); radius: Style.space(3)
-                color: root.cropRatio === modelData.id ? Color.accent : (tcRMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.05))
-                border.width: 1; border.color: root.cropRatio === modelData.id ? Color.accent : "transparent"
-                anchors.verticalCenter: parent.verticalCenter
-
-                Text {
-                  id: tcRatioTxt
-                  text: parent.modelData.label
-                  color: root.cropRatio === parent.modelData.id ? "#FFFFFF" : (Color.popups.text || Color.text)
-                  font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true
-                  anchors.centerIn: parent
-                }
-                MouseArea {
-                  id: tcRMouse
-                  anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                  onClicked: root.applyCropRatio(parent.modelData.id)
-                }
-                PanelToolTip { visible: tcRMouse.containsMouse; text: "Lock aspect ratio to " + parent.modelData.label }
-              }
-            }
-
-            Rectangle { width: 1; height: Style.space(14); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
-
-            // Crop Apply button
-            Rectangle {
-              width: cAppTxt.implicitWidth + Style.space(8); height: Style.space(20); radius: Style.space(3)
-              color: cAppMouse.containsMouse ? "#22C55E" : Util.alpha("#22C55E", 0.85)
-              anchors.verticalCenter: parent.verticalCenter
-              Text { id: cAppTxt; text: "✓ Apply"; color: "#FFFFFF"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); font.bold: true; anchors.centerIn: parent }
-              MouseArea {
-                id: cAppMouse
-                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                onClicked: root.applyCrop()
-              }
-              PanelToolTip { visible: cAppMouse.containsMouse; text: "Apply crop to image (Enter)" }
-            }
-
-            // Crop Cancel button
-            Rectangle {
-              width: cCanTxt.implicitWidth + Style.space(8); height: Style.space(20); radius: Style.space(3)
-              color: cCanMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.15) : Util.alpha(Color.popups.text || Color.text, 0.06)
-              border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.12)
-              anchors.verticalCenter: parent.verticalCenter
-              Text { id: cCanTxt; text: "✕ Cancel"; color: Color.popups.text || Color.text; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
-              MouseArea {
-                id: cCanMouse
-                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                onClicked: root.cancelCrop()
-              }
-              PanelToolTip { visible: cCanMouse.containsMouse; text: "Cancel crop (Esc)" }
-            }
-          }
-
-          // ----------------------------------------------------
-          // 8. SELECT & PAN & HINTS
-          // ----------------------------------------------------
-          Row {
-            visible: root.currentTool === "select" || root.currentTool === "pan" || root.currentTool === "eraser" || root.currentTool === "blur"
-            spacing: Style.space(4)
-            anchors.verticalCenter: parent.verticalCenter
-
-            Text {
-              text: {
-                if (root.currentTool === "select") {
-                  return selectionOverlay.curAct ? ("Selected " + root.getActionLabel(selectionOverlay.curAct) + " • Edit in floating pill or drag handles") : "↖ Select Tool: Click any annotation to select, move, scale, or style"
-                } else if (root.currentTool === "pan") {
-                  return "✋ Pan Mode: Click & drag image • Scroll to zoom • Space+Drag from any tool"
-                } else if (root.currentTool === "eraser") {
-                  return "⌫ Eraser: Click or drag over annotations to delete them"
-                } else if (root.currentTool === "blur") {
-                  return "▒ Blur Redact: Drag rectangle over sensitive info to obscure"
-                }
-                return ""
-              }
-              color: Util.alpha(Color.popups.text || Color.text, 0.7)
-              font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(8)
-              anchors.verticalCenter: parent.verticalCenter
-            }
-          }
-
-          // ----------------------------------------------------
-          // COLOR STUDIO & HEX INPUT (for color-enabled tools)
-          // ----------------------------------------------------
-          Row {
-            visible: root.currentTool !== "crop" && root.currentTool !== "pan" && root.currentTool !== "eraser" && root.currentTool !== "blur" && root.currentTool !== "pixelate"
-            spacing: Style.space(4)
-            anchors.verticalCenter: parent.verticalCenter
-
-            // Studio Color Modal Trigger
-            Rectangle {
-              width: Style.space(20); height: Style.space(20); radius: Style.space(10)
-              color: studioColorMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.06)
-              border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
-              anchors.verticalCenter: parent.verticalCenter
-              Text { text: "󰏘"; color: studioColorMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(9.5); anchors.centerIn: parent }
-              MouseArea {
-                id: studioColorMouse
-                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                onClicked: root.requestColorPicker()
-              }
-              PanelToolTip { visible: studioColorMouse.containsMouse; text: "Open Color Studio: custom palette, harmonies & shades" }
-            }
-
-            // Current Color Swatch + Interactive Hex Input
-            Rectangle {
-              height: Style.space(20)
-              width: hexEditRow.implicitWidth + Style.space(10)
-              radius: Style.space(10)
-              color: Util.alpha(Color.popups.text || Color.text, 0.06)
-              border.width: 1; border.color: Util.alpha(Color.popups.text || Color.text, 0.15)
-              anchors.verticalCenter: parent.verticalCenter
-
-              Row {
-                id: hexEditRow
-                anchors.centerIn: parent; spacing: Style.space(4)
-
-                Rectangle {
-                  width: Style.space(12); height: Style.space(12); radius: Style.space(6)
-                  color: root.currentColor
-                  border.width: 1; border.color: Util.alpha("#000000", 0.3)
-                  anchors.verticalCenter: parent.verticalCenter
-                }
-
-                TextInput {
-                  id: hexInput
-                  text: String(root.currentColor).toUpperCase()
-                  color: Color.popups.text || Color.text
-                  font.family: "monospace"
-                  font.pixelSize: Style.space(7.5)
-                  font.bold: true
-                  maximumLength: 7
-                  selectByMouse: true
-                  anchors.verticalCenter: parent.verticalCenter
-                  onAccepted: {
-                    var val = text.trim()
-                    if (val.indexOf("#") !== 0) val = "#" + val
-                    if (/^#[0-9A-Fa-f]{6}$/.test(val)) {
-                      root.setSelectedStrokeColor(val)
-                      root.showFeedback("Color set: " + val)
-                    } else {
-                      text = String(root.currentColor).toUpperCase()
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // ==========================================
-    // TOOLBAR ROW 4: ADVANCED TOOLS & TRANSFORMS
+    // TOOLBAR ROW 3: ADVANCED TOOLS & TRANSFORMS
     // ==========================================
     Rectangle {
       Layout.fillWidth: true
@@ -5125,7 +4202,7 @@ Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
 
                         Repeater {
-                          model: root.recentColors && root.recentColors.length > 0 ? root.recentColors : ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                          model: root.colorPalette
                           Rectangle {
                             required property string modelData
                             width: Style.space(12); height: Style.space(12); radius: Style.space(6)
@@ -5159,6 +4236,26 @@ Rectangle {
                             }
                           }
                           PanelToolTip { visible: sedMouse.containsMouse; text: "Pick stroke color from screen" }
+                        }
+
+                        // Color Studio for Stroke
+                        Rectangle {
+                          width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                          color: scStudioMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                          anchors.verticalCenter: parent.verticalCenter
+                          Text { text: "󰏘"; color: scStudioMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                          MouseArea {
+                            id: scStudioMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.activeColorTarget = "stroke"
+                              if (selectionOverlay.curAct && selectionOverlay.curAct.color) {
+                                root.currentColor = selectionOverlay.curAct.color
+                              }
+                              root.requestColorPicker()
+                            }
+                          }
+                          PanelToolTip { visible: scStudioMouse.containsMouse; text: "Open Color Studio (Custom Palette & Shades)" }
                         }
                       }
 
@@ -5345,7 +4442,7 @@ Rectangle {
                         }
 
                         Repeater {
-                          model: root.recentColors && root.recentColors.length > 0 ? root.recentColors : ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                          model: root.colorPalette
                           Rectangle {
                             required property string modelData
                             property string curFillCol: (selectionOverlay.curAct && (selectionOverlay.curAct.fillColor || selectionOverlay.curAct.color)) || ""
@@ -5381,6 +4478,25 @@ Rectangle {
                           }
                           PanelToolTip { visible: fedMouse.containsMouse; text: "Pick fill color from screen" }
                         }
+
+                        // Color Studio for Fill
+                        Rectangle {
+                          width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                          color: fcStudioMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                          anchors.verticalCenter: parent.verticalCenter
+                          Text { text: "󰏘"; color: fcStudioMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                          MouseArea {
+                            id: fcStudioMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.activeColorTarget = "fill"
+                              var cur = (selectionOverlay.curAct && (selectionOverlay.curAct.fillColor || selectionOverlay.curAct.color)) || root.fillColor
+                              if (cur) root.currentColor = cur
+                              root.requestColorPicker()
+                            }
+                          }
+                          PanelToolTip { visible: fcStudioMouse.containsMouse; text: "Open Color Studio (Custom Palette & Shades)" }
+                        }
                       }
                     }
                   }
@@ -5406,7 +4522,8 @@ Rectangle {
                       selectionOverlay.curAct.tool === "stamp" ||
                       selectionOverlay.curAct.tool === "pixelate" ||
                       selectionOverlay.curAct.tool === "blur" ||
-                      selectionOverlay.curAct.tool === "magnifier"
+                      selectionOverlay.curAct.tool === "magnifier" ||
+                      selectionOverlay.curAct.tool === "block_highlight"
                     ))
                     width: parent.width
                     height: visible ? Style.space(20) : 0
@@ -5698,12 +4815,12 @@ Rectangle {
                           PanelToolTip { visible: boxToggleMouse.containsMouse; text: (selectionOverlay.curAct && selectionOverlay.curAct.box) ? "Remove background card" : "Add high-contrast dark card box" }
                         }
 
-                        // Text Color Swatches (Using recentColors)
+                        // Text Color Swatches (Using colorPalette)
                         Row {
                           spacing: Style.space(2)
                           anchors.verticalCenter: parent.verticalCenter
                           Repeater {
-                            model: root.recentColors && root.recentColors.length > 0 ? root.recentColors : ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                            model: root.colorPalette
                             Rectangle {
                               required property string modelData
                               width: Style.space(12); height: Style.space(12); radius: Style.space(6)
@@ -5737,6 +4854,26 @@ Rectangle {
                               }
                             }
                             PanelToolTip { visible: tedMouse.containsMouse; text: "Pick text color from screen" }
+                          }
+
+                          // Color Studio for Text
+                          Rectangle {
+                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                            color: tcStudioMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "󰏘"; color: tcStudioMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                            MouseArea {
+                              id: tcStudioMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.activeColorTarget = "stroke"
+                                if (selectionOverlay.curAct && selectionOverlay.curAct.color) {
+                                  root.currentColor = selectionOverlay.curAct.color
+                                }
+                                root.requestColorPicker()
+                              }
+                            }
+                            PanelToolTip { visible: tcStudioMouse.containsMouse; text: "Open Color Studio (Custom Palette & Shades)" }
                           }
                         }
                       }
@@ -5849,12 +4986,12 @@ Rectangle {
                           onValueCommitted: function(val) { root.commitSelectedProperty("radius", val, "Stamp Radius") }
                         }
 
-                        // Stamp Color Swatches (Using recentColors)
+                        // Stamp Color Swatches (Using colorPalette)
                         Row {
                           spacing: Style.space(2)
                           anchors.verticalCenter: parent.verticalCenter
                           Repeater {
-                            model: root.recentColors && root.recentColors.length > 0 ? root.recentColors : ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                            model: root.colorPalette
                             Rectangle {
                               required property string modelData
                               width: Style.space(12); height: Style.space(12); radius: Style.space(6)
@@ -5888,6 +5025,26 @@ Rectangle {
                               }
                             }
                             PanelToolTip { visible: stedMouse.containsMouse; text: "Pick stamp color from screen" }
+                          }
+
+                          // Color Studio for Stamp
+                          Rectangle {
+                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                            color: stStudioMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "󰏘"; color: stStudioMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                            MouseArea {
+                              id: stStudioMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.activeColorTarget = "stroke"
+                                if (selectionOverlay.curAct && selectionOverlay.curAct.color) {
+                                  root.currentColor = selectionOverlay.curAct.color
+                                }
+                                root.requestColorPicker()
+                              }
+                            }
+                            PanelToolTip { visible: stStudioMouse.containsMouse; text: "Open Color Studio (Custom Palette & Shades)" }
                           }
                         }
                       }
@@ -5966,7 +5123,7 @@ Rectangle {
                           anchors.verticalCenter: parent.verticalCenter
 
                           Repeater {
-                            model: root.recentColors && root.recentColors.length > 0 ? root.recentColors : ["#EF4444", "#F97316", "#22C55E", "#3B82F6", "#8B5CF6", "#FFFFFF"]
+                            model: root.colorPalette
                             Rectangle {
                               required property string modelData
                               width: Style.space(12); height: Style.space(12); radius: Style.space(6)
@@ -6001,6 +5158,99 @@ Rectangle {
                             }
                             PanelToolTip { visible: medMouse.containsMouse; text: "Pick rim color from screen" }
                           }
+
+                          // Color Studio for Magnifier Rim
+                          Rectangle {
+                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                            color: medStudioMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "󰏘"; color: medStudioMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                            MouseArea {
+                              id: medStudioMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.activeColorTarget = "stroke"
+                                if (selectionOverlay.curAct && selectionOverlay.curAct.color) {
+                                  root.currentColor = selectionOverlay.curAct.color
+                                }
+                                root.requestColorPicker()
+                              }
+                            }
+                            PanelToolTip { visible: medStudioMouse.containsMouse; text: "Open Color Studio (Custom Palette & Shades)" }
+                          }
+                        }
+                      }
+
+                      // 7. BLOCK HIGHLIGHT CONTROLS (Tint Color Swatches, Eyedropper, Color Studio)
+                      Row {
+                        visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "block_highlight")
+                        spacing: Style.space(3)
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Text {
+                          text: "Highlight Tint:"
+                          color: Util.alpha(Color.popups.text || Color.text, 0.6)
+                          font.family: Style.font.menuFamily
+                          font.pixelSize: Style.space(7.5)
+                          font.bold: true
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        Repeater {
+                          model: root.colorPalette
+                          Rectangle {
+                            required property string modelData
+                            width: Style.space(12); height: Style.space(12); radius: Style.space(6)
+                            color: modelData
+                            border.width: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? 2 : 1
+                            border.color: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.25)
+                            scale: (selectionOverlay.curAct && String(selectionOverlay.curAct.color).toLowerCase() === String(modelData).toLowerCase()) ? 1.25 : 1.0
+                            anchors.verticalCenter: parent.verticalCenter
+
+                            MouseArea {
+                              id: bhlcMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: root.setSelectedColor(parent.modelData)
+                            }
+                            PanelToolTip { visible: bhlcMouse.containsMouse; text: "Tint: " + parent.modelData }
+                          }
+                        }
+
+                        // Eyedropper for Block Highlight
+                        Rectangle {
+                          width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                          color: bhledMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                          anchors.verticalCenter: parent.verticalCenter
+                          Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
+                          MouseArea {
+                            id: bhledMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.activeColorTarget = "stroke"
+                              root.requestScreenPick()
+                            }
+                          }
+                          PanelToolTip { visible: bhledMouse.containsMouse; text: "Pick tint color from screen" }
+                        }
+
+                        // Color Studio for Block Highlight
+                        Rectangle {
+                          width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                          color: bhlStudioMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                          anchors.verticalCenter: parent.verticalCenter
+                          Text { text: "󰏘"; color: bhlStudioMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                          MouseArea {
+                            id: bhlStudioMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.activeColorTarget = "stroke"
+                              if (selectionOverlay.curAct && selectionOverlay.curAct.color) {
+                                root.currentColor = selectionOverlay.curAct.color
+                              }
+                              root.requestColorPicker()
+                            }
+                          }
+                          PanelToolTip { visible: bhlStudioMouse.containsMouse; text: "Open Color Studio (Custom Palette & Shades)" }
                         }
                       }
                     }
@@ -6378,7 +5628,7 @@ Rectangle {
                         // Separator
                         Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.popups.text || Color.text, 0.15); anchors.verticalCenter: parent.verticalCenter }
 
-                        // Shadow Color Swatches (Using recentColors)
+                        // Shadow Color Swatches (Using colorPalette)
                         Text {
                           text: "Color:"
                           color: Util.alpha(Color.popups.text || Color.text, 0.55)
@@ -6389,7 +5639,7 @@ Rectangle {
                         }
 
                         Repeater {
-                          model: root.recentColors && root.recentColors.length > 0 ? root.recentColors : ["#000000", "#1E293B", "#3B82F6", "#EF4444", "#FFFFFF"]
+                          model: root.colorPalette
                           Rectangle {
                             required property string modelData
                             property string curCol: (selectionOverlay.curAct && selectionOverlay.curAct.shadowColor) || String(root.dropShadowColor)
@@ -6423,6 +5673,25 @@ Rectangle {
                             }
                           }
                           PanelToolTip { visible: shedMouse.containsMouse; text: "Pick shadow color from screen" }
+                        }
+
+                        // Shadow Color Studio Picker
+                        Rectangle {
+                          width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                          color: shStudioMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                          anchors.verticalCenter: parent.verticalCenter
+                          Text { text: "󰏘"; color: shStudioMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                          MouseArea {
+                            id: shStudioMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.activeColorTarget = "shadow"
+                              var cur = (selectionOverlay.curAct && selectionOverlay.curAct.shadowColor) || String(root.dropShadowColor)
+                              if (cur) root.currentColor = cur
+                              root.requestColorPicker()
+                            }
+                          }
+                          PanelToolTip { visible: shStudioMouse.containsMouse; text: "Open Color Studio (Custom Palette & Shades)" }
                         }
                       }
                     }

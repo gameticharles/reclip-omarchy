@@ -7773,7 +7773,7 @@ Panel {
       onColorSelected: function(hex) {
         root.selectColor(hex)
         if (imageEditorModal && imageEditorModal.visible) {
-          imageEditorModal.currentColor = hex
+          imageEditorModal.applyPickedColor(hex)
           imageEditorModal.showFeedback("Color set: " + hex)
         }
       }
@@ -7782,6 +7782,9 @@ Panel {
       }
       onClosed: function() {
         colorPickerModal.z = 100
+        if (imageEditorModal && imageEditorModal.visible) {
+          imageEditorModal.activeColorTarget = "stroke"
+        }
       }
     }
   }
