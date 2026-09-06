@@ -102,10 +102,31 @@ Rectangle {
   property int blurDispersion: 4
   property bool aspectRatioLocked: false
   property var scrubStartAct: null
+  property bool layerPanelOpen: false
+  property int layerRevision: 0
+
+  onActionsChanged: {
+    layerRevision++
+  }
 
   onSelectedActionIndexChanged: {
     if (selectedActionIndex < 0 || !actions[selectedActionIndex] || actions[selectedActionIndex].tool !== "text") {
       fontPickerOpen = false
+    }
+    if (selectedActionIndex >= 0 && root.layerPanelOpen && typeof layerListView !== "undefined" && layerListView && layerListView.count > 0) {
+      var uiIndex = root.actions.length - 1 - selectedActionIndex
+      if (uiIndex >= 0 && uiIndex < layerListView.count) {
+        layerListView.positionViewAtIndex(uiIndex, ListView.Contain)
+      }
+    }
+  }
+
+  onLayerPanelOpenChanged: {
+    if (layerPanelOpen && selectedActionIndex >= 0 && typeof layerListView !== "undefined" && layerListView && layerListView.count > 0) {
+      var uiIndex = root.actions.length - 1 - selectedActionIndex
+      if (uiIndex >= 0 && uiIndex < layerListView.count) {
+        layerListView.positionViewAtIndex(uiIndex, ListView.Contain)
+      }
     }
   }
 
@@ -719,6 +740,177 @@ Rectangle {
     return map[act.tool] || act.tool
   }
 
+  function getLayerTitle(act, idx) {
+    if (!act) return "Layer " + (idx + 1)
+    if (act.tool === "text") {
+      if (act.text && String(act.text).trim().length > 0) {
+        var txt = String(act.text).trim().replace(/\s+/g, " ")
+        return "Text: \"" + (txt.length > 14 ? (txt.substring(0, 14) + "…") : txt) + "\""
+      }
+      return "Text"
+    }
+    if (act.tool === "spotlight") {
+      return act.shape === "circle" ? "Spotlight (Circle)" : "Spotlight (Rect)"
+    }
+    if (act.tool === "blur") {
+      return act.shape === "circle" ? "Blur (Circle)" : "Blur (Rect)"
+    }
+    if (act.tool === "stamp") {
+      return "Stamp (" + (act.stampType || "number") + (act.stampValue !== undefined ? (": " + act.stampValue) : "") + ")"
+    }
+    if (act.tool === "magnifier") {
+      return "Magnifier (" + (act.zoom || 2.0).toFixed(1) + "x)"
+    }
+    if (act.tool === "rect") {
+      return "Rectangle"
+    }
+    if (act.tool === "circle") {
+      return "Circle / Oval"
+    }
+    if (act.tool === "arrow") {
+      return "Arrow"
+    }
+    if (act.tool === "line") {
+      return "Line"
+    }
+    if (act.tool === "pen") {
+      return "Pen Stroke"
+    }
+    if (act.tool === "highlighter") {
+      return "Highlighter"
+    }
+    if (act.tool === "block_highlight") {
+      return "Highlight Box"
+    }
+    if (act.tool === "pixelate") {
+      return "Pixelate"
+    }
+    return act.tool ? (act.tool.charAt(0).toUpperCase() + act.tool.slice(1)) : ("Layer " + (idx + 1))
+  }
+
+  function getLayerIcon(act) {
+    if (!act) return "󰘚"
+    var icons = {
+      "pen": "󰏬",
+      "highlighter": "󰘎",
+      "arrow": "󰁔",
+      "rect": "󰹢",
+      "circle": "󰝦",
+      "line": "󰿄",
+      "blur": "󰂵",
+      "block_highlight": "󰅃",
+      "pixelate": "󰹑",
+      "magnifier": "󰍉",
+      "spotlight": "󰛩",
+      "text": "󰬴",
+      "stamp": "󰈻"
+    }
+    return icons[act.tool] || "󰘚"
+  }
+
+  function getLayerColor(act) {
+    if (!act) return Color.accent
+    if (act.color && act.color !== "transparent") return act.color
+    if (act.fillColor && act.fillColor !== "transparent") return act.fillColor
+    if (act.borderColor && act.borderColor !== "transparent") return act.borderColor
+    if (act.tool === "spotlight") return act.borderColor || "#FFFFFF"
+    if (act.tool === "blur" || act.tool === "pixelate") return "#38BDF8"
+    return Color.accent
+  }
+
+  function moveLayer(fromIndex, toIndex) {
+    if (fromIndex < 0 || fromIndex >= root.actions.length) return
+    if (toIndex < 0 || toIndex >= root.actions.length) return
+    if (fromIndex === toIndex) return
+    root.pushUndoState()
+    var next = root.actions.slice()
+    var item = next.splice(fromIndex, 1)[0]
+    next.splice(toIndex, 0, item)
+    root.actions = next
+    root.selectedActionIndex = toIndex
+    annotationCanvas.requestPaint()
+    root.showFeedback("↕ Moved layer")
+  }
+
+  function moveLayerStep(index, delta) {
+    var target = index + delta
+    if (target >= 0 && target < root.actions.length) {
+      root.moveLayer(index, target)
+    }
+  }
+
+  function bringLayerToFront(index) {
+    if (index >= 0 && index < root.actions.length - 1) {
+      root.moveLayer(index, root.actions.length - 1)
+      root.showFeedback("▲ Brought to front")
+    }
+  }
+
+  function sendLayerToBack(index) {
+    if (index > 0 && index < root.actions.length) {
+      root.moveLayer(index, 0)
+      root.showFeedback("▼ Sent to back")
+    }
+  }
+
+  function toggleLayerVisibility(index) {
+    if (index < 0 || index >= root.actions.length) return
+    root.pushUndoState()
+    var next = root.actions.slice()
+    var cloned = JSON.parse(JSON.stringify(next[index]))
+    cloned.hidden = !Boolean(cloned.hidden)
+    next[index] = cloned
+    root.actions = next
+    annotationCanvas.requestPaint()
+    root.showFeedback(cloned.hidden ? "󰈉 Layer hidden" : "󰈈 Layer visible")
+  }
+
+  function toggleLayerLock(index) {
+    if (index < 0 || index >= root.actions.length) return
+    root.pushUndoState()
+    var next = root.actions.slice()
+    var cloned = JSON.parse(JSON.stringify(next[index]))
+    cloned.locked = !Boolean(cloned.locked)
+    next[index] = cloned
+    root.actions = next
+    annotationCanvas.requestPaint()
+    root.showFeedback(cloned.locked ? "🔒 Layer locked" : "🔓 Layer unlocked")
+  }
+
+  function deleteLayerByIndex(index) {
+    if (index < 0 || index >= root.actions.length) return
+    var act = root.actions[index]
+    if (act && act.locked) {
+      root.showFeedback("🔒 Layer is locked. Unlock to delete.")
+      return
+    }
+    root.pushUndoState()
+    var next = root.actions.slice()
+    next.splice(index, 1)
+    if (root.selectedActionIndex === index) {
+      root.selectedActionIndex = -1
+    } else if (root.selectedActionIndex > index) {
+      root.selectedActionIndex--
+    }
+    root.actions = next
+    annotationCanvas.requestPaint()
+    root.showFeedback("🗑 Deleted layer")
+  }
+
+  function duplicateLayerByIndex(index) {
+    if (index < 0 || index >= root.actions.length) return
+    root.pushUndoState()
+    var act = root.actions[index]
+    var cloned = root.moveAction(act, 20, 20)
+    cloned.locked = false
+    var next = root.actions.slice()
+    next.splice(index + 1, 0, cloned)
+    root.actions = next
+    root.selectedActionIndex = index + 1
+    annotationCanvas.requestPaint()
+    root.showFeedback("⧉ Duplicated layer")
+  }
+
   function getActionBounds(act) {
     if (!act) return { x: 0, y: 0, width: 0, height: 0 }
     if (act.tool === "magnifier" && act.start) {
@@ -810,7 +1002,7 @@ Rectangle {
     if (!root.actions || root.actions.length === 0) return -1
     for (var i = root.actions.length - 1; i >= 0; i--) {
       var act = root.actions[i]
-      if (!act) continue
+      if (!act || act.hidden) continue
 
       var testPt = { x: pt.x, y: pt.y }
       if (act.rotation) {
@@ -2283,6 +2475,14 @@ Rectangle {
         root.duplicateSelectedAction()
         event.accepted = true
         return
+      } else if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_BracketRight) {
+        root.moveLayerStep(root.selectedActionIndex, 1)
+        event.accepted = true
+        return
+      } else if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_BracketLeft) {
+        root.moveLayerStep(root.selectedActionIndex, -1)
+        event.accepted = true
+        return
       } else if (event.key === Qt.Key_BracketRight) {
         root.bringSelectedToFront()
         event.accepted = true
@@ -2312,6 +2512,9 @@ Rectangle {
 
     if (event.key === Qt.Key_Escape) {
       root.close()
+      event.accepted = true
+    } else if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_L) {
+      root.layerPanelOpen = !root.layerPanelOpen
       event.accepted = true
     } else if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_Z) {
       root.undo()
@@ -2568,6 +2771,50 @@ Rectangle {
             }
           }
           PanelToolTip { visible: ocrMouse.containsMouse; text: "Extract text (OCR)" }
+        }
+
+        // Layer Panel Toggle Button
+        Rectangle {
+          id: layerToggleBtn
+          height: Style.space(24)
+          width: layerBtnRow.implicitWidth + Style.space(12)
+          radius: Style.space(4)
+          color: root.layerPanelOpen ? Color.accent : (layerMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
+          border.width: 1
+          border.color: root.layerPanelOpen ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.12)
+
+          Row {
+            id: layerBtnRow
+            anchors.centerIn: parent
+            spacing: Style.space(4)
+
+            Text {
+              text: "󰘚"
+              color: root.layerPanelOpen ? (Color.popups.background || "#FFFFFF") : (Color.popups.text || Color.text)
+              font.pixelSize: Style.space(11)
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Text {
+              text: "Layers" + (root.actions.length > 0 ? (" (" + root.actions.length + ")") : "")
+              color: root.layerPanelOpen ? (Color.popups.background || "#FFFFFF") : (Color.popups.text || Color.text)
+              font.family: Style.font.menuFamily
+              font.pixelSize: Style.space(8)
+              font.bold: true
+              anchors.verticalCenter: parent.verticalCenter
+            }
+          }
+
+          MouseArea {
+            id: layerMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              root.layerPanelOpen = !root.layerPanelOpen
+            }
+          }
+          PanelToolTip { visible: layerMouse.containsMouse; text: "Toggle Layer Panel (Ctrl+L)" }
         }
 
         // Separator
@@ -3292,7 +3539,7 @@ Rectangle {
               var activeSpotlights = []
               for (var s = 0; s < root.actions.length; s++) {
                 var sa = root.actions[s]
-                if (sa && sa.tool === "spotlight" && sa.start && sa.end) {
+                if (sa && !sa.hidden && sa.tool === "spotlight" && sa.start && sa.end) {
                   activeSpotlights.push(sa)
                 }
               }
@@ -3306,7 +3553,9 @@ Rectangle {
               // 2. Render finished actions
               for (var i = 0; i < root.actions.length; i++) {
                 if (root.textInputActive && root.textEditActionIndex === i) continue
-                root.renderAction(ctx, root.actions[i])
+                var actItem = root.actions[i]
+                if (actItem && actItem.hidden) continue
+                root.renderAction(ctx, actItem)
               }
 
               // 3. Render live current action during drag
@@ -4098,7 +4347,7 @@ Rectangle {
             id: selectionOverlay
             anchors.fill: parent
             z: 30
-            visible: root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length && !root.isExporting && root.currentTool !== "crop"
+            visible: root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length && !root.isExporting && root.currentTool !== "crop" && !(curAct && curAct.hidden)
 
             property var curAct: (root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length) ? root.actions[root.selectedActionIndex] : null
             property var selBounds: curAct ? root.getActionBounds(curAct) : null
@@ -4115,7 +4364,7 @@ Rectangle {
             property var dragStartB: null
 
             function startDrag(handle, mouseItem, mouseX, mouseY) {
-              if (!curAct || !selBounds || curAct.locked) return
+              if (!curAct || !selBounds || curAct.locked || curAct.hidden) return
               var pt = mouseItem.mapToItem(selectionOverlay, mouseX, mouseY)
               activeHandle = handle
               startMouseX = pt.x
@@ -6998,6 +7247,537 @@ Rectangle {
           }
         }
       }
+
+      // ==========================================
+      // LAYER PANEL (DOCKED / FLOATING OVER VIEWPORT RIGHT)
+      // ==========================================
+      Rectangle {
+        id: layerPanelRoot
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.right: parent.right
+        anchors.margins: Style.space(8)
+        width: Style.space(250)
+        radius: Style.space(8)
+        color: Util.alpha(Color.popups.background || Color.background, 0.96)
+        border.width: 1
+        border.color: Util.alpha(Color.popups.border || Color.border, 0.6)
+        visible: root.layerPanelOpen
+        z: 45
+        clip: true
+
+        // Absorb clicks so they don't bleed into canvas
+        MouseArea {
+          anchors.fill: parent
+          onClicked: function(mouse) { mouse.accepted = true }
+          onPressed: function(mouse) { mouse.accepted = true }
+          onReleased: function(mouse) { mouse.accepted = true }
+          onDoubleClicked: function(mouse) { mouse.accepted = true }
+          onWheel: function(wheel) { wheel.accepted = true }
+        }
+
+        ColumnLayout {
+          anchors.fill: parent
+          spacing: 0
+
+          // ----------------------------------------
+          // 1. PANEL HEADER
+          // ----------------------------------------
+          Rectangle {
+            Layout.fillWidth: true
+            height: Style.space(36)
+            color: Util.alpha(Color.popups.text || Color.text, 0.04)
+
+            Rectangle {
+              anchors.bottom: parent.bottom
+              width: parent.width
+              height: 1
+              color: Util.alpha(Color.popups.border || Color.border, 0.4)
+            }
+
+            RowLayout {
+              anchors.fill: parent
+              anchors.leftMargin: Style.space(10)
+              anchors.rightMargin: Style.space(8)
+              spacing: Style.space(6)
+
+              Text {
+                text: "󰘚"
+                color: Color.accent
+                font.pixelSize: Style.space(13)
+                Layout.alignment: Qt.AlignVCenter
+              }
+
+              Text {
+                text: "Layers"
+                color: Color.popups.text || Color.text
+                font.family: Style.font.menuFamily
+                font.pixelSize: Style.space(9)
+                font.bold: true
+                Layout.alignment: Qt.AlignVCenter
+              }
+
+              // Count Pill
+              Rectangle {
+                height: Style.space(16)
+                width: layerCountTxt.implicitWidth + Style.space(8)
+                radius: Style.space(8)
+                color: Util.alpha(Color.accent, 0.16)
+                border.width: 1
+                border.color: Util.alpha(Color.accent, 0.3)
+                Layout.alignment: Qt.AlignVCenter
+
+                Text {
+                  id: layerCountTxt
+                  anchors.centerIn: parent
+                  text: String(root.actions.length)
+                  color: Color.accent
+                  font.family: Style.font.menuFamily
+                  font.pixelSize: Style.space(7)
+                  font.bold: true
+                }
+              }
+
+              Item { Layout.fillWidth: true }
+
+              // Close Panel Button
+              Rectangle {
+                width: Style.space(20); height: Style.space(20); radius: Style.space(3)
+                color: closeLayerMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : "transparent"
+                Layout.alignment: Qt.AlignVCenter
+
+                Text {
+                  text: "✕"
+                  color: closeLayerMouse.containsMouse ? Color.urgent : Util.alpha(Color.popups.text || Color.text, 0.6)
+                  font.pixelSize: Style.space(9)
+                  anchors.centerIn: parent
+                }
+
+                MouseArea {
+                  id: closeLayerMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.layerPanelOpen = false
+                }
+                PanelToolTip { visible: closeLayerMouse.containsMouse; text: "Close Layers (Ctrl+L)" }
+              }
+            }
+          }
+
+          // ----------------------------------------
+          // 2. LAYER LIST VIEW / EMPTY STATE
+          // ----------------------------------------
+          Item {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            clip: true
+
+            // Empty state placeholder
+            Column {
+              anchors.centerIn: parent
+              spacing: Style.space(6)
+              visible: root.actions.length === 0
+
+              Text {
+                text: "󰘚"
+                color: Util.alpha(Color.popups.text || Color.text, 0.2)
+                font.pixelSize: Style.space(28)
+                anchors.horizontalCenter: parent.horizontalCenter
+              }
+
+              Text {
+                text: "No layers yet"
+                color: Util.alpha(Color.popups.text || Color.text, 0.45)
+                font.family: Style.font.menuFamily
+                font.pixelSize: Style.space(8.5)
+                font.bold: true
+                anchors.horizontalCenter: parent.horizontalCenter
+              }
+
+              Text {
+                text: "Draw annotations to create layers"
+                color: Util.alpha(Color.popups.text || Color.text, 0.3)
+                font.family: Style.font.menuFamily
+                font.pixelSize: Style.space(7)
+                anchors.horizontalCenter: parent.horizontalCenter
+              }
+            }
+
+            // Layer list
+            ListView {
+              id: layerListView
+              anchors.fill: parent
+              anchors.margins: Style.space(6)
+              clip: true
+              boundsBehavior: Flickable.StopAtBounds
+              spacing: Style.space(4)
+              model: root.actions.length
+              visible: root.actions.length > 0
+
+              delegate: Rectangle {
+                id: layerDelegateRoot
+                width: layerListView.width
+                height: Style.space(32)
+                radius: Style.space(4)
+
+                readonly property int actionIndex: root.actions.length - 1 - index
+                readonly property var curAct: {
+                  var _rev = root.layerRevision
+                  return (actionIndex >= 0 && actionIndex < root.actions.length) ? root.actions[actionIndex] : null
+                }
+                readonly property bool isSelected: root.selectedActionIndex === actionIndex
+                readonly property bool isHidden: Boolean(curAct && curAct.hidden)
+                readonly property bool isLocked: Boolean(curAct && curAct.locked)
+
+                color: isSelected ? Util.alpha(Color.accent, 0.18) : (rowMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.08) : Util.alpha(Color.popups.text || Color.text, 0.02))
+                border.width: 1
+                border.color: isSelected ? Color.accent : (rowMouse.containsMouse ? Util.alpha(Color.accent, 0.35) : Util.alpha(Color.popups.border || Color.border, 0.25))
+                opacity: isHidden ? 0.48 : 1.0
+
+                // Left selection highlight bar
+                Rectangle {
+                  anchors.left: parent.left
+                  anchors.top: parent.top
+                  anchors.bottom: parent.bottom
+                  anchors.margins: Style.space(3)
+                  width: Style.space(3)
+                  radius: Style.space(1.5)
+                  color: Color.accent
+                  visible: layerDelegateRoot.isSelected
+                }
+
+                RowLayout {
+                  anchors.fill: parent
+                  anchors.leftMargin: Style.space(8)
+                  anchors.rightMargin: Style.space(6)
+                  spacing: Style.space(5)
+
+                  // Stack index number
+                  Text {
+                    text: "#" + (layerDelegateRoot.actionIndex + 1)
+                    color: Util.alpha(Color.popups.text || Color.text, 0.35)
+                    font.family: Style.font.menuFamily
+                    font.pixelSize: Style.space(6.5)
+                    Layout.preferredWidth: Style.space(18)
+                    Layout.alignment: Qt.AlignVCenter
+                  }
+
+                  // Color pip
+                  Rectangle {
+                    width: Style.space(8)
+                    height: Style.space(8)
+                    radius: Style.space(4)
+                    color: root.getLayerColor(layerDelegateRoot.curAct)
+                    border.width: 1
+                    border.color: Util.alpha("#FFFFFF", 0.3)
+                    Layout.alignment: Qt.AlignVCenter
+                  }
+
+                  // Tool icon
+                  Text {
+                    text: root.getLayerIcon(layerDelegateRoot.curAct)
+                    color: layerDelegateRoot.isSelected ? Color.accent : (Color.popups.text || Color.text)
+                    font.pixelSize: Style.space(10)
+                    Layout.alignment: Qt.AlignVCenter
+                  }
+
+                  // Layer Title / Name
+                  Text {
+                    text: root.getLayerTitle(layerDelegateRoot.curAct, layerDelegateRoot.actionIndex)
+                    color: layerDelegateRoot.isSelected ? Color.accent : (Color.popups.text || Color.text)
+                    font.family: Style.font.menuFamily
+                    font.pixelSize: Style.space(7.5)
+                    font.bold: layerDelegateRoot.isSelected
+                    font.strikeout: layerDelegateRoot.isHidden
+                    elide: Text.ElideRight
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignVCenter
+                  }
+
+                  // Visibility Toggle Button (Eye)
+                  Rectangle {
+                    width: Style.space(18); height: Style.space(18); radius: Style.space(3)
+                    color: eyeMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : "transparent"
+                    Layout.alignment: Qt.AlignVCenter
+
+                    Text {
+                      text: layerDelegateRoot.isHidden ? "󰈉" : "󰈈"
+                      color: layerDelegateRoot.isHidden ? Util.alpha(Color.popups.text || Color.text, 0.4) : (layerDelegateRoot.isSelected ? Color.accent : (Color.popups.text || Color.text))
+                      font.pixelSize: Style.space(9.5)
+                      anchors.centerIn: parent
+                    }
+
+                    MouseArea {
+                      id: eyeMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.toggleLayerVisibility(layerDelegateRoot.actionIndex)
+                    }
+                    PanelToolTip { visible: eyeMouse.containsMouse; text: layerDelegateRoot.isHidden ? "Show layer" : "Hide layer" }
+                  }
+
+                  // Lock Toggle Button
+                  Rectangle {
+                    width: Style.space(18); height: Style.space(18); radius: Style.space(3)
+                    color: lockRowMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : "transparent"
+                    Layout.alignment: Qt.AlignVCenter
+
+                    Text {
+                      text: layerDelegateRoot.isLocked ? "🔒" : "🔓"
+                      color: layerDelegateRoot.isLocked ? "#F59E0B" : Util.alpha(Color.popups.text || Color.text, 0.35)
+                      font.pixelSize: Style.space(8.5)
+                      anchors.centerIn: parent
+                    }
+
+                    MouseArea {
+                      id: lockRowMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.toggleLayerLock(layerDelegateRoot.actionIndex)
+                    }
+                    PanelToolTip { visible: lockRowMouse.containsMouse; text: layerDelegateRoot.isLocked ? "Unlock layer" : "Lock layer" }
+                  }
+
+                  // Delete row button (visible when hovered or selected)
+                  Rectangle {
+                    width: Style.space(18); height: Style.space(18); radius: Style.space(3)
+                    visible: (rowMouse.containsMouse || layerDelegateRoot.isSelected) && !layerDelegateRoot.isLocked
+                    color: delRowMouse.containsMouse ? Util.alpha(Color.urgent, 0.2) : "transparent"
+                    Layout.alignment: Qt.AlignVCenter
+
+                    Text {
+                      text: "🗑"
+                      color: delRowMouse.containsMouse ? Color.urgent : Util.alpha(Color.popups.text || Color.text, 0.5)
+                      font.pixelSize: Style.space(8.5)
+                      anchors.centerIn: parent
+                    }
+
+                    MouseArea {
+                      id: delRowMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.deleteLayerByIndex(layerDelegateRoot.actionIndex)
+                    }
+                    PanelToolTip { visible: delRowMouse.containsMouse; text: "Delete layer" }
+                  }
+                }
+
+                // Row click handler (placed under action buttons)
+                MouseArea {
+                  id: rowMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  z: -1
+                  onClicked: {
+                    root.currentTool = "select"
+                    root.selectAction(layerDelegateRoot.actionIndex)
+                  }
+                  onDoubleClicked: {
+                    root.currentTool = "select"
+                    root.selectAction(layerDelegateRoot.actionIndex)
+                    if (layerDelegateRoot.curAct && layerDelegateRoot.curAct.tool === "text") {
+                      root.editSelectedText()
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // ----------------------------------------
+          // 3. FOOTER TOOLBAR (REORDER & ACTIONS)
+          // ----------------------------------------
+          Rectangle {
+            Layout.fillWidth: true
+            height: Style.space(64)
+            color: Util.alpha(Color.popups.text || Color.text, 0.03)
+
+            Rectangle {
+              anchors.top: parent.top
+              width: parent.width
+              height: 1
+              color: Util.alpha(Color.popups.border || Color.border, 0.4)
+            }
+
+            ColumnLayout {
+              anchors.fill: parent
+              anchors.margins: Style.space(6)
+              spacing: Style.space(4)
+
+              readonly property bool hasSel: root.selectedActionIndex >= 0 && root.selectedActionIndex < root.actions.length
+              readonly property bool canMoveUp: hasSel && root.selectedActionIndex < root.actions.length - 1
+              readonly property bool canMoveDown: hasSel && root.selectedActionIndex > 0
+
+              // Row 1: Reorder buttons
+              RowLayout {
+                Layout.fillWidth: true
+                spacing: Style.space(3)
+
+                // Bring to Front
+                Rectangle {
+                  Layout.fillWidth: true; height: Style.space(22); radius: Style.space(3)
+                  color: parent.parent.canMoveUp ? (frontMouse.containsMouse ? Util.alpha(Color.accent, 0.22) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.02)
+                  opacity: parent.parent.canMoveUp ? 1.0 : 0.35
+                  border.width: 1
+                  border.color: parent.parent.canMoveUp ? Util.alpha(Color.accent, 0.3) : "transparent"
+
+                  Row {
+                    anchors.centerIn: parent
+                    spacing: Style.space(2)
+                    Text { text: "󰞁"; font.pixelSize: Style.space(9); color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: "Front"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(6.5); font.bold: true; color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
+                  }
+                  MouseArea {
+                    id: frontMouse
+                    anchors.fill: parent; hoverEnabled: true
+                    cursorShape: parent.parent.parent.canMoveUp ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: {
+                      if (parent.parent.parent.canMoveUp) root.bringLayerToFront(root.selectedActionIndex)
+                    }
+                  }
+                  PanelToolTip { visible: frontMouse.containsMouse; text: "Bring to Front (])" }
+                }
+
+                // Move Up
+                Rectangle {
+                  Layout.fillWidth: true; height: Style.space(22); radius: Style.space(3)
+                  color: parent.parent.canMoveUp ? (upMouse.containsMouse ? Util.alpha(Color.accent, 0.22) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.02)
+                  opacity: parent.parent.canMoveUp ? 1.0 : 0.35
+                  border.width: 1
+                  border.color: parent.parent.canMoveUp ? Util.alpha(Color.accent, 0.3) : "transparent"
+
+                  Row {
+                    anchors.centerIn: parent
+                    spacing: Style.space(2)
+                    Text { text: "▲"; font.pixelSize: Style.space(8); color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: "Up"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(6.5); font.bold: true; color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
+                  }
+                  MouseArea {
+                    id: upMouse
+                    anchors.fill: parent; hoverEnabled: true
+                    cursorShape: parent.parent.parent.canMoveUp ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: {
+                      if (parent.parent.parent.canMoveUp) root.moveLayerStep(root.selectedActionIndex, 1)
+                    }
+                  }
+                  PanelToolTip { visible: upMouse.containsMouse; text: "Move Layer Up" }
+                }
+
+                // Move Down
+                Rectangle {
+                  Layout.fillWidth: true; height: Style.space(22); radius: Style.space(3)
+                  color: parent.parent.canMoveDown ? (downMouse.containsMouse ? Util.alpha(Color.accent, 0.22) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.02)
+                  opacity: parent.parent.canMoveDown ? 1.0 : 0.35
+                  border.width: 1
+                  border.color: parent.parent.canMoveDown ? Util.alpha(Color.accent, 0.3) : "transparent"
+
+                  Row {
+                    anchors.centerIn: parent
+                    spacing: Style.space(2)
+                    Text { text: "▼"; font.pixelSize: Style.space(8); color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: "Down"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(6.5); font.bold: true; color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
+                  }
+                  MouseArea {
+                    id: downMouse
+                    anchors.fill: parent; hoverEnabled: true
+                    cursorShape: parent.parent.parent.canMoveDown ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: {
+                      if (parent.parent.parent.canMoveDown) root.moveLayerStep(root.selectedActionIndex, -1)
+                    }
+                  }
+                  PanelToolTip { visible: downMouse.containsMouse; text: "Move Layer Down" }
+                }
+
+                // Send to Back
+                Rectangle {
+                  Layout.fillWidth: true; height: Style.space(22); radius: Style.space(3)
+                  color: parent.parent.canMoveDown ? (backMouse.containsMouse ? Util.alpha(Color.accent, 0.22) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.02)
+                  opacity: parent.parent.canMoveDown ? 1.0 : 0.35
+                  border.width: 1
+                  border.color: parent.parent.canMoveDown ? Util.alpha(Color.accent, 0.3) : "transparent"
+
+                  Row {
+                    anchors.centerIn: parent
+                    spacing: Style.space(2)
+                    Text { text: "󰞂"; font.pixelSize: Style.space(9); color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: "Back"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(6.5); font.bold: true; color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
+                  }
+                  MouseArea {
+                    id: backMouse
+                    anchors.fill: parent; hoverEnabled: true
+                    cursorShape: parent.parent.parent.canMoveDown ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: {
+                      if (parent.parent.parent.canMoveDown) root.sendLayerToBack(root.selectedActionIndex)
+                    }
+                  }
+                  PanelToolTip { visible: backMouse.containsMouse; text: "Send to Back ([)" }
+                }
+              }
+
+              // Row 2: Duplicate & Delete buttons
+              RowLayout {
+                Layout.fillWidth: true
+                spacing: Style.space(4)
+
+                // Duplicate Button
+                Rectangle {
+                  Layout.fillWidth: true; height: Style.space(22); radius: Style.space(3)
+                  color: parent.parent.hasSel ? (dupMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.15) : Util.alpha(Color.popups.text || Color.text, 0.07)) : Util.alpha(Color.popups.text || Color.text, 0.02)
+                  opacity: parent.parent.hasSel ? 1.0 : 0.35
+                  border.width: 1
+                  border.color: parent.parent.hasSel ? Util.alpha(Color.popups.text || Color.text, 0.15) : "transparent"
+
+                  Row {
+                    anchors.centerIn: parent
+                    spacing: Style.space(4)
+                    Text { text: "⧉"; font.pixelSize: Style.space(9.5); color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: "Duplicate"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7); font.bold: true; color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
+                  }
+                  MouseArea {
+                    id: dupMouse
+                    anchors.fill: parent; hoverEnabled: true
+                    cursorShape: parent.parent.parent.hasSel ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: {
+                      if (parent.parent.parent.hasSel) root.duplicateSelectedAction()
+                    }
+                  }
+                  PanelToolTip { visible: dupMouse.containsMouse; text: "Duplicate Selected (Ctrl+D)" }
+                }
+
+                // Delete Button
+                Rectangle {
+                  Layout.fillWidth: true; height: Style.space(22); radius: Style.space(3)
+                  color: parent.parent.hasSel ? (delBtnMouse.containsMouse ? Util.alpha(Color.urgent, 0.22) : Util.alpha(Color.urgent, 0.1)) : Util.alpha(Color.popups.text || Color.text, 0.02)
+                  opacity: parent.parent.hasSel ? 1.0 : 0.35
+                  border.width: 1
+                  border.color: parent.parent.hasSel ? Util.alpha(Color.urgent, 0.3) : "transparent"
+
+                  Row {
+                    anchors.centerIn: parent
+                    spacing: Style.space(4)
+                    Text { text: "🗑"; font.pixelSize: Style.space(9); color: Color.urgent; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: "Delete"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7); font.bold: true; color: Color.urgent; anchors.verticalCenter: parent.verticalCenter }
+                  }
+                  MouseArea {
+                    id: delBtnMouse
+                    anchors.fill: parent; hoverEnabled: true
+                    cursorShape: parent.parent.parent.hasSel ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: {
+                      if (parent.parent.parent.hasSel) root.deleteSelectedAction()
+                    }
+                  }
+                  PanelToolTip { visible: delBtnMouse.containsMouse; text: "Delete Selected (Del)" }
+                }
+              }
+            }
+          }
+        }
+      }
     }
 
     // ==========================================
@@ -8391,6 +9171,10 @@ Rectangle {
     var changed = false
     for (var i = 0; i < root.actions.length; i++) {
       var a = root.actions[i]
+      if (a.locked || a.hidden) {
+        filtered.push(a)
+        continue
+      }
       var hit = false
       if (a.pos) {
         hit = Math.hypot(a.pos.x - pt.x, a.pos.y - pt.y) < radius
