@@ -270,12 +270,12 @@ Rectangle {
       return
     }
     if (root.activeColorTarget === "spotlightBorder") {
-      root.commitSelectedProperty("borderColor", col, "Border Color")
+      root.setSelectedSpotlightBorderColor(col)
       root.activeColorTarget = "stroke"
       return
     }
     if (root.activeColorTarget === "spotlightDim") {
-      root.commitSelectedProperty("dimColor", col, "Dim Color")
+      root.setUnifiedSpotlightDimColor(col)
       root.activeColorTarget = "stroke"
       return
     }
@@ -902,6 +902,14 @@ Rectangle {
         if (typeof act.shadowOffsetY !== "undefined") root.dropShadowOffsetY = act.shadowOffsetY
       } else {
         root.dropShadow = false
+      }
+      if (act.tool === "spotlight") {
+        if (act.shape) root.spotlightShape = act.shape
+        if (typeof act.radius !== "undefined") root.spotlightRadius = act.radius
+        if (typeof act.borderWidth !== "undefined") root.spotlightBorderWidth = act.borderWidth
+        if (act.borderColor) root.spotlightBorderColor = act.borderColor
+        if (typeof act.dimOpacity !== "undefined") root.spotlightDimOpacity = act.dimOpacity
+        if (act.dimColor) root.spotlightDimColor = act.dimColor
       }
     } else {
       root.selectedActionIndex = -1
@@ -1763,6 +1771,73 @@ Rectangle {
     annotationCanvas.requestPaint()
   }
 
+  function setSelectedSpotlightShape(shape) {
+    root.spotlightShape = shape
+    if (root.selectedActionIndex < 0 || root.selectedActionIndex >= root.actions.length) return
+    var act = root.actions[root.selectedActionIndex]
+    if (!act || act.tool !== "spotlight") return
+    if (act.shape === shape) return
+    root.pushUndoState()
+    var next = root.actions.slice()
+    var cloned = JSON.parse(JSON.stringify(act))
+    cloned.shape = shape
+    next[root.selectedActionIndex] = cloned
+    root.actions = next
+    annotationCanvas.requestPaint()
+    root.showFeedback("Spotlight Shape: " + (shape === "circle" ? "Circle / Oval" : "Rectangle"))
+  }
+
+  function setSelectedSpotlightBorderColor(col) {
+    root.spotlightBorderColor = col
+    if (root.selectedActionIndex < 0 || root.selectedActionIndex >= root.actions.length) return
+    var act = root.actions[root.selectedActionIndex]
+    if (!act || act.tool !== "spotlight") return
+    root.pushUndoState()
+    var next = root.actions.slice()
+    var cloned = JSON.parse(JSON.stringify(act))
+    cloned.borderColor = col
+    next[root.selectedActionIndex] = cloned
+    root.actions = next
+    annotationCanvas.requestPaint()
+    root.showFeedback("Spotlight Border: " + col)
+  }
+
+  function setUnifiedSpotlightDimOpacity(val) {
+    root.pushUndoState()
+    root.spotlightDimOpacity = val
+    var next = root.actions.slice()
+    var changed = false
+    for (var i = 0; i < next.length; i++) {
+      if (next[i] && next[i].tool === "spotlight") {
+        var cl = JSON.parse(JSON.stringify(next[i]))
+        cl.dimOpacity = val
+        next[i] = cl
+        changed = true
+      }
+    }
+    if (changed) root.actions = next
+    annotationCanvas.requestPaint()
+    root.showFeedback("Dim Darkness: " + Math.round(val * 100) + "%")
+  }
+
+  function setUnifiedSpotlightDimColor(col) {
+    root.pushUndoState()
+    root.spotlightDimColor = col
+    var next = root.actions.slice()
+    var changed = false
+    for (var i = 0; i < next.length; i++) {
+      if (next[i] && next[i].tool === "spotlight") {
+        var cl = JSON.parse(JSON.stringify(next[i]))
+        cl.dimColor = col
+        next[i] = cl
+        changed = true
+      }
+    }
+    if (changed) root.actions = next
+    annotationCanvas.requestPaint()
+    root.showFeedback("Dim Tint: " + col)
+  }
+
   function modifySelectedProperty(key, val) {
     if (root.selectedActionIndex < 0 || root.selectedActionIndex >= root.actions.length) return
     var act = root.actions[root.selectedActionIndex]
@@ -1791,6 +1866,14 @@ Rectangle {
       if (JSON.stringify(root.scrubStartAct) !== JSON.stringify(act)) {
         root.pushSpecificUndoState(root.scrubStartAct, root.selectedActionIndex)
       }
+    } else if (act && act[key] !== val) {
+      root.pushUndoState()
+      var next = root.actions.slice()
+      var cloned = JSON.parse(JSON.stringify(act))
+      cloned[key] = val
+      next[root.selectedActionIndex] = cloned
+      root.actions = next
+      annotationCanvas.requestPaint()
     }
     root.scrubStartAct = null
     if (feedbackLabel) {
@@ -3162,13 +3245,28 @@ Rectangle {
               ctx.save()
               ctx.scale(root.zoomScale, root.zoomScale)
 
-              // Render finished actions
+              // 1. Unified Spotlight Background Dimming pass
+              var activeSpotlights = []
+              for (var s = 0; s < root.actions.length; s++) {
+                var sa = root.actions[s]
+                if (sa && sa.tool === "spotlight" && sa.start && sa.end) {
+                  activeSpotlights.push(sa)
+                }
+              }
+              if (root.currentAction && root.currentAction.tool === "spotlight" && root.currentAction.start && root.currentAction.end) {
+                activeSpotlights.push(root.currentAction)
+              }
+              if (activeSpotlights.length > 0) {
+                root.renderUnifiedSpotlightDim(ctx, activeSpotlights)
+              }
+
+              // 2. Render finished actions
               for (var i = 0; i < root.actions.length; i++) {
                 if (root.textInputActive && root.textEditActionIndex === i) continue
                 root.renderAction(ctx, root.actions[i])
               }
 
-              // Render live current action during drag
+              // 3. Render live current action during drag
               if (root.currentAction) {
                 root.renderAction(ctx, root.currentAction)
               }
@@ -5743,7 +5841,7 @@ Rectangle {
                         }
                       }
 
-                      // 8. SPOTLIGHT CONTROLS (Shape, Radius, Dim Darkness, Dim Color, Border Width, Border Color)
+                      // 8. SPOTLIGHT CONTROLS (Shape, Radius, Unified Dim Darkness & Tint, Individual Border Width & Color)
                       Row {
                         visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "spotlight")
                         spacing: Style.space(3)
@@ -5765,10 +5863,7 @@ Rectangle {
                             MouseArea {
                               id: srectMouse
                               anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: {
-                                root.spotlightShape = "rect"
-                                root.commitSelectedProperty("shape", "rect", "Spotlight Shape (Rectangle)")
-                              }
+                              onClicked: root.setSelectedSpotlightShape("rect")
                             }
                             PanelToolTip { visible: srectMouse.containsMouse; text: "Rectangle Spotlight" }
                           }
@@ -5784,10 +5879,7 @@ Rectangle {
                             MouseArea {
                               id: scircMouse
                               anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: {
-                                root.spotlightShape = "circle"
-                                root.commitSelectedProperty("shape", "circle", "Spotlight Shape (Circle / Ellipse)")
-                              }
+                              onClicked: root.setSelectedSpotlightShape("circle")
                             }
                             PanelToolTip { visible: scircMouse.containsMouse; text: "Circle / Ellipse Spotlight" }
                           }
@@ -5797,7 +5889,7 @@ Rectangle {
                         SmartScrubber {
                           visible: !selectionOverlay.curAct || selectionOverlay.curAct.shape !== "circle"
                           label: "Radius"
-                          value: (selectionOverlay.curAct && selectionOverlay.curAct.radius !== undefined) ? selectionOverlay.curAct.radius : 12
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.radius !== undefined) ? selectionOverlay.curAct.radius : root.spotlightRadius
                           from: 0
                           to: 60
                           step: 2
@@ -5807,23 +5899,98 @@ Rectangle {
                           onValueCommitted: function(val) { root.commitSelectedProperty("radius", val, "Spotlight Radius"); root.spotlightRadius = val }
                         }
 
-                        // Dim Darkness Scrubber
+                        // Unified Dim Darkness Scrubber
                         SmartScrubber {
                           label: "Dim"
-                          value: (selectionOverlay.curAct && selectionOverlay.curAct.dimOpacity !== undefined) ? Math.round(selectionOverlay.curAct.dimOpacity * 100) : 65
+                          value: Math.round(root.spotlightDimOpacity * 100)
                           from: 10
                           to: 95
                           step: 5
                           unit: "%"
-                          tip: "Surrounding dim darkness percentage"
-                          onValueScrubbed: function(val) { root.modifySelectedProperty("dimOpacity", val / 100.0); root.spotlightDimOpacity = val / 100.0 }
-                          onValueCommitted: function(val) { root.commitSelectedProperty("dimOpacity", val / 100.0, "Dim Darkness"); root.spotlightDimOpacity = val / 100.0 }
+                          tip: "Unified background dimming darkness percentage"
+                          onValueScrubbed: function(val) {
+                            root.spotlightDimOpacity = val / 100.0
+                            annotationCanvas.requestPaint()
+                          }
+                          onValueCommitted: function(val) {
+                            root.setUnifiedSpotlightDimOpacity(val / 100.0)
+                          }
                         }
 
-                        // Border Width Scrubber
+                        // Unified Dim Tint Swatches & Tools
+                        Row {
+                          spacing: Style.space(2)
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          Text {
+                            text: "Dim Tint:"
+                            color: Util.alpha(Color.popups.text || Color.text, 0.6)
+                            font.family: Style.font.menuFamily
+                            font.pixelSize: Style.space(7.5)
+                            font.bold: true
+                            anchors.verticalCenter: parent.verticalCenter
+                          }
+
+                          Repeater {
+                            model: ["#000000", "#0F172A", "#1E1E2E", "#2B2D42"]
+                            Rectangle {
+                              required property string modelData
+                              width: Style.space(12); height: Style.space(12); radius: Style.space(6)
+                              color: modelData
+                              border.width: (String(root.spotlightDimColor).toLowerCase() === String(modelData).toLowerCase()) ? 2 : 1
+                              border.color: (String(root.spotlightDimColor).toLowerCase() === String(modelData).toLowerCase()) ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.25)
+                              scale: (String(root.spotlightDimColor).toLowerCase() === String(modelData).toLowerCase()) ? 1.25 : 1.0
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              MouseArea {
+                                id: sdcMouse
+                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: root.setUnifiedSpotlightDimColor(parent.modelData)
+                              }
+                              PanelToolTip { visible: sdcMouse.containsMouse; text: "Dim Tint: " + parent.modelData }
+                            }
+                          }
+
+                          // Eyedropper for Dim Tint
+                          Rectangle {
+                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                            color: sdimedMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
+                            MouseArea {
+                              id: sdimedMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.activeColorTarget = "spotlightDim"
+                                root.requestScreenPick()
+                              }
+                            }
+                            PanelToolTip { visible: sdimedMouse.containsMouse; text: "Pick dim tint from screen" }
+                          }
+
+                          // Color Studio for Dim Tint
+                          Rectangle {
+                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                            color: sdimStudioMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "󰃚"; color: sdimStudioMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                            MouseArea {
+                              id: sdimStudioMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.activeColorTarget = "spotlightDim"
+                                root.currentColor = root.spotlightDimColor
+                                root.requestColorPicker()
+                              }
+                            }
+                            PanelToolTip { visible: sdimStudioMouse.containsMouse; text: "Customize Unified Dim Tint Color" }
+                          }
+                        }
+
+                        // Border Width Scrubber (Individual)
                         SmartScrubber {
                           label: "Border"
-                          value: (selectionOverlay.curAct && selectionOverlay.curAct.borderWidth !== undefined) ? selectionOverlay.curAct.borderWidth : 2
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.borderWidth !== undefined) ? selectionOverlay.curAct.borderWidth : root.spotlightBorderWidth
                           from: 0
                           to: 12
                           step: 1
@@ -5833,7 +6000,7 @@ Rectangle {
                           onValueCommitted: function(val) { root.commitSelectedProperty("borderWidth", val, "Border Width"); root.spotlightBorderWidth = val }
                         }
 
-                        // Border Color Swatches
+                        // Border Color Swatches (Individual)
                         Row {
                           spacing: Style.space(2)
                           anchors.verticalCenter: parent.verticalCenter
@@ -5861,10 +6028,7 @@ Rectangle {
                               MouseArea {
                                 id: sbcMouse
                                 anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                  root.spotlightBorderColor = parent.modelData
-                                  root.commitSelectedProperty("borderColor", parent.modelData, "Border Color")
-                                }
+                                onClicked: root.setSelectedSpotlightBorderColor(parent.modelData)
                               }
                               PanelToolTip { visible: sbcMouse.containsMouse; text: "Border: " + parent.modelData }
                             }
@@ -5906,26 +6070,6 @@ Rectangle {
                             }
                             PanelToolTip { visible: sbStudioMouse.containsMouse; text: "Open Color Studio for Border" }
                           }
-                        }
-
-                        // Dim Color Studio Button
-                        Rectangle {
-                          width: Style.space(16); height: Style.space(16); radius: Style.space(8)
-                          color: sdimStudioMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
-                          anchors.verticalCenter: parent.verticalCenter
-                          Text { text: "󰃚"; color: sdimStudioMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(8); anchors.centerIn: parent }
-                          MouseArea {
-                            id: sdimStudioMouse
-                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: {
-                              root.activeColorTarget = "spotlightDim"
-                              if (selectionOverlay.curAct && selectionOverlay.curAct.dimColor) {
-                                root.currentColor = selectionOverlay.curAct.dimColor
-                              }
-                              root.requestColorPicker()
-                            }
-                          }
-                          PanelToolTip { visible: sdimStudioMouse.containsMouse; text: "Customize Dimming Tint Color" }
                         }
                       }
                     }
@@ -7164,6 +7308,87 @@ Rectangle {
     }
   }
 
+  function drawRoundedRectPath(ctx, x, y, w, h, r) {
+    var rad = Math.max(0, Math.min(r, Math.min(w / 2, h / 2)))
+    if (rad <= 0) {
+      ctx.rect(x, y, w, h)
+      return
+    }
+    ctx.moveTo(x + rad, y)
+    ctx.lineTo(x + w - rad, y)
+    ctx.arcTo(x + w, y, x + w, y + rad, rad)
+    ctx.lineTo(x + w, y + h - rad)
+    ctx.arcTo(x + w, y + h, x + w - rad, y + h, rad)
+    ctx.lineTo(x + rad, y + h)
+    ctx.arcTo(x, y + h, x, y + h - rad, rad)
+    ctx.lineTo(x, y + rad)
+    ctx.arcTo(x, y, x + rad, y, rad)
+    ctx.closePath()
+  }
+
+  function drawEllipsePath(ctx, x, y, w, h) {
+    var cx = x + w / 2
+    var cy = y + h / 2
+    var rx = Math.max(1, w / 2)
+    var ry = Math.max(1, h / 2)
+    if (typeof ctx.ellipse === "function") {
+      ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2)
+    } else {
+      var kappa = 0.5522847498307936
+      var ox = rx * kappa
+      var oy = ry * kappa
+      ctx.moveTo(cx - rx, cy)
+      ctx.bezierCurveTo(cx - rx, cy - oy, cx - ox, cy - ry, cx, cy - ry)
+      ctx.bezierCurveTo(cx + ox, cy - ry, cx + rx, cy - oy, cx + rx, cy)
+      ctx.bezierCurveTo(cx + rx, cy + oy, cx + ox, cy + ry, cx, cy + ry)
+      ctx.bezierCurveTo(cx - ox, cy + ry, cx - rx, cy + oy, cx - rx, cy)
+      ctx.closePath()
+    }
+  }
+
+  function renderUnifiedSpotlightDim(ctx, spotlights) {
+    if (!spotlights || spotlights.length === 0) return
+
+    ctx.save()
+    ctx.beginPath()
+
+    var outMargin = 10000
+    var outX = -outMargin
+    var outY = -outMargin
+    var outW = (root.imageWidth || 4000) + outMargin * 2
+    var outH = (root.imageHeight || 4000) + outMargin * 2
+
+    // Outer rect boundary
+    ctx.rect(outX, outY, outW, outH)
+
+    // Inner cutouts for all active spotlights
+    for (var i = 0; i < spotlights.length; i++) {
+      var s = spotlights[i]
+      if (!s || !s.start || !s.end) continue
+      var sx = Math.min(s.start.x, s.end.x)
+      var sy = Math.min(s.start.y, s.end.y)
+      var sw = Math.max(1, Math.abs(s.end.x - s.start.x))
+      var sh = Math.max(1, Math.abs(s.end.y - s.start.y))
+      var shape = s.shape || "rect"
+
+      if (shape === "circle") {
+        root.drawEllipsePath(ctx, sx, sy, sw, sh)
+      } else {
+        var sRad = (s.radius !== undefined) ? s.radius : root.spotlightRadius
+        root.drawRoundedRectPath(ctx, sx, sy, sw, sh, sRad)
+      }
+    }
+
+    ctx.fillStyle = root.spotlightDimColor || "#000000"
+    ctx.globalAlpha = (root.spotlightDimOpacity !== undefined ? root.spotlightDimOpacity : 0.65)
+    try {
+      ctx.fill("evenodd")
+    } catch (e) {
+      ctx.fill()
+    }
+    ctx.restore()
+  }
+
   // Helper drawing functions
   function renderAction(ctx, act) {
     if (!act) return
@@ -7859,101 +8084,18 @@ Rectangle {
         var spW = Math.max(1, Math.abs(act.end.x - act.start.x))
         var spH = Math.max(1, Math.abs(act.end.y - act.start.y))
         var spShape = act.shape || "rect"
-        var spRad = (act.radius !== undefined) ? act.radius : 12
-        var spDimColor = act.dimColor || "#000000"
-        var spDimAlpha = ((act.dimOpacity !== undefined) ? act.dimOpacity : 0.65) * elemOpacity
+        var spRad = (act.radius !== undefined) ? act.radius : root.spotlightRadius
         var spBorderW = (act.borderWidth !== undefined) ? act.borderWidth : 2
         var spBorderCol = act.borderColor || "#FFFFFF"
 
-        ctx.save()
-
-        // 1. Draw outer dimming overlay with inner spotlight cutout
-        ctx.beginPath()
-        var outMargin = 10000
-        var outX = -outMargin
-        var outY = -outMargin
-        var outW = (root.imageWidth || 4000) + outMargin * 2
-        var outH = (root.imageHeight || 4000) + outMargin * 2
-
-        // Outer box clockwise
-        ctx.moveTo(outX, outY)
-        ctx.lineTo(outX + outW, outY)
-        ctx.lineTo(outX + outW, outY + outH)
-        ctx.lineTo(outX, outY + outH)
-        ctx.closePath()
-
-        // Inner cutout counter-clockwise
-        if (spShape === "circle") {
-          var scx = spX + spW / 2
-          var scy = spY + spH / 2
-          var srx = Math.max(1, spW / 2)
-          var sry = Math.max(1, spH / 2)
-          if (typeof ctx.ellipse === "function") {
-            ctx.ellipse(scx, scy, srx, sry, 0, 0, Math.PI * 2, true)
-          } else {
-            ctx.arc(scx, scy, Math.max(srx, sry), 0, Math.PI * 2, true)
-          }
-        } else {
-          var sr = Math.min(spRad, Math.min(spW / 2, spH / 2))
-          if (sr > 0) {
-            ctx.moveTo(spX, spY + sr)
-            ctx.lineTo(spX, spY + spH - sr)
-            ctx.arcTo(spX, spY + spH, spX + sr, spY + spH, sr)
-            ctx.lineTo(spX + spW - sr, spY + spH)
-            ctx.arcTo(spX + spW, spY + spH, spX + spW - sr, spY + spH, sr)
-            ctx.lineTo(spX + spW, spY + sr)
-            ctx.arcTo(spX + spW, spY, spX + spW - sr, spY, sr)
-            ctx.lineTo(spX + sr, spY)
-            ctx.arcTo(spX, spY, spX, spY + sr, sr)
-            ctx.closePath()
-          } else {
-            ctx.moveTo(spX, spY)
-            ctx.lineTo(spX, spY + spH)
-            ctx.lineTo(spX + spW, spY + spH)
-            ctx.lineTo(spX + spW, spY)
-            ctx.closePath()
-          }
-        }
-
-        ctx.fillStyle = spDimColor
-        ctx.globalAlpha = spDimAlpha
-        try {
-          ctx.fill("evenodd")
-        } catch (eEvenOdd) {
-          ctx.fill()
-        }
-        ctx.restore()
-
-        // 2. Stroke rim border if spBorderW > 0
+        // Stroke individual spotlight rim border
         if (spBorderW > 0) {
           ctx.save()
           ctx.beginPath()
           if (spShape === "circle") {
-            var bcx = spX + spW / 2
-            var bcy = spY + spH / 2
-            var brx = Math.max(1, spW / 2)
-            var bry = Math.max(1, spH / 2)
-            if (typeof ctx.ellipse === "function") {
-              ctx.ellipse(bcx, bcy, brx, bry, 0, 0, Math.PI * 2)
-            } else {
-              ctx.arc(bcx, bcy, Math.max(brx, bry), 0, Math.PI * 2)
-            }
+            root.drawEllipsePath(ctx, spX, spY, spW, spH)
           } else {
-            var bsr = Math.min(spRad, Math.min(spW / 2, spH / 2))
-            if (bsr > 0) {
-              ctx.moveTo(spX + bsr, spY)
-              ctx.lineTo(spX + spW - bsr, spY)
-              ctx.arcTo(spX + spW, spY, spX + spW, spY + bsr, bsr)
-              ctx.lineTo(spX + spW, spY + spH - bsr)
-              ctx.arcTo(spX + spW, spY + spH, spX + spW - bsr, spY + bsr, bsr)
-              ctx.lineTo(spX + bsr, spY + spH)
-              ctx.arcTo(spX, spY + spH, spX, spY + bsr, bsr)
-              ctx.lineTo(spX, spY + bsr)
-              ctx.arcTo(spX, spY, spX + bsr, spY, bsr)
-              ctx.closePath()
-            } else {
-              ctx.rect(spX, spY, spW, spH)
-            }
+            root.drawRoundedRectPath(ctx, spX, spY, spW, spH, spRad)
           }
           ctx.strokeStyle = spBorderCol
           ctx.lineWidth = spBorderW
