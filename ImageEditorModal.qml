@@ -3363,31 +3363,6 @@ Rectangle {
               }
               PanelToolTip { visible: magMouse.containsMouse; text: "Magnifier / Loupe: zoom in on fine screenshot details (Z)" }
             }
-
-            // Spotlight / Focus
-            Rectangle {
-              width: spotBtnTxt.implicitWidth + Style.space(10); height: Style.space(22); radius: Style.space(4)
-              color: root.currentTool === "spotlight" ? Color.accent : (spotMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.05))
-              border.width: 1; border.color: root.currentTool === "spotlight" ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.1)
-              anchors.verticalCenter: parent.verticalCenter
-
-              Row {
-                id: spotBtnTxt
-                anchors.centerIn: parent
-                spacing: Style.space(3)
-                Text { text: "🔦"; font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
-                Text { text: "Spotlight"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(8); font.bold: true; color: root.currentTool === "spotlight" ? "#FFFFFF" : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
-              }
-              MouseArea {
-                id: spotMouse
-                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                  root.currentTool = "spotlight"
-                  if (root.textInputActive) root.commitText()
-                }
-              }
-              PanelToolTip { visible: spotMouse.containsMouse; text: "Spotlight: focus viewer attention on key regions (F)" }
-            }
           }
 
           // Separator
@@ -4794,7 +4769,7 @@ Rectangle {
                       Rectangle {
                         property bool isRatioLocked: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.lockRatio)
                         width: ratioRow.implicitWidth + Style.space(8); height: Style.space(18); radius: Style.space(3)
-                        color: isRatioLocked ? Util.alpha(Color.accent, 0.25) : (ratioMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
+                        color: isRatioLocked ? Util.alpha(Color.accent, 0.25) : (ratioLockMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
                         border.width: 1
                         border.color: isRatioLocked ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.12)
                         anchors.verticalCenter: parent.verticalCenter
@@ -4818,12 +4793,12 @@ Rectangle {
                           }
                         }
                         MouseArea {
-                          id: ratioMouse
+                          id: ratioLockMouse
                           anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                           onClicked: root.toggleSelectedLockRatio()
                         }
                         PanelToolTip {
-                          visible: ratioMouse.containsMouse
+                          visible: ratioLockMouse.containsMouse
                           text: parent.isRatioLocked ? "Aspect ratio locked: corner handles scale proportionally (Click to Unlock)" : "Lock aspect ratio for proportional corner scaling"
                         }
                       }
@@ -7621,7 +7596,7 @@ Rectangle {
                 // Bring to Front
                 Rectangle {
                   Layout.fillWidth: true; height: Style.space(22); radius: Style.space(3)
-                  color: parent.parent.canMoveUp ? (frontMouse.containsMouse ? Util.alpha(Color.accent, 0.22) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.02)
+                  color: parent.parent.canMoveUp ? (lpFrontMouse.containsMouse ? Util.alpha(Color.accent, 0.22) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.02)
                   opacity: parent.parent.canMoveUp ? 1.0 : 0.35
                   border.width: 1
                   border.color: parent.parent.canMoveUp ? Util.alpha(Color.accent, 0.3) : "transparent"
@@ -7633,20 +7608,20 @@ Rectangle {
                     Text { text: "Front"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(6.5); font.bold: true; color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
                   }
                   MouseArea {
-                    id: frontMouse
+                    id: lpFrontMouse
                     anchors.fill: parent; hoverEnabled: true
                     cursorShape: parent.parent.parent.canMoveUp ? Qt.PointingHandCursor : Qt.ArrowCursor
                     onClicked: {
                       if (parent.parent.parent.canMoveUp) root.bringLayerToFront(root.selectedActionIndex)
                     }
                   }
-                  PanelToolTip { visible: frontMouse.containsMouse; text: "Bring to Front (])" }
+                  PanelToolTip { visible: lpFrontMouse.containsMouse; text: "Bring to Front (])" }
                 }
 
                 // Move Up
                 Rectangle {
                   Layout.fillWidth: true; height: Style.space(22); radius: Style.space(3)
-                  color: parent.parent.canMoveUp ? (upMouse.containsMouse ? Util.alpha(Color.accent, 0.22) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.02)
+                  color: parent.parent.canMoveUp ? (lpUpMouse.containsMouse ? Util.alpha(Color.accent, 0.22) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.02)
                   opacity: parent.parent.canMoveUp ? 1.0 : 0.35
                   border.width: 1
                   border.color: parent.parent.canMoveUp ? Util.alpha(Color.accent, 0.3) : "transparent"
@@ -7658,20 +7633,20 @@ Rectangle {
                     Text { text: "Up"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(6.5); font.bold: true; color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
                   }
                   MouseArea {
-                    id: upMouse
+                    id: lpUpMouse
                     anchors.fill: parent; hoverEnabled: true
                     cursorShape: parent.parent.parent.canMoveUp ? Qt.PointingHandCursor : Qt.ArrowCursor
                     onClicked: {
                       if (parent.parent.parent.canMoveUp) root.moveLayerStep(root.selectedActionIndex, 1)
                     }
                   }
-                  PanelToolTip { visible: upMouse.containsMouse; text: "Move Layer Up" }
+                  PanelToolTip { visible: lpUpMouse.containsMouse; text: "Move Layer Up" }
                 }
 
                 // Move Down
                 Rectangle {
                   Layout.fillWidth: true; height: Style.space(22); radius: Style.space(3)
-                  color: parent.parent.canMoveDown ? (downMouse.containsMouse ? Util.alpha(Color.accent, 0.22) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.02)
+                  color: parent.parent.canMoveDown ? (lpDownMouse.containsMouse ? Util.alpha(Color.accent, 0.22) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.02)
                   opacity: parent.parent.canMoveDown ? 1.0 : 0.35
                   border.width: 1
                   border.color: parent.parent.canMoveDown ? Util.alpha(Color.accent, 0.3) : "transparent"
@@ -7683,20 +7658,20 @@ Rectangle {
                     Text { text: "Down"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(6.5); font.bold: true; color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
                   }
                   MouseArea {
-                    id: downMouse
+                    id: lpDownMouse
                     anchors.fill: parent; hoverEnabled: true
                     cursorShape: parent.parent.parent.canMoveDown ? Qt.PointingHandCursor : Qt.ArrowCursor
                     onClicked: {
                       if (parent.parent.parent.canMoveDown) root.moveLayerStep(root.selectedActionIndex, -1)
                     }
                   }
-                  PanelToolTip { visible: downMouse.containsMouse; text: "Move Layer Down" }
+                  PanelToolTip { visible: lpDownMouse.containsMouse; text: "Move Layer Down" }
                 }
 
                 // Send to Back
                 Rectangle {
                   Layout.fillWidth: true; height: Style.space(22); radius: Style.space(3)
-                  color: parent.parent.canMoveDown ? (backMouse.containsMouse ? Util.alpha(Color.accent, 0.22) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.02)
+                  color: parent.parent.canMoveDown ? (lpBackMouse.containsMouse ? Util.alpha(Color.accent, 0.22) : Util.alpha(Color.popups.text || Color.text, 0.08)) : Util.alpha(Color.popups.text || Color.text, 0.02)
                   opacity: parent.parent.canMoveDown ? 1.0 : 0.35
                   border.width: 1
                   border.color: parent.parent.canMoveDown ? Util.alpha(Color.accent, 0.3) : "transparent"
@@ -7708,14 +7683,14 @@ Rectangle {
                     Text { text: "Back"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(6.5); font.bold: true; color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
                   }
                   MouseArea {
-                    id: backMouse
+                    id: lpBackMouse
                     anchors.fill: parent; hoverEnabled: true
                     cursorShape: parent.parent.parent.canMoveDown ? Qt.PointingHandCursor : Qt.ArrowCursor
                     onClicked: {
                       if (parent.parent.parent.canMoveDown) root.sendLayerToBack(root.selectedActionIndex)
                     }
                   }
-                  PanelToolTip { visible: backMouse.containsMouse; text: "Send to Back ([)" }
+                  PanelToolTip { visible: lpBackMouse.containsMouse; text: "Send to Back ([)" }
                 }
               }
 
@@ -7727,7 +7702,7 @@ Rectangle {
                 // Duplicate Button
                 Rectangle {
                   Layout.fillWidth: true; height: Style.space(22); radius: Style.space(3)
-                  color: parent.parent.hasSel ? (dupMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.15) : Util.alpha(Color.popups.text || Color.text, 0.07)) : Util.alpha(Color.popups.text || Color.text, 0.02)
+                  color: parent.parent.hasSel ? (lpDupMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.15) : Util.alpha(Color.popups.text || Color.text, 0.07)) : Util.alpha(Color.popups.text || Color.text, 0.02)
                   opacity: parent.parent.hasSel ? 1.0 : 0.35
                   border.width: 1
                   border.color: parent.parent.hasSel ? Util.alpha(Color.popups.text || Color.text, 0.15) : "transparent"
@@ -7739,20 +7714,20 @@ Rectangle {
                     Text { text: "Duplicate"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7); font.bold: true; color: Color.popups.text || Color.text; anchors.verticalCenter: parent.verticalCenter }
                   }
                   MouseArea {
-                    id: dupMouse
+                    id: lpDupMouse
                     anchors.fill: parent; hoverEnabled: true
                     cursorShape: parent.parent.parent.hasSel ? Qt.PointingHandCursor : Qt.ArrowCursor
                     onClicked: {
                       if (parent.parent.parent.hasSel) root.duplicateSelectedAction()
                     }
                   }
-                  PanelToolTip { visible: dupMouse.containsMouse; text: "Duplicate Selected (Ctrl+D)" }
+                  PanelToolTip { visible: lpDupMouse.containsMouse; text: "Duplicate Selected (Ctrl+D)" }
                 }
 
                 // Delete Button
                 Rectangle {
                   Layout.fillWidth: true; height: Style.space(22); radius: Style.space(3)
-                  color: parent.parent.hasSel ? (delBtnMouse.containsMouse ? Util.alpha(Color.urgent, 0.22) : Util.alpha(Color.urgent, 0.1)) : Util.alpha(Color.popups.text || Color.text, 0.02)
+                  color: parent.parent.hasSel ? (lpDelBtnMouse.containsMouse ? Util.alpha(Color.urgent, 0.22) : Util.alpha(Color.urgent, 0.1)) : Util.alpha(Color.popups.text || Color.text, 0.02)
                   opacity: parent.parent.hasSel ? 1.0 : 0.35
                   border.width: 1
                   border.color: parent.parent.hasSel ? Util.alpha(Color.urgent, 0.3) : "transparent"
@@ -7764,14 +7739,14 @@ Rectangle {
                     Text { text: "Delete"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(7); font.bold: true; color: Color.urgent; anchors.verticalCenter: parent.verticalCenter }
                   }
                   MouseArea {
-                    id: delBtnMouse
+                    id: lpDelBtnMouse
                     anchors.fill: parent; hoverEnabled: true
                     cursorShape: parent.parent.parent.hasSel ? Qt.PointingHandCursor : Qt.ArrowCursor
                     onClicked: {
                       if (parent.parent.parent.hasSel) root.deleteSelectedAction()
                     }
                   }
-                  PanelToolTip { visible: delBtnMouse.containsMouse; text: "Delete Selected (Del)" }
+                  PanelToolTip { visible: lpDelBtnMouse.containsMouse; text: "Delete Selected (Del)" }
                 }
               }
             }
