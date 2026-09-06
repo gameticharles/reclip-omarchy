@@ -2777,7 +2777,7 @@ Rectangle {
         Rectangle {
           id: layerToggleBtn
           height: Style.space(24)
-          width: layerBtnRow.implicitWidth + Style.space(12)
+          width: Math.max(Style.space(24), layerBtnRow.implicitWidth + Style.space(10))
           radius: Style.space(4)
           color: root.layerPanelOpen ? Color.accent : (layerMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.14) : Util.alpha(Color.popups.text || Color.text, 0.06))
           border.width: 1
@@ -2786,7 +2786,7 @@ Rectangle {
           Row {
             id: layerBtnRow
             anchors.centerIn: parent
-            spacing: Style.space(4)
+            spacing: Style.space(3)
 
             Text {
               text: "󰘚"
@@ -2796,10 +2796,11 @@ Rectangle {
             }
 
             Text {
-              text: "Layers" + (root.actions.length > 0 ? (" (" + root.actions.length + ")") : "")
+              visible: root.actions.length > 0
+              text: String(root.actions.length)
               color: root.layerPanelOpen ? (Color.popups.background || "#FFFFFF") : (Color.popups.text || Color.text)
               font.family: Style.font.menuFamily
-              font.pixelSize: Style.space(8)
+              font.pixelSize: Style.space(7.5)
               font.bold: true
               anchors.verticalCenter: parent.verticalCenter
             }
