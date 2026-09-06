@@ -92,6 +92,7 @@ Rectangle {
   property int magnifierRadius: 50
   property string spotlightShape: "rect"
   property int spotlightRadius: 12
+  property real spotlightZoom: 1.0
   property real spotlightDimOpacity: 0.65
   property string spotlightDimColor: "#000000"
   property int spotlightBorderWidth: 2
@@ -906,6 +907,7 @@ Rectangle {
       if (act.tool === "spotlight") {
         if (act.shape) root.spotlightShape = act.shape
         if (typeof act.radius !== "undefined") root.spotlightRadius = act.radius
+        if (typeof act.zoom !== "undefined") root.spotlightZoom = act.zoom
         if (typeof act.borderWidth !== "undefined") root.spotlightBorderWidth = act.borderWidth
         if (act.borderColor) root.spotlightBorderColor = act.borderColor
         if (typeof act.dimOpacity !== "undefined") root.spotlightDimOpacity = act.dimOpacity
@@ -3398,6 +3400,7 @@ Rectangle {
                   end: pt,
                   shape: root.spotlightShape || "rect",
                   radius: (root.spotlightRadius !== undefined) ? root.spotlightRadius : 12,
+                  zoom: (root.spotlightZoom !== undefined) ? root.spotlightZoom : 1.0,
                   dimOpacity: (root.spotlightDimOpacity !== undefined) ? root.spotlightDimOpacity : 0.65,
                   dimColor: root.spotlightDimColor || "#000000",
                   borderWidth: (root.spotlightBorderWidth !== undefined) ? root.spotlightBorderWidth : 2,
@@ -4127,7 +4130,7 @@ Rectangle {
               height: selectionOverlay.boxH
               rotation: (selectionOverlay.curAct && selectionOverlay.curAct.rotation) || 0
               transformOrigin: Item.Center
-              color: (selectionOverlay.curAct && selectionOverlay.curAct.locked) ? Util.alpha("#F59E0B", 0.08) : Util.alpha(Color.accent, 0.08)
+              color: (selectionOverlay.curAct && selectionOverlay.curAct.tool === "spotlight") ? "transparent" : ((selectionOverlay.curAct && selectionOverlay.curAct.locked) ? Util.alpha("#F59E0B", 0.08) : Util.alpha(Color.accent, 0.08))
               border.width: 1.5
               border.color: (selectionOverlay.curAct && selectionOverlay.curAct.locked) ? "#F59E0B" : Color.accent
               z: 10
@@ -4372,9 +4375,11 @@ Rectangle {
                 var w3 = selRowShapeFlick.visible ? selRowShapeContent.implicitWidth : 0
                 var w4 = selRowToolFlick.visible ? selRowToolContent.implicitWidth : 0
                 var w4b = selRowTextEffectsFlick.visible ? selRowTextEffectsContent.implicitWidth : 0
+                var w4s_border = selRowSpotlightBorderFlick.visible ? selRowSpotlightBorderContent.implicitWidth : 0
+                var w4s_dim = selRowSpotlightDimFlick.visible ? selRowSpotlightDimContent.implicitWidth : 0
                 var w5 = selRowLayoutFlick.visible ? selRowLayoutContent.implicitWidth : 0
                 var w6 = selRowShadowFlick.visible ? selRowShadowContent.implicitWidth : 0
-                return Math.max(Style.space(340), Math.max(w1, Math.max(w2, Math.max(w3, Math.max(w4, Math.max(w4b, Math.max(w5, w6))))))) + Style.space(20)
+                return Math.max(Style.space(340), Math.max(w1, Math.max(w2, Math.max(w3, Math.max(w4, Math.max(w4b, Math.max(w4s_border, Math.max(w4s_dim, Math.max(w5, w6))))))))) + Style.space(20)
               }
               width: Math.min(selectionOverlay.width - Style.space(8), naturalWidth)
               height: selInspectorCol.implicitHeight + Style.space(10)
@@ -5841,7 +5846,7 @@ Rectangle {
                         }
                       }
 
-                      // 8. SPOTLIGHT CONTROLS (Shape, Radius, Unified Dim Darkness & Tint, Individual Border Width & Color)
+                      // 8. SPOTLIGHT CONTROLS (Shape, Radius & Magnification Zoom)
                       Row {
                         visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "spotlight")
                         spacing: Style.space(3)
@@ -5899,177 +5904,256 @@ Rectangle {
                           onValueCommitted: function(val) { root.commitSelectedProperty("radius", val, "Spotlight Radius"); root.spotlightRadius = val }
                         }
 
-                        // Unified Dim Darkness Scrubber
+                        // Magnification Zoom Scrubber
                         SmartScrubber {
-                          label: "Dim"
-                          value: Math.round(root.spotlightDimOpacity * 100)
-                          from: 10
-                          to: 95
-                          step: 5
-                          unit: "%"
-                          tip: "Unified background dimming darkness percentage"
+                          label: "Zoom"
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.zoom !== undefined) ? selectionOverlay.curAct.zoom : (root.spotlightZoom || 1.0)
+                          from: 1.0
+                          to: 4.0
+                          step: 0.1
+                          unit: "×"
+                          tip: "Spotlight magnification zoom factor (1.0× = normal / off)"
                           onValueScrubbed: function(val) {
-                            root.spotlightDimOpacity = val / 100.0
-                            annotationCanvas.requestPaint()
+                            var rounded = Math.round(val * 10) / 10
+                            root.modifySelectedProperty("zoom", rounded)
+                            root.spotlightZoom = rounded
                           }
                           onValueCommitted: function(val) {
-                            root.setUnifiedSpotlightDimOpacity(val / 100.0)
+                            var rounded = Math.round(val * 10) / 10
+                            root.commitSelectedProperty("zoom", rounded, "Magnification Zoom")
+                            root.spotlightZoom = rounded
                           }
                         }
+                      }
+                    }
+                  }
 
-                        // Unified Dim Tint Swatches & Tools
-                        Row {
-                          spacing: Style.space(2)
+                  // Separator Line before Spotlight Border Row
+                  Rectangle {
+                    visible: selRowSpotlightBorderFlick.visible
+                    width: parent.width
+                    height: 1
+                    color: Util.alpha(Color.popups.border || Color.border, 0.18)
+                  }
+
+                  // ==========================================
+                  // ROW 4S_BORDER: SPOTLIGHT BORDER & COLOR
+                  // ==========================================
+                  Flickable {
+                    id: selRowSpotlightBorderFlick
+                    visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "spotlight")
+                    width: parent.width
+                    height: visible ? Style.space(20) : 0
+                    contentWidth: selRowSpotlightBorderContent.implicitWidth + Style.space(8)
+                    contentHeight: height
+                    boundsBehavior: Flickable.StopAtBounds
+                    flickableDirection: Flickable.HorizontalFlick
+                    clip: true
+
+                    Row {
+                      id: selRowSpotlightBorderContent
+                      anchors.verticalCenter: parent.verticalCenter
+                      spacing: Style.space(3)
+
+                      // Border Width Scrubber
+                      SmartScrubber {
+                        label: "Border"
+                        value: (selectionOverlay.curAct && selectionOverlay.curAct.borderWidth !== undefined) ? selectionOverlay.curAct.borderWidth : root.spotlightBorderWidth
+                        from: 0
+                        to: 12
+                        step: 1
+                        unit: "px"
+                        tip: "Spotlight rim border width (0 to hide border)"
+                        onValueScrubbed: function(val) { root.modifySelectedProperty("borderWidth", val); root.spotlightBorderWidth = val }
+                        onValueCommitted: function(val) { root.commitSelectedProperty("borderWidth", val, "Border Width"); root.spotlightBorderWidth = val }
+                      }
+
+                      // Border Color Swatches
+                      Row {
+                        spacing: Style.space(2)
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Text {
+                          text: "Border:"
+                          color: Util.alpha(Color.popups.text || Color.text, 0.6)
+                          font.family: Style.font.menuFamily
+                          font.pixelSize: Style.space(7.5)
+                          font.bold: true
                           anchors.verticalCenter: parent.verticalCenter
+                        }
 
-                          Text {
-                            text: "Dim Tint:"
-                            color: Util.alpha(Color.popups.text || Color.text, 0.6)
-                            font.family: Style.font.menuFamily
-                            font.pixelSize: Style.space(7.5)
-                            font.bold: true
-                            anchors.verticalCenter: parent.verticalCenter
-                          }
-
-                          Repeater {
-                            model: ["#000000", "#0F172A", "#1E1E2E", "#2B2D42"]
-                            Rectangle {
-                              required property string modelData
-                              width: Style.space(12); height: Style.space(12); radius: Style.space(6)
-                              color: modelData
-                              border.width: (String(root.spotlightDimColor).toLowerCase() === String(modelData).toLowerCase()) ? 2 : 1
-                              border.color: (String(root.spotlightDimColor).toLowerCase() === String(modelData).toLowerCase()) ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.25)
-                              scale: (String(root.spotlightDimColor).toLowerCase() === String(modelData).toLowerCase()) ? 1.25 : 1.0
-                              anchors.verticalCenter: parent.verticalCenter
-
-                              MouseArea {
-                                id: sdcMouse
-                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                onClicked: root.setUnifiedSpotlightDimColor(parent.modelData)
-                              }
-                              PanelToolTip { visible: sdcMouse.containsMouse; text: "Dim Tint: " + parent.modelData }
-                            }
-                          }
-
-                          // Eyedropper for Dim Tint
+                        Repeater {
+                          model: ["#FFFFFF", "#000000", "#FF4444", "#FFAA00", "#00C853", "#00B0FF", "#A855F7"]
                           Rectangle {
-                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
-                            color: sdimedMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                            required property string modelData
+                            width: Style.space(12); height: Style.space(12); radius: Style.space(6)
+                            color: modelData
+                            border.width: (selectionOverlay.curAct && String(selectionOverlay.curAct.borderColor).toLowerCase() === String(modelData).toLowerCase()) ? 2 : 1
+                            border.color: (selectionOverlay.curAct && String(selectionOverlay.curAct.borderColor).toLowerCase() === String(modelData).toLowerCase()) ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.25)
+                            scale: (selectionOverlay.curAct && String(selectionOverlay.curAct.borderColor).toLowerCase() === String(modelData).toLowerCase()) ? 1.25 : 1.0
                             anchors.verticalCenter: parent.verticalCenter
-                            Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
-                            MouseArea {
-                              id: sdimedMouse
-                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: {
-                                root.activeColorTarget = "spotlightDim"
-                                root.requestScreenPick()
-                              }
-                            }
-                            PanelToolTip { visible: sdimedMouse.containsMouse; text: "Pick dim tint from screen" }
-                          }
 
-                          // Color Studio for Dim Tint
-                          Rectangle {
-                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
-                            color: sdimStudioMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
-                            anchors.verticalCenter: parent.verticalCenter
-                            Text { text: "󰃚"; color: sdimStudioMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(8); anchors.centerIn: parent }
                             MouseArea {
-                              id: sdimStudioMouse
+                              id: sbcMouse
                               anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: {
-                                root.activeColorTarget = "spotlightDim"
-                                root.currentColor = root.spotlightDimColor
-                                root.requestColorPicker()
-                              }
+                              onClicked: root.setSelectedSpotlightBorderColor(parent.modelData)
                             }
-                            PanelToolTip { visible: sdimStudioMouse.containsMouse; text: "Customize Unified Dim Tint Color" }
+                            PanelToolTip { visible: sbcMouse.containsMouse; text: "Border: " + parent.modelData }
                           }
                         }
 
-                        // Border Width Scrubber (Individual)
-                        SmartScrubber {
-                          label: "Border"
-                          value: (selectionOverlay.curAct && selectionOverlay.curAct.borderWidth !== undefined) ? selectionOverlay.curAct.borderWidth : root.spotlightBorderWidth
-                          from: 0
-                          to: 12
-                          step: 1
-                          unit: "px"
-                          tip: "Spotlight rim border width (0 to hide border)"
-                          onValueScrubbed: function(val) { root.modifySelectedProperty("borderWidth", val); root.spotlightBorderWidth = val }
-                          onValueCommitted: function(val) { root.commitSelectedProperty("borderWidth", val, "Border Width"); root.spotlightBorderWidth = val }
-                        }
-
-                        // Border Color Swatches (Individual)
-                        Row {
-                          spacing: Style.space(2)
+                        // Eyedropper for Border
+                        Rectangle {
+                          width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                          color: sbedMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
                           anchors.verticalCenter: parent.verticalCenter
-
-                          Text {
-                            text: "Border:"
-                            color: Util.alpha(Color.popups.text || Color.text, 0.6)
-                            font.family: Style.font.menuFamily
-                            font.pixelSize: Style.space(7.5)
-                            font.bold: true
-                            anchors.verticalCenter: parent.verticalCenter
-                          }
-
-                          Repeater {
-                            model: ["#FFFFFF", "#000000", "#FF4444", "#FFAA00", "#00C853", "#00B0FF"]
-                            Rectangle {
-                              required property string modelData
-                              width: Style.space(12); height: Style.space(12); radius: Style.space(6)
-                              color: modelData
-                              border.width: (selectionOverlay.curAct && String(selectionOverlay.curAct.borderColor).toLowerCase() === String(modelData).toLowerCase()) ? 2 : 1
-                              border.color: (selectionOverlay.curAct && String(selectionOverlay.curAct.borderColor).toLowerCase() === String(modelData).toLowerCase()) ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.25)
-                              scale: (selectionOverlay.curAct && String(selectionOverlay.curAct.borderColor).toLowerCase() === String(modelData).toLowerCase()) ? 1.25 : 1.0
-                              anchors.verticalCenter: parent.verticalCenter
-
-                              MouseArea {
-                                id: sbcMouse
-                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                onClicked: root.setSelectedSpotlightBorderColor(parent.modelData)
-                              }
-                              PanelToolTip { visible: sbcMouse.containsMouse; text: "Border: " + parent.modelData }
+                          Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
+                          MouseArea {
+                            id: sbedMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.activeColorTarget = "spotlightBorder"
+                              root.requestScreenPick()
                             }
                           }
+                          PanelToolTip { visible: sbedMouse.containsMouse; text: "Pick border color from screen" }
+                        }
 
-                          // Eyedropper for Border
+                        // Color Studio for Border
+                        Rectangle {
+                          width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                          color: sbStudioMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                          anchors.verticalCenter: parent.verticalCenter
+                          Text { text: "󰏘"; color: sbStudioMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                          MouseArea {
+                            id: sbStudioMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.activeColorTarget = "spotlightBorder"
+                              if (selectionOverlay.curAct && selectionOverlay.curAct.borderColor) {
+                                root.currentColor = selectionOverlay.curAct.borderColor
+                              }
+                              root.requestColorPicker()
+                            }
+                          }
+                          PanelToolTip { visible: sbStudioMouse.containsMouse; text: "Open Color Studio for Border" }
+                        }
+                      }
+                    }
+                  }
+
+                  // Separator Line before Spotlight Dim Row
+                  Rectangle {
+                    visible: selRowSpotlightDimFlick.visible
+                    width: parent.width
+                    height: 1
+                    color: Util.alpha(Color.popups.border || Color.border, 0.18)
+                  }
+
+                  // ==========================================
+                  // ROW 4C_SPOTLIGHT: UNIFIED BACKGROUND DARKNESS & TINT
+                  // ==========================================
+                  Flickable {
+                    id: selRowSpotlightDimFlick
+                    visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "spotlight")
+                    width: parent.width
+                    height: visible ? Style.space(20) : 0
+                    contentWidth: selRowSpotlightDimContent.implicitWidth + Style.space(8)
+                    contentHeight: height
+                    boundsBehavior: Flickable.StopAtBounds
+                    flickableDirection: Flickable.HorizontalFlick
+                    clip: true
+
+                    Row {
+                      id: selRowSpotlightDimContent
+                      anchors.verticalCenter: parent.verticalCenter
+                      spacing: Style.space(3)
+
+                      // Unified Dim Darkness Scrubber
+                      SmartScrubber {
+                        label: "Darkness"
+                        value: Math.round(root.spotlightDimOpacity * 100)
+                        from: 10
+                        to: 95
+                        step: 5
+                        unit: "%"
+                        tip: "Unified background dimming darkness percentage"
+                        onValueScrubbed: function(val) {
+                          root.spotlightDimOpacity = val / 100.0
+                          annotationCanvas.requestPaint()
+                        }
+                        onValueCommitted: function(val) {
+                          root.setUnifiedSpotlightDimOpacity(val / 100.0)
+                        }
+                      }
+
+                      // Unified Dim Tint Swatches & Tools
+                      Row {
+                        spacing: Style.space(2)
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Text {
+                          text: "Dim Tint:"
+                          color: Util.alpha(Color.popups.text || Color.text, 0.6)
+                          font.family: Style.font.menuFamily
+                          font.pixelSize: Style.space(7.5)
+                          font.bold: true
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        Repeater {
+                          model: ["#000000", "#0F172A", "#1E1E2E", "#2B2D42", "#111827"]
                           Rectangle {
-                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
-                            color: sbedMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                            required property string modelData
+                            width: Style.space(12); height: Style.space(12); radius: Style.space(6)
+                            color: modelData
+                            border.width: (String(root.spotlightDimColor).toLowerCase() === String(modelData).toLowerCase()) ? 2 : 1
+                            border.color: (String(root.spotlightDimColor).toLowerCase() === String(modelData).toLowerCase()) ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.25)
+                            scale: (String(root.spotlightDimColor).toLowerCase() === String(modelData).toLowerCase()) ? 1.25 : 1.0
                             anchors.verticalCenter: parent.verticalCenter
-                            Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
-                            MouseArea {
-                              id: sbedMouse
-                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: {
-                                root.activeColorTarget = "spotlightBorder"
-                                root.requestScreenPick()
-                              }
-                            }
-                            PanelToolTip { visible: sbedMouse.containsMouse; text: "Pick border color from screen" }
-                          }
 
-                          // Color Studio for Border
-                          Rectangle {
-                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
-                            color: sbStudioMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
-                            anchors.verticalCenter: parent.verticalCenter
-                            Text { text: "󰏘"; color: sbStudioMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(8); anchors.centerIn: parent }
                             MouseArea {
-                              id: sbStudioMouse
+                              id: sdcMouse
                               anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                              onClicked: {
-                                root.activeColorTarget = "spotlightBorder"
-                                if (selectionOverlay.curAct && selectionOverlay.curAct.borderColor) {
-                                  root.currentColor = selectionOverlay.curAct.borderColor
-                                }
-                                root.requestColorPicker()
-                              }
+                              onClicked: root.setUnifiedSpotlightDimColor(parent.modelData)
                             }
-                            PanelToolTip { visible: sbStudioMouse.containsMouse; text: "Open Color Studio for Border" }
+                            PanelToolTip { visible: sdcMouse.containsMouse; text: "Dim Tint: " + parent.modelData }
                           }
+                        }
+
+                        // Eyedropper for Dim Tint
+                        Rectangle {
+                          width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                          color: sdimedMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                          anchors.verticalCenter: parent.verticalCenter
+                          Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
+                          MouseArea {
+                            id: sdimedMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.activeColorTarget = "spotlightDim"
+                              root.requestScreenPick()
+                            }
+                          }
+                          PanelToolTip { visible: sdimedMouse.containsMouse; text: "Pick dim tint from screen" }
+                        }
+
+                        // Color Studio for Dim Tint
+                        Rectangle {
+                          width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                          color: sdimStudioMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                          anchors.verticalCenter: parent.verticalCenter
+                          Text { text: "󰃚"; color: sdimStudioMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                          MouseArea {
+                            id: sdimStudioMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.activeColorTarget = "spotlightDim"
+                              root.currentColor = root.spotlightDimColor
+                              root.requestColorPicker()
+                            }
+                          }
+                          PanelToolTip { visible: sdimStudioMouse.containsMouse; text: "Customize Unified Dim Tint Color" }
                         }
                       }
                     }
@@ -7346,6 +7430,44 @@ Rectangle {
     }
   }
 
+  function drawCutoutRoundedRect(ctx, x, y, w, h, r) {
+    var rad = Math.max(0, Math.min(r, Math.min(w / 2, h / 2)))
+    if (rad <= 0) {
+      ctx.moveTo(x, y)
+      ctx.lineTo(x, y + h)
+      ctx.lineTo(x + w, y + h)
+      ctx.lineTo(x + w, y)
+      ctx.closePath()
+      return
+    }
+    ctx.moveTo(x, y + rad)
+    ctx.lineTo(x, y + h - rad)
+    ctx.arcTo(x, y + h, x + rad, y + h, rad)
+    ctx.lineTo(x + w - rad, y + h)
+    ctx.arcTo(x + w, y + h, x + w, y + h - rad, rad)
+    ctx.lineTo(x + w, y + rad)
+    ctx.arcTo(x + w, y, x + w - rad, y, rad)
+    ctx.lineTo(x + rad, y)
+    ctx.arcTo(x, y, x, y + rad, rad)
+    ctx.closePath()
+  }
+
+  function drawCutoutEllipse(ctx, x, y, w, h) {
+    var cx = x + w / 2
+    var cy = y + h / 2
+    var rx = Math.max(1, w / 2)
+    var ry = Math.max(1, h / 2)
+    var kappa = 0.5522847498307936
+    var ox = rx * kappa
+    var oy = ry * kappa
+    ctx.moveTo(cx + rx, cy)
+    ctx.bezierCurveTo(cx + rx, cy - oy, cx + ox, cy - ry, cx, cy - ry)
+    ctx.bezierCurveTo(cx - ox, cy - ry, cx - rx, cy - oy, cx - rx, cy)
+    ctx.bezierCurveTo(cx - rx, cy + oy, cx - ox, cy + ry, cx, cy + ry)
+    ctx.bezierCurveTo(cx + ox, cy + ry, cx + rx, cy + oy, cx + rx, cy)
+    ctx.closePath()
+  }
+
   function renderUnifiedSpotlightDim(ctx, spotlights) {
     if (!spotlights || spotlights.length === 0) return
 
@@ -7358,10 +7480,14 @@ Rectangle {
     var outW = (root.imageWidth || 4000) + outMargin * 2
     var outH = (root.imageHeight || 4000) + outMargin * 2
 
-    // Outer rect boundary
-    ctx.rect(outX, outY, outW, outH)
+    // Outer rect boundary (clockwise)
+    ctx.moveTo(outX, outY)
+    ctx.lineTo(outX + outW, outY)
+    ctx.lineTo(outX + outW, outY + outH)
+    ctx.lineTo(outX, outY + outH)
+    ctx.closePath()
 
-    // Inner cutouts for all active spotlights
+    // Inner cutouts for all active spotlights (counter-clockwise)
     for (var i = 0; i < spotlights.length; i++) {
       var s = spotlights[i]
       if (!s || !s.start || !s.end) continue
@@ -7372,20 +7498,16 @@ Rectangle {
       var shape = s.shape || "rect"
 
       if (shape === "circle") {
-        root.drawEllipsePath(ctx, sx, sy, sw, sh)
+        root.drawCutoutEllipse(ctx, sx, sy, sw, sh)
       } else {
         var sRad = (s.radius !== undefined) ? s.radius : root.spotlightRadius
-        root.drawRoundedRectPath(ctx, sx, sy, sw, sh, sRad)
+        root.drawCutoutRoundedRect(ctx, sx, sy, sw, sh, sRad)
       }
     }
 
     ctx.fillStyle = root.spotlightDimColor || "#000000"
     ctx.globalAlpha = (root.spotlightDimOpacity !== undefined ? root.spotlightDimOpacity : 0.65)
-    try {
-      ctx.fill("evenodd")
-    } catch (e) {
-      ctx.fill()
-    }
+    ctx.fill()
     ctx.restore()
   }
 
@@ -8087,6 +8209,25 @@ Rectangle {
         var spRad = (act.radius !== undefined) ? act.radius : root.spotlightRadius
         var spBorderW = (act.borderWidth !== undefined) ? act.borderWidth : 2
         var spBorderCol = act.borderColor || "#FFFFFF"
+        var spZoom = (act.zoom !== undefined) ? act.zoom : 1.0
+
+        // Optional Magnification Zoom inside spotlight cutout
+        if (spZoom > 1.0 && baseImage && baseImage.status === Image.Ready) {
+          ctx.save()
+          ctx.beginPath()
+          if (spShape === "circle") {
+            root.drawEllipsePath(ctx, spX, spY, spW, spH)
+          } else {
+            root.drawRoundedRectPath(ctx, spX, spY, spW, spH, spRad)
+          }
+          ctx.clip()
+          var spZoomSrcW = spW / spZoom
+          var spZoomSrcH = spH / spZoom
+          var spZoomSrcX = (spX + spW / 2) - spZoomSrcW / 2
+          var spZoomSrcY = (spY + spH / 2) - spZoomSrcH / 2
+          ctx.drawImage(baseImage, spZoomSrcX, spZoomSrcY, spZoomSrcW, spZoomSrcH, spX, spY, spW, spH)
+          ctx.restore()
+        }
 
         // Stroke individual spotlight rim border
         if (spBorderW > 0) {
