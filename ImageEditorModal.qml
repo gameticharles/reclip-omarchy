@@ -843,6 +843,23 @@ Rectangle {
           var projY = act.start.y + t * (act.end.y - act.start.y)
           if (Math.hypot(testPt.x - projX, testPt.y - projY) <= Math.max(12, (act.width || 4) + 6)) return i
         }
+      } else if ((act.tool === "circle" || (act.tool === "spotlight" && act.shape === "circle")) && act.start && act.end) {
+        var ebb = root.getActionBounds(act)
+        var ecx = ebb.x + ebb.width / 2
+        var ecy = ebb.y + ebb.height / 2
+        var erx = Math.max(1, ebb.width / 2)
+        var ery = Math.max(1, ebb.height / 2)
+        var enx = (testPt.x - ecx) / erx
+        var eny = (testPt.y - ecy) / ery
+        var eDist = Math.hypot(enx, eny)
+        var eSolid = act.tool === "spotlight" || act.filled || (act.fillMode && act.fillMode !== "none")
+        if (eSolid) {
+          if (eDist <= 1.05) return i
+        } else {
+          var avgR = (erx + ery) / 2
+          var pixDist = Math.abs(eDist - 1.0) * avgR
+          if (pixDist <= Math.max(10, (act.width || 4) + 6)) return i
+        }
       } else if (act.start && act.end) {
         var bb = root.getActionBounds(act)
         var isSolid = act.filled || act.tool === "blur" || act.tool === "pixelate" || act.tool === "block_highlight" || act.tool === "magnifier" || act.tool === "spotlight"
@@ -4130,7 +4147,7 @@ Rectangle {
               height: selectionOverlay.boxH
               rotation: (selectionOverlay.curAct && selectionOverlay.curAct.rotation) || 0
               transformOrigin: Item.Center
-              color: (selectionOverlay.curAct && selectionOverlay.curAct.tool === "spotlight") ? "transparent" : ((selectionOverlay.curAct && selectionOverlay.curAct.locked) ? Util.alpha("#F59E0B", 0.08) : Util.alpha(Color.accent, 0.08))
+              color: (selectionOverlay.curAct && (selectionOverlay.curAct.tool === "spotlight" || selectionOverlay.curAct.tool === "circle")) ? "transparent" : ((selectionOverlay.curAct && selectionOverlay.curAct.locked) ? Util.alpha("#F59E0B", 0.08) : Util.alpha(Color.accent, 0.08))
               border.width: 1.5
               border.color: (selectionOverlay.curAct && selectionOverlay.curAct.locked) ? "#F59E0B" : Color.accent
               z: 10
@@ -7411,13 +7428,17 @@ Rectangle {
   }
 
   function drawEllipsePath(ctx, x, y, w, h) {
-    var cx = x + w / 2
-    var cy = y + h / 2
-    var rx = Math.max(1, w / 2)
-    var ry = Math.max(1, h / 2)
+    var ex = Math.min(x, x + w)
+    var ey = Math.min(y, y + h)
+    var ew = Math.max(1, Math.abs(w))
+    var eh = Math.max(1, Math.abs(h))
     if (typeof ctx.ellipse === "function") {
-      ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2)
+      ctx.ellipse(ex, ey, ew, eh)
     } else {
+      var cx = ex + ew / 2
+      var cy = ey + eh / 2
+      var rx = ew / 2
+      var ry = eh / 2
       var kappa = 0.5522847498307936
       var ox = rx * kappa
       var oy = ry * kappa
@@ -7453,10 +7474,14 @@ Rectangle {
   }
 
   function drawCutoutEllipse(ctx, x, y, w, h) {
-    var cx = x + w / 2
-    var cy = y + h / 2
-    var rx = Math.max(1, w / 2)
-    var ry = Math.max(1, h / 2)
+    var ex = Math.min(x, x + w)
+    var ey = Math.min(y, y + h)
+    var ew = Math.max(1, Math.abs(w))
+    var eh = Math.max(1, Math.abs(h))
+    var cx = ex + ew / 2
+    var cy = ey + eh / 2
+    var rx = ew / 2
+    var ry = eh / 2
     var kappa = 0.5522847498307936
     var ox = rx * kappa
     var oy = ry * kappa
@@ -7663,19 +7688,14 @@ Rectangle {
           disableShadow()
         }
       } else if (act.tool === "circle" && act.start && act.end) {
-        var crx = (act.end.x - act.start.x) / 2
-        var cry = (act.end.y - act.start.y) / 2
-        var ccx = act.start.x + crx
-        var ccy = act.start.y + cry
+        var cx = Math.min(act.start.x, act.end.x)
+        var cy = Math.min(act.start.y, act.end.y)
+        var cw = Math.max(1, Math.abs(act.end.x - act.start.x))
+        var ch = Math.max(1, Math.abs(act.end.y - act.start.y))
         var fMode = act.fillMode || (act.filled ? "semi" : "none")
         if (fMode !== "none") {
           ctx.beginPath()
-          if (typeof ctx.ellipse === "function") {
-            ctx.ellipse(ccx, ccy, Math.abs(crx), Math.abs(cry), 0, 0, Math.PI * 2)
-          } else {
-            var r = Math.max(Math.abs(crx), Math.abs(cry))
-            ctx.arc(ccx, ccy, r, 0, Math.PI * 2)
-          }
+          root.drawEllipsePath(ctx, cx, cy, cw, ch)
           enableShadow()
           ctx.fillStyle = String(act.fillColor || actColor)
           var baseCircAlpha = (fMode === "solid") ? 1.0 : (act.fillAlpha !== undefined ? act.fillAlpha : 0.25)
@@ -7686,12 +7706,7 @@ Rectangle {
         }
         if (actWidth > 0) {
           ctx.beginPath()
-          if (typeof ctx.ellipse === "function") {
-            ctx.ellipse(ccx, ccy, Math.abs(crx), Math.abs(cry), 0, 0, Math.PI * 2)
-          } else {
-            var rc = Math.max(Math.abs(crx), Math.abs(cry))
-            ctx.arc(ccx, ccy, rc, 0, Math.PI * 2)
-          }
+          root.drawEllipsePath(ctx, cx, cy, cw, ch)
           if (fMode === "none") {
             enableShadow()
           } else {
