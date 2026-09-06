@@ -97,6 +97,9 @@ Rectangle {
   property string spotlightDimColor: "#000000"
   property int spotlightBorderWidth: 2
   property string spotlightBorderColor: "#FFFFFF"
+  property string blurShape: "rect"
+  property int blurRadius: 0
+  property int blurDispersion: 4
   property bool aspectRatioLocked: false
   property var scrubStartAct: null
 
@@ -929,6 +932,11 @@ Rectangle {
         if (act.borderColor) root.spotlightBorderColor = act.borderColor
         if (typeof act.dimOpacity !== "undefined") root.spotlightDimOpacity = act.dimOpacity
         if (act.dimColor) root.spotlightDimColor = act.dimColor
+      }
+      if (act.tool === "blur") {
+        if (act.shape) root.blurShape = act.shape
+        if (typeof act.radius !== "undefined") root.blurRadius = act.radius
+        if (typeof act.dispersion !== "undefined") root.blurDispersion = act.dispersion
       }
     } else {
       root.selectedActionIndex = -1
@@ -1788,6 +1796,22 @@ Rectangle {
     next[root.selectedActionIndex] = cloned
     root.actions = next
     annotationCanvas.requestPaint()
+  }
+
+  function setSelectedBlurShape(shape) {
+    root.blurShape = shape
+    if (root.selectedActionIndex < 0 || root.selectedActionIndex >= root.actions.length) return
+    var act = root.actions[root.selectedActionIndex]
+    if (!act || act.tool !== "blur") return
+    if (act.shape === shape) return
+    root.pushUndoState()
+    var next = root.actions.slice()
+    var cloned = JSON.parse(JSON.stringify(act))
+    cloned.shape = shape
+    next[root.selectedActionIndex] = cloned
+    root.actions = next
+    annotationCanvas.requestPaint()
+    root.showFeedback("Blur Shape: " + (shape === "circle" ? "Circle / Oval" : "Rectangle"))
   }
 
   function setSelectedSpotlightShape(shape) {
@@ -3454,6 +3478,15 @@ Rectangle {
                   shadowOffsetY: Number(root.dropShadowOffsetY),
                   points: [pt]
                 }
+              } else if (root.currentTool === "blur") {
+                root.currentAction = {
+                  tool: "blur",
+                  start: pt,
+                  end: pt,
+                  shape: root.blurShape || "rect",
+                  radius: (root.blurRadius !== undefined) ? root.blurRadius : 0,
+                  dispersion: (root.blurDispersion !== undefined) ? root.blurDispersion : 4
+                }
               } else {
                 root.currentAction = {
                   tool: root.currentTool,
@@ -3543,6 +3576,8 @@ Rectangle {
                 } else if (act.tool === "magnifier" && act.start) {
                   if (!act.radius || act.radius < 15) act.radius = Number(root.magnifierRadius || 50)
                 } else if (act.tool === "spotlight" && act.start && act.end) {
+                  if (Math.abs(act.end.x - act.start.x) <= 4 || Math.abs(act.end.y - act.start.y) <= 4) valid = false
+                } else if (act.tool === "blur" && act.start && act.end) {
                   if (Math.abs(act.end.x - act.start.x) <= 4 || Math.abs(act.end.y - act.start.y) <= 4) valid = false
                 }
                 if (valid) {
@@ -4147,7 +4182,7 @@ Rectangle {
               height: selectionOverlay.boxH
               rotation: (selectionOverlay.curAct && selectionOverlay.curAct.rotation) || 0
               transformOrigin: Item.Center
-              color: (selectionOverlay.curAct && (selectionOverlay.curAct.tool === "spotlight" || selectionOverlay.curAct.tool === "circle")) ? "transparent" : ((selectionOverlay.curAct && selectionOverlay.curAct.locked) ? Util.alpha("#F59E0B", 0.08) : Util.alpha(Color.accent, 0.08))
+              color: (selectionOverlay.curAct && (selectionOverlay.curAct.tool === "spotlight" || selectionOverlay.curAct.tool === "circle" || (selectionOverlay.curAct.tool === "blur" && selectionOverlay.curAct.shape === "circle"))) ? "transparent" : ((selectionOverlay.curAct && selectionOverlay.curAct.locked) ? Util.alpha("#F59E0B", 0.08) : Util.alpha(Color.accent, 0.08))
               border.width: 1.5
               border.color: (selectionOverlay.curAct && selectionOverlay.curAct.locked) ? "#F59E0B" : Color.accent
               z: 10
@@ -5677,22 +5712,75 @@ Rectangle {
                         }
                       }
 
-                      // 5. BLUR CONTROLS (SmartScrubber for Optical Dispersion)
+                      // 5. BLUR CONTROLS (Shape, Radius & Optical Dispersion)
                       Row {
                         visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "blur")
-                        spacing: Style.space(2)
+                        spacing: Style.space(3)
                         anchors.verticalCenter: parent.verticalCenter
 
+                        // Shape Toggle: Rect vs Circle
+                        Row {
+                          spacing: Style.space(1.5)
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          Rectangle {
+                            width: Style.space(18); height: Style.space(18); radius: Style.space(4)
+                            property bool isSelected: !selectionOverlay.curAct || selectionOverlay.curAct.shape !== "circle"
+                            color: isSelected ? Util.alpha(Color.accent, 0.25) : (brectMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.05))
+                            border.width: 1
+                            border.color: isSelected ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.15)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "□"; color: parent.isSelected ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(9); font.bold: true; anchors.centerIn: parent }
+                            MouseArea {
+                              id: brectMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: root.setSelectedBlurShape("rect")
+                            }
+                            PanelToolTip { visible: brectMouse.containsMouse; text: "Rectangle Blur" }
+                          }
+
+                          Rectangle {
+                            width: Style.space(18); height: Style.space(18); radius: Style.space(4)
+                            property bool isSelected: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.shape === "circle")
+                            color: isSelected ? Util.alpha(Color.accent, 0.25) : (bcircMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.05))
+                            border.width: 1
+                            border.color: isSelected ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.15)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "○"; color: parent.isSelected ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(9); font.bold: true; anchors.centerIn: parent }
+                            MouseArea {
+                              id: bcircMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: root.setSelectedBlurShape("circle")
+                            }
+                            PanelToolTip { visible: bcircMouse.containsMouse; text: "Circle / Ellipse Blur" }
+                          }
+                        }
+
+                        // Corner Radius (Rectangle only)
+                        SmartScrubber {
+                          visible: !selectionOverlay.curAct || selectionOverlay.curAct.shape !== "circle"
+                          label: "Radius"
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.radius !== undefined) ? selectionOverlay.curAct.radius : root.blurRadius
+                          from: 0
+                          to: 60
+                          step: 2
+                          unit: "px"
+                          tip: "Blur corner radius"
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("radius", val); root.blurRadius = val }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("radius", val, "Blur Radius"); root.blurRadius = val }
+                        }
+
+                        // Optical Dispersion Scrubber
                         SmartScrubber {
                           label: "Dispersion"
-                          value: (selectionOverlay.curAct && selectionOverlay.curAct.dispersion !== undefined) ? selectionOverlay.curAct.dispersion : 4
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.dispersion !== undefined) ? selectionOverlay.curAct.dispersion : (root.blurDispersion || 4)
                           from: 2
                           to: 32
                           step: 1
                           unit: "px"
                           tip: "Blur optical dispersion radius (drag or double-click to type)"
-                          onValueScrubbed: function(val) { root.modifySelectedProperty("dispersion", val) }
-                          onValueCommitted: function(val) { root.commitSelectedProperty("dispersion", val, "Blur Dispersion") }
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("dispersion", val); root.blurDispersion = val }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("dispersion", val, "Blur Dispersion"); root.blurDispersion = val }
                         }
                       }
 
@@ -7756,13 +7844,29 @@ Rectangle {
       } else if (act.tool === "blur" && act.start && act.end) {
         var bx = Math.min(act.start.x, act.end.x)
         var by = Math.min(act.start.y, act.end.y)
-        var bw = Math.abs(act.end.x - act.start.x)
-        var bh = Math.abs(act.end.y - act.start.y)
+        var bw = Math.max(1, Math.abs(act.end.x - act.start.x))
+        var bh = Math.max(1, Math.abs(act.end.y - act.start.y))
+        var bShape = act.shape || "rect"
+        var bRad = (act.radius !== undefined) ? act.radius : 0
+
         ctx.save()
-        // Frosted base
+
+        // 1. Set clip path to prevent blur dispersion bleed and support circle/rounded shapes
+        ctx.beginPath()
+        if (bShape === "circle") {
+          root.drawEllipsePath(ctx, bx, by, bw, bh)
+        } else if (bRad > 0) {
+          root.drawRoundedRectPath(ctx, bx, by, bw, bh, bRad)
+        } else {
+          ctx.rect(bx, by, bw, bh)
+        }
+        ctx.clip()
+
+        // 2. Frosted glass base
         ctx.fillStyle = "rgba(15, 23, 42, 0.78)"
         ctx.fillRect(bx, by, bw, bh)
-        // Multi-sample optical dispersion
+
+        // 3. Multi-sample optical dispersion
         if (baseImage && baseImage.status === Image.Ready) {
           ctx.globalAlpha = 0.16 * elemOpacity
           var blurDisp = (act.dispersion !== undefined) ? Number(act.dispersion) : 4
@@ -7775,12 +7879,26 @@ Rectangle {
           }
         }
         ctx.globalAlpha = elemOpacity
-        // Glass specular tint and crisp border
+
+        // 4. Glass specular tint
         ctx.fillStyle = "rgba(255, 255, 255, 0.07)"
         ctx.fillRect(bx, by, bw, bh)
+        ctx.restore()
+
+        // 5. Crisp glass border matching exact shape
+        ctx.save()
+        ctx.beginPath()
+        if (bShape === "circle") {
+          root.drawEllipsePath(ctx, bx, by, bw, bh)
+        } else if (bRad > 0) {
+          root.drawRoundedRectPath(ctx, bx, by, bw, bh, bRad)
+        } else {
+          ctx.rect(bx, by, bw, bh)
+        }
         ctx.strokeStyle = "rgba(255, 255, 255, 0.35)"
         ctx.lineWidth = 1
-        ctx.strokeRect(bx, by, bw, bh)
+        ctx.globalAlpha = elemOpacity
+        ctx.stroke()
         ctx.restore()
       } else if (act.tool === "block_highlight" && act.start && act.end) {
         var hx = Math.min(act.start.x, act.end.x)
