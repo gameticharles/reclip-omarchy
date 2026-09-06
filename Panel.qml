@@ -1308,7 +1308,7 @@ Panel {
             colorPickerModal.setColor(picked)
           }
           if (imageEditorModal && imageEditorModal.visible) {
-            imageEditorModal.currentColor = picked
+            imageEditorModal.applyPickedColor(picked)
             imageEditorModal.showFeedback("󰈊 Picked " + picked)
           }
         }
