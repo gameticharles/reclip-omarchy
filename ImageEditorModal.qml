@@ -36,7 +36,7 @@ Rectangle {
   // Properties
   property string imagePath: ""
   property string originalImagePath: ""
-  property string currentTool: "select" // "select", "pan", "pen", "highlighter", "arrow", "rect", "circle", "line", "blur", "text", "stamp", "eraser", "crop", "block_highlight", "pixelate", "magnifier"
+  property string currentTool: "select" // "select", "pan", "pen", "highlighter", "arrow", "rect", "circle", "line", "blur", "text", "stamp", "eraser", "crop", "block_highlight", "pixelate", "magnifier", "spotlight"
   property int selectedActionIndex: -1
   property bool isExporting: false
   property color currentColor: "#EF4444"
@@ -90,6 +90,12 @@ Rectangle {
   property int textEditActionIndex: -1
   property real magnifierZoom: 2.0
   property int magnifierRadius: 50
+  property string spotlightShape: "rect"
+  property int spotlightRadius: 12
+  property real spotlightDimOpacity: 0.65
+  property string spotlightDimColor: "#000000"
+  property int spotlightBorderWidth: 2
+  property string spotlightBorderColor: "#FFFFFF"
   property bool aspectRatioLocked: false
   property var scrubStartAct: null
 
@@ -260,6 +266,16 @@ Rectangle {
     }
     if (root.activeColorTarget === "box") {
       root.setSelectedTextBoxColor(col)
+      root.activeColorTarget = "stroke"
+      return
+    }
+    if (root.activeColorTarget === "spotlightBorder") {
+      root.commitSelectedProperty("borderColor", col, "Border Color")
+      root.activeColorTarget = "stroke"
+      return
+    }
+    if (root.activeColorTarget === "spotlightDim") {
+      root.commitSelectedProperty("dimColor", col, "Dim Color")
       root.activeColorTarget = "stroke"
       return
     }
@@ -692,6 +708,7 @@ Rectangle {
       "block_highlight": "█ Highlight",
       "pixelate": "░ Pixelate",
       "magnifier": "🔍 Magnifier",
+      "spotlight": "🔦 Spotlight",
       "text": "🔤 Text",
       "stamp": "① Stamp"
     }
@@ -827,7 +844,7 @@ Rectangle {
         }
       } else if (act.start && act.end) {
         var bb = root.getActionBounds(act)
-        var isSolid = act.filled || act.tool === "blur" || act.tool === "pixelate" || act.tool === "block_highlight" || act.tool === "magnifier"
+        var isSolid = act.filled || act.tool === "blur" || act.tool === "pixelate" || act.tool === "block_highlight" || act.tool === "magnifier" || act.tool === "spotlight"
         if (isSolid) {
           if (testPt.x >= bb.x - 4 && testPt.x <= bb.x + bb.width + 4 && testPt.y >= bb.y - 4 && testPt.y <= bb.y + bb.height + 4) {
             return i
@@ -2224,6 +2241,10 @@ Rectangle {
       root.currentTool = "line"
       root.selectedActionIndex = -1
       event.accepted = true
+    } else if (event.key === Qt.Key_F) {
+      root.currentTool = "spotlight"
+      root.selectedActionIndex = -1
+      event.accepted = true
     } else if (event.key === Qt.Key_B) {
       root.currentTool = "blur"
       root.selectedActionIndex = -1
@@ -2552,6 +2573,7 @@ Rectangle {
               { id: "rect", label: "□", name: "Rectangle (R)" },
               { id: "circle", label: "○", name: "Circle (C)" },
               { id: "line", label: "—", name: "Line (L)" },
+              { id: "spotlight", label: "🔦", name: "Spotlight / Focus (F)" },
               { id: "blur", label: "▒", name: "Blur / Redact (B)" },
               { id: "text", label: "🔤", name: "Text (T)" },
               { id: "stamp", label: "①", name: "Stamp (S)" },
@@ -2968,6 +2990,31 @@ Rectangle {
               }
               PanelToolTip { visible: magMouse.containsMouse; text: "Magnifier / Loupe: zoom in on fine screenshot details (Z)" }
             }
+
+            // Spotlight / Focus
+            Rectangle {
+              width: spotBtnTxt.implicitWidth + Style.space(10); height: Style.space(22); radius: Style.space(4)
+              color: root.currentTool === "spotlight" ? Color.accent : (spotMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.05))
+              border.width: 1; border.color: root.currentTool === "spotlight" ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.1)
+              anchors.verticalCenter: parent.verticalCenter
+
+              Row {
+                id: spotBtnTxt
+                anchors.centerIn: parent
+                spacing: Style.space(3)
+                Text { text: "🔦"; font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
+                Text { text: "Spotlight"; font.family: Style.font.menuFamily; font.pixelSize: Style.space(8); font.bold: true; color: root.currentTool === "spotlight" ? "#FFFFFF" : (Color.popups.text || Color.text); anchors.verticalCenter: parent.verticalCenter }
+              }
+              MouseArea {
+                id: spotMouse
+                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.currentTool = "spotlight"
+                  if (root.textInputActive) root.commitText()
+                }
+              }
+              PanelToolTip { visible: spotMouse.containsMouse; text: "Spotlight: focus viewer attention on key regions (F)" }
+            }
           }
 
           // Separator
@@ -3117,6 +3164,7 @@ Rectangle {
 
               // Render finished actions
               for (var i = 0; i < root.actions.length; i++) {
+                if (root.textInputActive && root.textEditActionIndex === i) continue
                 root.renderAction(ctx, root.actions[i])
               }
 
@@ -3200,7 +3248,8 @@ Rectangle {
 
               // Text tool
               if (root.currentTool === "text") {
-                root.textInputPos = Qt.point(mouse.x, mouse.y)
+                var z = root.zoomScale > 0 ? root.zoomScale : 1.0
+                root.textInputPos = Qt.point(mouse.x / z, mouse.y / z)
                 root.textInputDraft = ""
                 root.textInputActive = true
                 return
@@ -3244,7 +3293,20 @@ Rectangle {
               // Freehand / shape tools
               root.isDrawing = true
 
-              if (root.currentTool === "magnifier") {
+              if (root.currentTool === "spotlight") {
+                root.currentAction = {
+                  tool: "spotlight",
+                  start: pt,
+                  end: pt,
+                  shape: root.spotlightShape || "rect",
+                  radius: (root.spotlightRadius !== undefined) ? root.spotlightRadius : 12,
+                  dimOpacity: (root.spotlightDimOpacity !== undefined) ? root.spotlightDimOpacity : 0.65,
+                  dimColor: root.spotlightDimColor || "#000000",
+                  borderWidth: (root.spotlightBorderWidth !== undefined) ? root.spotlightBorderWidth : 2,
+                  borderColor: root.spotlightBorderColor || "#FFFFFF",
+                  shadow: Boolean(root.dropShadow)
+                }
+              } else if (root.currentTool === "magnifier") {
                 root.currentAction = {
                   tool: "magnifier",
                   start: pt,
@@ -3362,6 +3424,8 @@ Rectangle {
                   if (Math.abs(act.end.x - act.start.x) <= 4 || Math.abs(act.end.y - act.start.y) <= 4) valid = false
                 } else if (act.tool === "magnifier" && act.start) {
                   if (!act.radius || act.radius < 15) act.radius = Number(root.magnifierRadius || 50)
+                } else if (act.tool === "spotlight" && act.start && act.end) {
+                  if (Math.abs(act.end.x - act.start.x) <= 4 || Math.abs(act.end.y - act.start.y) <= 4) valid = false
                 }
                 if (valid) {
                   root.pushUndoState()
@@ -3406,6 +3470,8 @@ Rectangle {
                   if (Math.abs(act.end.x - act.start.x) <= 4 || Math.abs(act.end.y - act.start.y) <= 4) valid = false
                 } else if (act.tool === "magnifier" && act.start) {
                   if (!act.radius || act.radius < 15) act.radius = Number(root.magnifierRadius || 50)
+                } else if (act.tool === "spotlight" && act.start && act.end) {
+                  if (Math.abs(act.end.x - act.start.x) <= 4 || Math.abs(act.end.y - act.start.y) <= 4) valid = false
                 }
                 if (valid) {
                   root.pushUndoState()
@@ -3425,33 +3491,55 @@ Rectangle {
           Rectangle {
             id: textInputOverlay
             visible: root.textInputActive
-            x: root.textInputPos.x
-            y: root.textInputPos.y
-            width: Math.max(Style.space(160), textEditorInput.implicitWidth + Style.space(24))
-            height: Math.max(Style.space(34), textEditorInput.implicitHeight + Style.space(12))
-            radius: Style.space(4)
-            color: root.textBox ? Util.alpha(root.textBoxColor || "#0F172A", root.textBoxOpacity || 0.88) : Util.alpha(Color.popups.background || Color.background, 0.95)
-            border.width: root.textBox ? 1.5 : 1
-            border.color: root.textBox ? root.currentColor : Color.accent
+            readonly property var curAct: (root.textEditActionIndex >= 0 && root.actions[root.textEditActionIndex]) ? root.actions[root.textEditActionIndex] : null
+            readonly property real zScale: (root.zoomScale > 0) ? root.zoomScale : 1.0
+            readonly property real curFs: (curAct && curAct.size ? curAct.size : Math.max(14, root.strokeWidth * 4)) * zScale
+            readonly property string curAlign: curAct ? (curAct.textAlign || "left") : (root.defaultTextAlign || "left")
+            readonly property bool hasBox: curAct ? Boolean(curAct.box) : Boolean(root.textBox)
+            readonly property real padX: hasBox ? Math.round(curFs * 0.45) : Style.space(4)
+            readonly property real padY: hasBox ? Math.round(curFs * 0.25) : Style.space(2)
+
+            x: {
+              var basePosX = root.textInputPos.x * zScale
+              if (curAlign === "center") return basePosX - width / 2
+              if (curAlign === "right") return basePosX - width + padX
+              return basePosX - padX
+            }
+            y: root.textInputPos.y * zScale - padY
+            width: Math.max(Style.space(120), textEditorInput.implicitWidth + padX * 2 + Style.space(16))
+            height: Math.max(curFs + padY * 2 + Style.space(4), textEditorInput.implicitHeight + padY * 2)
+            radius: hasBox ? ((curAct && curAct.boxRadius !== undefined ? curAct.boxRadius : root.textBoxRadius) * zScale) : Style.space(4)
+            color: hasBox ? root.hexToRgba(curAct && curAct.boxColor ? curAct.boxColor : (root.textBoxColor || "#0F172A"), curAct && curAct.boxOpacity !== undefined ? curAct.boxOpacity : (root.textBoxOpacity || 0.88)) : Util.alpha(Color.popups.background || Color.background, 0.95)
+            border.width: hasBox ? 1.5 : 1
+            border.color: hasBox ? (curAct && curAct.color ? curAct.color : root.currentColor) : Color.accent
             z: 20
 
             TextInput {
               id: textEditorInput
               anchors.fill: parent
-              anchors.margins: Style.space(6)
-              color: (root.textEditActionIndex >= 0 && root.actions[root.textEditActionIndex]) ? root.actions[root.textEditActionIndex].color : root.currentColor
+              anchors.leftMargin: textInputOverlay.padX
+              anchors.rightMargin: textInputOverlay.padX
+              anchors.topMargin: textInputOverlay.padY
+              anchors.bottomMargin: textInputOverlay.padY
+              horizontalAlignment: {
+                if (textInputOverlay.curAlign === "center") return TextInput.AlignHCenter
+                if (textInputOverlay.curAlign === "right") return TextInput.AlignRight
+                return TextInput.AlignLeft
+              }
+              verticalAlignment: TextInput.AlignTop
+              color: (textInputOverlay.curAct && textInputOverlay.curAct.color) ? textInputOverlay.curAct.color : root.currentColor
               font.family: {
-                var f = (root.textEditActionIndex >= 0 && root.actions[root.textEditActionIndex] && root.actions[root.textEditActionIndex].fontFamily) ? root.actions[root.textEditActionIndex].fontFamily : (root.defaultFontFamily || "sans")
+                var f = (textInputOverlay.curAct && textInputOverlay.curAct.fontFamily) ? textInputOverlay.curAct.fontFamily : (root.defaultFontFamily || "sans")
                 if (f === "mono") return "monospace"
                 if (f === "serif") return "serif"
                 if (f === "sans") return Style.font.menuFamily
                 return f
               }
-              font.pixelSize: (root.textEditActionIndex >= 0 && root.actions[root.textEditActionIndex] && root.actions[root.textEditActionIndex].size) ? root.actions[root.textEditActionIndex].size : Math.max(14, root.strokeWidth * 4)
-              font.bold: (root.textEditActionIndex >= 0 && root.actions[root.textEditActionIndex]) ? (root.actions[root.textEditActionIndex].fontWeight === "bold") : true
-              font.italic: (root.textEditActionIndex >= 0 && root.actions[root.textEditActionIndex]) ? Boolean(root.actions[root.textEditActionIndex].italic) : root.textItalic
-              font.underline: (root.textEditActionIndex >= 0 && root.actions[root.textEditActionIndex]) ? Boolean(root.actions[root.textEditActionIndex].underline) : root.textUnderline
-              font.strikeout: (root.textEditActionIndex >= 0 && root.actions[root.textEditActionIndex]) ? Boolean(root.actions[root.textEditActionIndex].strikeout) : root.textStrikeout
+              font.pixelSize: textInputOverlay.curFs
+              font.bold: textInputOverlay.curAct ? (textInputOverlay.curAct.fontWeight !== "normal") : (root.defaultFontWeight !== "normal")
+              font.italic: textInputOverlay.curAct ? Boolean(textInputOverlay.curAct.italic) : root.textItalic
+              font.underline: textInputOverlay.curAct ? Boolean(textInputOverlay.curAct.underline) : root.textUnderline
+              font.strikeout: textInputOverlay.curAct ? Boolean(textInputOverlay.curAct.strikeout) : root.textStrikeout
               focus: root.textInputActive
               text: root.textInputDraft
               onTextEdited: root.textInputDraft = text
@@ -3961,6 +4049,12 @@ Rectangle {
                 }
                 onReleased: function() {
                   selectionOverlay.endDrag()
+                }
+                onDoubleClicked: function(mouse) {
+                  if (selectionOverlay.curAct && selectionOverlay.curAct.tool === "text") {
+                    root.editSelectedText()
+                    mouse.accepted = true
+                  }
                 }
               }
 
@@ -4782,7 +4876,8 @@ Rectangle {
                       selectionOverlay.curAct.tool === "pixelate" ||
                       selectionOverlay.curAct.tool === "blur" ||
                       selectionOverlay.curAct.tool === "magnifier" ||
-                      selectionOverlay.curAct.tool === "block_highlight"
+                      selectionOverlay.curAct.tool === "block_highlight" ||
+                      selectionOverlay.curAct.tool === "spotlight"
                     ))
                     width: parent.width
                     height: visible ? Style.space(20) : 0
@@ -5645,6 +5740,192 @@ Rectangle {
                             }
                           }
                           PanelToolTip { visible: bhlStudioMouse.containsMouse; text: "Open Color Studio (Custom Palette & Shades)" }
+                        }
+                      }
+
+                      // 8. SPOTLIGHT CONTROLS (Shape, Radius, Dim Darkness, Dim Color, Border Width, Border Color)
+                      Row {
+                        visible: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.tool === "spotlight")
+                        spacing: Style.space(3)
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        // Shape Toggle: Rect vs Circle
+                        Row {
+                          spacing: Style.space(1.5)
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          Rectangle {
+                            width: Style.space(18); height: Style.space(18); radius: Style.space(4)
+                            property bool isSelected: !selectionOverlay.curAct || selectionOverlay.curAct.shape !== "circle"
+                            color: isSelected ? Util.alpha(Color.accent, 0.25) : (srectMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.05))
+                            border.width: 1
+                            border.color: isSelected ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.15)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "□"; color: parent.isSelected ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(9); font.bold: true; anchors.centerIn: parent }
+                            MouseArea {
+                              id: srectMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.spotlightShape = "rect"
+                                root.commitSelectedProperty("shape", "rect", "Spotlight Shape (Rectangle)")
+                              }
+                            }
+                            PanelToolTip { visible: srectMouse.containsMouse; text: "Rectangle Spotlight" }
+                          }
+
+                          Rectangle {
+                            width: Style.space(18); height: Style.space(18); radius: Style.space(4)
+                            property bool isSelected: Boolean(selectionOverlay.curAct && selectionOverlay.curAct.shape === "circle")
+                            color: isSelected ? Util.alpha(Color.accent, 0.25) : (scircMouse.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.12) : Util.alpha(Color.popups.text || Color.text, 0.05))
+                            border.width: 1
+                            border.color: isSelected ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.15)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "○"; color: parent.isSelected ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(9); font.bold: true; anchors.centerIn: parent }
+                            MouseArea {
+                              id: scircMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.spotlightShape = "circle"
+                                root.commitSelectedProperty("shape", "circle", "Spotlight Shape (Circle / Ellipse)")
+                              }
+                            }
+                            PanelToolTip { visible: scircMouse.containsMouse; text: "Circle / Ellipse Spotlight" }
+                          }
+                        }
+
+                        // Corner Radius (Rectangle only)
+                        SmartScrubber {
+                          visible: !selectionOverlay.curAct || selectionOverlay.curAct.shape !== "circle"
+                          label: "Radius"
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.radius !== undefined) ? selectionOverlay.curAct.radius : 12
+                          from: 0
+                          to: 60
+                          step: 2
+                          unit: "px"
+                          tip: "Spotlight corner radius"
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("radius", val); root.spotlightRadius = val }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("radius", val, "Spotlight Radius"); root.spotlightRadius = val }
+                        }
+
+                        // Dim Darkness Scrubber
+                        SmartScrubber {
+                          label: "Dim"
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.dimOpacity !== undefined) ? Math.round(selectionOverlay.curAct.dimOpacity * 100) : 65
+                          from: 10
+                          to: 95
+                          step: 5
+                          unit: "%"
+                          tip: "Surrounding dim darkness percentage"
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("dimOpacity", val / 100.0); root.spotlightDimOpacity = val / 100.0 }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("dimOpacity", val / 100.0, "Dim Darkness"); root.spotlightDimOpacity = val / 100.0 }
+                        }
+
+                        // Border Width Scrubber
+                        SmartScrubber {
+                          label: "Border"
+                          value: (selectionOverlay.curAct && selectionOverlay.curAct.borderWidth !== undefined) ? selectionOverlay.curAct.borderWidth : 2
+                          from: 0
+                          to: 12
+                          step: 1
+                          unit: "px"
+                          tip: "Spotlight rim border width (0 to hide border)"
+                          onValueScrubbed: function(val) { root.modifySelectedProperty("borderWidth", val); root.spotlightBorderWidth = val }
+                          onValueCommitted: function(val) { root.commitSelectedProperty("borderWidth", val, "Border Width"); root.spotlightBorderWidth = val }
+                        }
+
+                        // Border Color Swatches
+                        Row {
+                          spacing: Style.space(2)
+                          anchors.verticalCenter: parent.verticalCenter
+
+                          Text {
+                            text: "Border:"
+                            color: Util.alpha(Color.popups.text || Color.text, 0.6)
+                            font.family: Style.font.menuFamily
+                            font.pixelSize: Style.space(7.5)
+                            font.bold: true
+                            anchors.verticalCenter: parent.verticalCenter
+                          }
+
+                          Repeater {
+                            model: ["#FFFFFF", "#000000", "#FF4444", "#FFAA00", "#00C853", "#00B0FF"]
+                            Rectangle {
+                              required property string modelData
+                              width: Style.space(12); height: Style.space(12); radius: Style.space(6)
+                              color: modelData
+                              border.width: (selectionOverlay.curAct && String(selectionOverlay.curAct.borderColor).toLowerCase() === String(modelData).toLowerCase()) ? 2 : 1
+                              border.color: (selectionOverlay.curAct && String(selectionOverlay.curAct.borderColor).toLowerCase() === String(modelData).toLowerCase()) ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.25)
+                              scale: (selectionOverlay.curAct && String(selectionOverlay.curAct.borderColor).toLowerCase() === String(modelData).toLowerCase()) ? 1.25 : 1.0
+                              anchors.verticalCenter: parent.verticalCenter
+
+                              MouseArea {
+                                id: sbcMouse
+                                anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                  root.spotlightBorderColor = parent.modelData
+                                  root.commitSelectedProperty("borderColor", parent.modelData, "Border Color")
+                                }
+                              }
+                              PanelToolTip { visible: sbcMouse.containsMouse; text: "Border: " + parent.modelData }
+                            }
+                          }
+
+                          // Eyedropper for Border
+                          Rectangle {
+                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                            color: sbedMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "󰈊"; color: Color.popups.text || Color.text; font.pixelSize: Style.space(7.5); anchors.centerIn: parent }
+                            MouseArea {
+                              id: sbedMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.activeColorTarget = "spotlightBorder"
+                                root.requestScreenPick()
+                              }
+                            }
+                            PanelToolTip { visible: sbedMouse.containsMouse; text: "Pick border color from screen" }
+                          }
+
+                          // Color Studio for Border
+                          Rectangle {
+                            width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                            color: sbStudioMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text { text: "󰏘"; color: sbStudioMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                            MouseArea {
+                              id: sbStudioMouse
+                              anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.activeColorTarget = "spotlightBorder"
+                                if (selectionOverlay.curAct && selectionOverlay.curAct.borderColor) {
+                                  root.currentColor = selectionOverlay.curAct.borderColor
+                                }
+                                root.requestColorPicker()
+                              }
+                            }
+                            PanelToolTip { visible: sbStudioMouse.containsMouse; text: "Open Color Studio for Border" }
+                          }
+                        }
+
+                        // Dim Color Studio Button
+                        Rectangle {
+                          width: Style.space(16); height: Style.space(16); radius: Style.space(8)
+                          color: sdimStudioMouse.containsMouse ? Util.alpha(Color.accent, 0.25) : Util.alpha(Color.popups.text || Color.text, 0.08)
+                          anchors.verticalCenter: parent.verticalCenter
+                          Text { text: "󰃚"; color: sdimStudioMouse.containsMouse ? Color.accent : (Color.popups.text || Color.text); font.pixelSize: Style.space(8); anchors.centerIn: parent }
+                          MouseArea {
+                            id: sdimStudioMouse
+                            anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.activeColorTarget = "spotlightDim"
+                              if (selectionOverlay.curAct && selectionOverlay.curAct.dimColor) {
+                                root.currentColor = selectionOverlay.curAct.dimColor
+                              }
+                              root.requestColorPicker()
+                            }
+                          }
+                          PanelToolTip { visible: sdimStudioMouse.containsMouse; text: "Customize Dimming Tint Color" }
                         }
                       }
                     }
@@ -7572,6 +7853,114 @@ Rectangle {
           ctx.fill()
         }
         ctx.restore()
+      } else if (act.tool === "spotlight" && act.start && act.end) {
+        var spX = Math.min(act.start.x, act.end.x)
+        var spY = Math.min(act.start.y, act.end.y)
+        var spW = Math.max(1, Math.abs(act.end.x - act.start.x))
+        var spH = Math.max(1, Math.abs(act.end.y - act.start.y))
+        var spShape = act.shape || "rect"
+        var spRad = (act.radius !== undefined) ? act.radius : 12
+        var spDimColor = act.dimColor || "#000000"
+        var spDimAlpha = ((act.dimOpacity !== undefined) ? act.dimOpacity : 0.65) * elemOpacity
+        var spBorderW = (act.borderWidth !== undefined) ? act.borderWidth : 2
+        var spBorderCol = act.borderColor || "#FFFFFF"
+
+        ctx.save()
+
+        // 1. Draw outer dimming overlay with inner spotlight cutout
+        ctx.beginPath()
+        var outMargin = 10000
+        var outX = -outMargin
+        var outY = -outMargin
+        var outW = (root.imageWidth || 4000) + outMargin * 2
+        var outH = (root.imageHeight || 4000) + outMargin * 2
+
+        // Outer box clockwise
+        ctx.moveTo(outX, outY)
+        ctx.lineTo(outX + outW, outY)
+        ctx.lineTo(outX + outW, outY + outH)
+        ctx.lineTo(outX, outY + outH)
+        ctx.closePath()
+
+        // Inner cutout counter-clockwise
+        if (spShape === "circle") {
+          var scx = spX + spW / 2
+          var scy = spY + spH / 2
+          var srx = Math.max(1, spW / 2)
+          var sry = Math.max(1, spH / 2)
+          if (typeof ctx.ellipse === "function") {
+            ctx.ellipse(scx, scy, srx, sry, 0, 0, Math.PI * 2, true)
+          } else {
+            ctx.arc(scx, scy, Math.max(srx, sry), 0, Math.PI * 2, true)
+          }
+        } else {
+          var sr = Math.min(spRad, Math.min(spW / 2, spH / 2))
+          if (sr > 0) {
+            ctx.moveTo(spX, spY + sr)
+            ctx.lineTo(spX, spY + spH - sr)
+            ctx.arcTo(spX, spY + spH, spX + sr, spY + spH, sr)
+            ctx.lineTo(spX + spW - sr, spY + spH)
+            ctx.arcTo(spX + spW, spY + spH, spX + spW - sr, spY + spH, sr)
+            ctx.lineTo(spX + spW, spY + sr)
+            ctx.arcTo(spX + spW, spY, spX + spW - sr, spY, sr)
+            ctx.lineTo(spX + sr, spY)
+            ctx.arcTo(spX, spY, spX, spY + sr, sr)
+            ctx.closePath()
+          } else {
+            ctx.moveTo(spX, spY)
+            ctx.lineTo(spX, spY + spH)
+            ctx.lineTo(spX + spW, spY + spH)
+            ctx.lineTo(spX + spW, spY)
+            ctx.closePath()
+          }
+        }
+
+        ctx.fillStyle = spDimColor
+        ctx.globalAlpha = spDimAlpha
+        try {
+          ctx.fill("evenodd")
+        } catch (eEvenOdd) {
+          ctx.fill()
+        }
+        ctx.restore()
+
+        // 2. Stroke rim border if spBorderW > 0
+        if (spBorderW > 0) {
+          ctx.save()
+          ctx.beginPath()
+          if (spShape === "circle") {
+            var bcx = spX + spW / 2
+            var bcy = spY + spH / 2
+            var brx = Math.max(1, spW / 2)
+            var bry = Math.max(1, spH / 2)
+            if (typeof ctx.ellipse === "function") {
+              ctx.ellipse(bcx, bcy, brx, bry, 0, 0, Math.PI * 2)
+            } else {
+              ctx.arc(bcx, bcy, Math.max(brx, bry), 0, Math.PI * 2)
+            }
+          } else {
+            var bsr = Math.min(spRad, Math.min(spW / 2, spH / 2))
+            if (bsr > 0) {
+              ctx.moveTo(spX + bsr, spY)
+              ctx.lineTo(spX + spW - bsr, spY)
+              ctx.arcTo(spX + spW, spY, spX + spW, spY + bsr, bsr)
+              ctx.lineTo(spX + spW, spY + spH - bsr)
+              ctx.arcTo(spX + spW, spY + spH, spX + spW - bsr, spY + bsr, bsr)
+              ctx.lineTo(spX + bsr, spY + spH)
+              ctx.arcTo(spX, spY + spH, spX, spY + bsr, bsr)
+              ctx.lineTo(spX, spY + bsr)
+              ctx.arcTo(spX, spY, spX + bsr, spY, bsr)
+              ctx.closePath()
+            } else {
+              ctx.rect(spX, spY, spW, spH)
+            }
+          }
+          ctx.strokeStyle = spBorderCol
+          ctx.lineWidth = spBorderW
+          ctx.globalAlpha = elemOpacity
+          ctx.stroke()
+          ctx.restore()
+        }
       }
     } catch (e) {
       console.warn("Error rendering action:", e)
