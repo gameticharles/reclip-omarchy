@@ -8633,51 +8633,49 @@ Rectangle {
             var blurDisp = (act.dispersion !== undefined) ? Number(act.dispersion) : 4
             var ds = Math.max(0.5, blurDisp / 4)
             var blurOffsets = [[-2*ds, -2*ds], [2*ds, -2*ds], [-2*ds, 2*ds], [2*ds, 2*ds], [-4*ds, 0], [4*ds, 0], [0, -4*ds], [0, 4*ds]]
-            var imgW = (baseImage.implicitWidth > 0 ? baseImage.implicitWidth : (baseImage.width > 0 ? baseImage.width : compositeContainer.baseW))
-            var imgH = (baseImage.implicitHeight > 0 ? baseImage.implicitHeight : (baseImage.height > 0 ? baseImage.height : compositeContainer.baseH))
+            var imgW = Math.floor(baseImage.implicitWidth > 0 ? baseImage.implicitWidth : (baseImage.width > 0 ? baseImage.width : compositeContainer.baseW))
+            var imgH = Math.floor(baseImage.implicitHeight > 0 ? baseImage.implicitHeight : (baseImage.height > 0 ? baseImage.height : compositeContainer.baseH))
 
-            for (var bo = 0; bo < blurOffsets.length; bo++) {
-              var ox = blurOffsets[bo][0]
-              var oy = blurOffsets[bo][1]
-              var sx = bx + ox
-              var sy = by + oy
-              var sw = bw
-              var sh = bh
-              var dx = bx
-              var dy = by
-              var dw = bw
-              var dh = bh
+            if (imgW > 0 && imgH > 0) {
+              for (var bo = 0; bo < blurOffsets.length; bo++) {
+                var ox = blurOffsets[bo][0]
+                var oy = blurOffsets[bo][1]
+                var rawSx = bx + ox
+                var rawSy = by + oy
+                var rawSw = bw
+                var rawSh = bh
+                var rawDx = bx
+                var rawDy = by
+                var rawDw = bw
+                var rawDh = bh
 
-              if (sx < 0) {
-                var diffX = -sx
-                sx = 0
-                sw -= diffX
-                dx += diffX
-                dw -= diffX
-              }
-              if (sy < 0) {
-                var diffY = -sy
-                sy = 0
-                sh -= diffY
-                dy += diffY
-                dh -= diffY
-              }
-              if (sx + sw > imgW) {
-                var excessW = (sx + sw) - imgW
-                sw -= excessW
-                dw -= excessW
-              }
-              if (sy + sh > imgH) {
-                var excessH = (sy + sh) - imgH
-                sh -= excessH
-                dh -= excessH
-              }
+                var sx = Math.max(0, Math.min(imgW, rawSx))
+                var sy = Math.max(0, Math.min(imgH, rawSy))
+                var dx = rawDx + (sx - rawSx)
+                var dy = rawDy + (sy - rawSy)
 
-              if (sw > 0 && sh > 0 && dw > 0 && dh > 0 && sx >= 0 && sy >= 0 && (sx + sw) <= imgW && (sy + sh) <= imgH) {
-                try {
-                  ctx.drawImage(baseImage, sx, sy, sw, sh, dx, dy, dw, dh)
-                } catch (e) {
-                  // Ignore any edge sampling errors
+                var maxSw = imgW - sx
+                var maxSh = imgH - sy
+                var sw = Math.max(0, Math.min(maxSw, rawSw - (sx - rawSx)))
+                var sh = Math.max(0, Math.min(maxSh, rawSh - (sy - rawSy)))
+
+                var dw = rawDw * (rawSw > 0 ? (sw / rawSw) : 1)
+                var dh = rawDh * (rawSh > 0 ? (sh / rawSh) : 1)
+
+                sw = Math.floor(sw)
+                sh = Math.floor(sh)
+                sx = Math.floor(sx)
+                sy = Math.floor(sy)
+
+                if (sx + sw > imgW) sw = imgW - sx
+                if (sy + sh > imgH) sh = imgH - sy
+
+                if (sw > 0 && sh > 0 && dw > 0 && dh > 0 && sx >= 0 && sy >= 0 && (sx + sw) <= imgW && (sy + sh) <= imgH) {
+                  try {
+                    ctx.drawImage(baseImage, sx, sy, sw, sh, dx, dy, dw, dh)
+                  } catch (e) {
+                    // Ignore any edge sampling errors
+                  }
                 }
               }
             }
@@ -8936,47 +8934,43 @@ Rectangle {
 
           // Draw magnified base image
           if (baseImage && baseImage.status === Image.Ready) {
-            var magImgW = (baseImage.implicitWidth > 0 ? baseImage.implicitWidth : (baseImage.width > 0 ? baseImage.width : compositeContainer.baseW))
-            var magImgH = (baseImage.implicitHeight > 0 ? baseImage.implicitHeight : (baseImage.height > 0 ? baseImage.height : compositeContainer.baseH))
-            var srcW = (magR * 2) / magZoom
-            var srcH = (magR * 2) / magZoom
-            var srcX = magCenterX - srcW / 2
-            var srcY = magCenterY - srcH / 2
-            var dstX = magCenterX - magR
-            var dstY = magCenterY - magR
-            var dstW = magR * 2
-            var dstH = magR * 2
+            var magImgW = Math.floor(baseImage.implicitWidth > 0 ? baseImage.implicitWidth : (baseImage.width > 0 ? baseImage.width : compositeContainer.baseW))
+            var magImgH = Math.floor(baseImage.implicitHeight > 0 ? baseImage.implicitHeight : (baseImage.height > 0 ? baseImage.height : compositeContainer.baseH))
+            if (magImgW > 0 && magImgH > 0) {
+              var rawSrcW = (magR * 2) / magZoom
+              var rawSrcH = (magR * 2) / magZoom
+              var rawSrcX = magCenterX - rawSrcW / 2
+              var rawSrcY = magCenterY - rawSrcH / 2
+              var rawDstX = magCenterX - magR
+              var rawDstY = magCenterY - magR
 
-            if (srcX < 0) {
-              var diffX = -srcX
-              srcX = 0
-              srcW -= diffX
-              dstX += diffX * magZoom
-              dstW -= diffX * magZoom
-            }
-            if (srcY < 0) {
-              var diffY = -srcY
-              srcY = 0
-              srcH -= diffY
-              dstY += diffY * magZoom
-              dstH -= diffY * magZoom
-            }
-            if (srcX + srcW > magImgW) {
-              var excessW = (srcX + srcW) - magImgW
-              srcW -= excessW
-              dstW -= excessW * magZoom
-            }
-            if (srcY + srcH > magImgH) {
-              var excessH = (srcY + srcH) - magImgH
-              srcH -= excessH
-              dstH -= excessH * magZoom
-            }
+              var srcX = Math.max(0, Math.min(magImgW, rawSrcX))
+              var srcY = Math.max(0, Math.min(magImgH, rawSrcY))
+              var dstX = rawDstX + (srcX - rawSrcX) * magZoom
+              var dstY = rawDstY + (srcY - rawSrcY) * magZoom
 
-            if (srcW > 0 && srcH > 0 && dstW > 0 && dstH > 0 && srcX >= 0 && srcY >= 0 && (srcX + srcW) <= magImgW && (srcY + srcH) <= magImgH) {
-              try {
-                ctx.drawImage(baseImage, srcX, srcY, srcW, srcH, dstX, dstY, dstW, dstH)
-              } catch (e) {
-                // Ignore sampling error
+              var maxSrcW = magImgW - srcX
+              var maxSrcH = magImgH - srcY
+              var srcW = Math.max(0, Math.min(maxSrcW, rawSrcW - (srcX - rawSrcX)))
+              var srcH = Math.max(0, Math.min(maxSrcH, rawSrcH - (srcY - rawSrcY)))
+
+              var dstW = srcW * magZoom
+              var dstH = srcH * magZoom
+
+              srcW = Math.floor(srcW)
+              srcH = Math.floor(srcH)
+              srcX = Math.floor(srcX)
+              srcY = Math.floor(srcY)
+
+              if (srcX + srcW > magImgW) srcW = magImgW - srcX
+              if (srcY + srcH > magImgH) srcH = magImgH - srcY
+
+              if (srcW > 0 && srcH > 0 && dstW > 0 && dstH > 0 && srcX >= 0 && srcY >= 0 && (srcX + srcW) <= magImgW && (srcY + srcH) <= magImgH) {
+                try {
+                  ctx.drawImage(baseImage, srcX, srcY, srcW, srcH, dstX, dstY, dstW, dstH)
+                } catch (e) {
+                  // Ignore sampling error
+                }
               }
             }
           } else {
@@ -9204,47 +9198,41 @@ Rectangle {
               root.drawRoundedRectPath(ctx, spX, spY, spW, spH, spRad)
             }
             ctx.clip()
-            var spImgW = (baseImage.implicitWidth > 0 ? baseImage.implicitWidth : (baseImage.width > 0 ? baseImage.width : compositeContainer.baseW))
-            var spImgH = (baseImage.implicitHeight > 0 ? baseImage.implicitHeight : (baseImage.height > 0 ? baseImage.height : compositeContainer.baseH))
-            var spZoomSrcW = spW / spZoom
-            var spZoomSrcH = spH / spZoom
-            var spZoomSrcX = (spX + spW / 2) - spZoomSrcW / 2
-            var spZoomSrcY = (spY + spH / 2) - spZoomSrcH / 2
-            var spDstX = spX
-            var spDstY = spY
-            var spDstW = spW
-            var spDstH = spH
+            var spImgW = Math.floor(baseImage.implicitWidth > 0 ? baseImage.implicitWidth : (baseImage.width > 0 ? baseImage.width : compositeContainer.baseW))
+            var spImgH = Math.floor(baseImage.implicitHeight > 0 ? baseImage.implicitHeight : (baseImage.height > 0 ? baseImage.height : compositeContainer.baseH))
+            if (spImgW > 0 && spImgH > 0) {
+              var rawSpW = spW / spZoom
+              var rawSpH = spH / spZoom
+              var rawSpX = (spX + spW / 2) - rawSpW / 2
+              var rawSpY = (spY + spH / 2) - rawSpH / 2
 
-            if (spZoomSrcX < 0) {
-              var diffX = -spZoomSrcX
-              spZoomSrcX = 0
-              spZoomSrcW -= diffX
-              spDstX += diffX * spZoom
-              spDstW -= diffX * spZoom
-            }
-            if (spZoomSrcY < 0) {
-              var diffY = -spZoomSrcY
-              spZoomSrcY = 0
-              spZoomSrcH -= diffY
-              spDstY += diffY * spZoom
-              spDstH -= diffY * spZoom
-            }
-            if (spZoomSrcX + spZoomSrcW > spImgW) {
-              var excessW = (spZoomSrcX + spZoomSrcW) - spImgW
-              spZoomSrcW -= excessW
-              spDstW -= excessW * spZoom
-            }
-            if (spZoomSrcY + spZoomSrcH > spImgH) {
-              var excessH = (spZoomSrcY + spZoomSrcH) - spImgH
-              spZoomSrcH -= excessH
-              spDstH -= excessH * spZoom
-            }
+              var spZoomSrcX = Math.max(0, Math.min(spImgW, rawSpX))
+              var spZoomSrcY = Math.max(0, Math.min(spImgH, rawSpY))
+              var spDstX = spX + (spZoomSrcX - rawSpX) * spZoom
+              var spDstY = spY + (spZoomSrcY - rawSpY) * spZoom
 
-            if (spZoomSrcW > 0 && spZoomSrcH > 0 && spDstW > 0 && spDstH > 0 && spZoomSrcX >= 0 && spZoomSrcY >= 0 && (spZoomSrcX + spZoomSrcW) <= spImgW && (spZoomSrcY + spZoomSrcH) <= spImgH) {
-              try {
-                ctx.drawImage(baseImage, spZoomSrcX, spZoomSrcY, spZoomSrcW, spZoomSrcH, spDstX, spDstY, spDstW, spDstH)
-              } catch (e) {
-                // Ignore sampling error
+              var maxSpW = spImgW - spZoomSrcX
+              var maxSpH = spImgH - spZoomSrcY
+              var spZoomSrcW = Math.max(0, Math.min(maxSpW, rawSpW - (spZoomSrcX - rawSpX)))
+              var spZoomSrcH = Math.max(0, Math.min(maxSpH, rawSpH - (spZoomSrcY - rawSpY)))
+
+              var spDstW = spZoomSrcW * spZoom
+              var spDstH = spZoomSrcH * spZoom
+
+              spZoomSrcW = Math.floor(spZoomSrcW)
+              spZoomSrcH = Math.floor(spZoomSrcH)
+              spZoomSrcX = Math.floor(spZoomSrcX)
+              spZoomSrcY = Math.floor(spZoomSrcY)
+
+              if (spZoomSrcX + spZoomSrcW > spImgW) spZoomSrcW = spImgW - spZoomSrcX
+              if (spZoomSrcY + spZoomSrcH > spImgH) spZoomSrcH = spImgH - spZoomSrcY
+
+              if (spZoomSrcW > 0 && spZoomSrcH > 0 && spDstW > 0 && spDstH > 0 && spZoomSrcX >= 0 && spZoomSrcY >= 0 && (spZoomSrcX + spZoomSrcW) <= spImgW && (spZoomSrcY + spZoomSrcH) <= spImgH) {
+                try {
+                  ctx.drawImage(baseImage, spZoomSrcX, spZoomSrcY, spZoomSrcW, spZoomSrcH, spDstX, spDstY, spDstW, spDstH)
+                } catch (e) {
+                  // Ignore sampling error
+                }
               }
             }
           } finally {
