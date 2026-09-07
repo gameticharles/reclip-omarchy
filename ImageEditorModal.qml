@@ -3509,36 +3509,41 @@ Rectangle {
               var ctx = getContext("2d")
               ctx.clearRect(0, 0, width, height)
               ctx.save()
-              ctx.scale(root.zoomScale, root.zoomScale)
+              try {
+                ctx.scale(root.zoomScale, root.zoomScale)
 
-              // 1. Unified Spotlight Background Dimming pass
-              var activeSpotlights = []
-              for (var s = 0; s < root.actions.length; s++) {
-                var sa = root.actions[s]
-                if (sa && !sa.hidden && sa.tool === "spotlight" && sa.start && sa.end) {
-                  activeSpotlights.push(sa)
+                // 1. Unified Spotlight Background Dimming pass
+                var activeSpotlights = []
+                for (var s = 0; s < root.actions.length; s++) {
+                  var sa = root.actions[s]
+                  if (sa && !sa.hidden && sa.tool === "spotlight" && sa.start && sa.end) {
+                    activeSpotlights.push(sa)
+                  }
                 }
-              }
-              if (root.currentAction && root.currentAction.tool === "spotlight" && root.currentAction.start && root.currentAction.end) {
-                activeSpotlights.push(root.currentAction)
-              }
-              if (activeSpotlights.length > 0) {
-                root.renderUnifiedSpotlightDim(ctx, activeSpotlights)
-              }
+                if (root.currentAction && root.currentAction.tool === "spotlight" && root.currentAction.start && root.currentAction.end) {
+                  activeSpotlights.push(root.currentAction)
+                }
+                if (activeSpotlights.length > 0) {
+                  root.renderUnifiedSpotlightDim(ctx, activeSpotlights)
+                }
 
-              // 2. Render finished actions
-              for (var i = 0; i < root.actions.length; i++) {
-                if (root.textInputActive && root.textEditActionIndex === i) continue
-                var actItem = root.actions[i]
-                if (actItem && actItem.hidden) continue
-                root.renderAction(ctx, actItem)
-              }
+                // 2. Render finished actions
+                for (var i = 0; i < root.actions.length; i++) {
+                  if (root.textInputActive && root.textEditActionIndex === i) continue
+                  var actItem = root.actions[i]
+                  if (actItem && actItem.hidden) continue
+                  root.renderAction(ctx, actItem)
+                }
 
-              // 3. Render live current action during drag
-              if (root.currentAction) {
-                root.renderAction(ctx, root.currentAction)
+                // 3. Render live current action during drag
+                if (root.currentAction) {
+                  root.renderAction(ctx, root.currentAction)
+                }
+              } catch (err) {
+                console.warn("[annotationCanvas.onPaint] Render error:", err)
+              } finally {
+                ctx.restore()
               }
-              ctx.restore()
             }
           }
 
@@ -8606,56 +8611,104 @@ Rectangle {
         var bRad = (act.radius !== undefined) ? act.radius : 0
 
         ctx.save()
-
-        // 1. Set clip path to prevent blur dispersion bleed and support circle/rounded shapes
-        ctx.beginPath()
-        if (bShape === "circle") {
-          root.drawEllipsePath(ctx, bx, by, bw, bh)
-        } else if (bRad > 0) {
-          root.drawRoundedRectPath(ctx, bx, by, bw, bh, bRad)
-        } else {
-          ctx.rect(bx, by, bw, bh)
-        }
-        ctx.clip()
-
-        // 2. Frosted glass base
-        ctx.fillStyle = "rgba(15, 23, 42, 0.78)"
-        ctx.fillRect(bx, by, bw, bh)
-
-        // 3. Multi-sample optical dispersion
-        if (baseImage && baseImage.status === Image.Ready) {
-          ctx.globalAlpha = 0.16 * elemOpacity
-          var blurDisp = (act.dispersion !== undefined) ? Number(act.dispersion) : 4
-          var ds = Math.max(0.5, blurDisp / 4)
-          var blurOffsets = [[-2*ds, -2*ds], [2*ds, -2*ds], [-2*ds, 2*ds], [2*ds, 2*ds], [-4*ds, 0], [4*ds, 0], [0, -4*ds], [0, 4*ds]]
-          for (var bo = 0; bo < blurOffsets.length; bo++) {
-            var ox = blurOffsets[bo][0]
-            var oy = blurOffsets[bo][1]
-            ctx.drawImage(baseImage, bx + ox, by + oy, bw, bh, bx, by, bw, bh)
+        try {
+          // 1. Set clip path to prevent blur dispersion bleed and support circle/rounded shapes
+          ctx.beginPath()
+          if (bShape === "circle") {
+            root.drawEllipsePath(ctx, bx, by, bw, bh)
+          } else if (bRad > 0) {
+            root.drawRoundedRectPath(ctx, bx, by, bw, bh, bRad)
+          } else {
+            ctx.rect(bx, by, bw, bh)
           }
-        }
-        ctx.globalAlpha = elemOpacity
+          ctx.clip()
 
-        // 4. Glass specular tint
-        ctx.fillStyle = "rgba(255, 255, 255, 0.07)"
-        ctx.fillRect(bx, by, bw, bh)
-        ctx.restore()
+          // 2. Frosted glass base
+          ctx.fillStyle = "rgba(15, 23, 42, 0.78)"
+          ctx.fillRect(bx, by, bw, bh)
+
+          // 3. Multi-sample optical dispersion
+          if (baseImage && baseImage.status === Image.Ready) {
+            ctx.globalAlpha = 0.16 * elemOpacity
+            var blurDisp = (act.dispersion !== undefined) ? Number(act.dispersion) : 4
+            var ds = Math.max(0.5, blurDisp / 4)
+            var blurOffsets = [[-2*ds, -2*ds], [2*ds, -2*ds], [-2*ds, 2*ds], [2*ds, 2*ds], [-4*ds, 0], [4*ds, 0], [0, -4*ds], [0, 4*ds]]
+            var imgW = (baseImage.implicitWidth > 0 ? baseImage.implicitWidth : (baseImage.width > 0 ? baseImage.width : compositeContainer.baseW))
+            var imgH = (baseImage.implicitHeight > 0 ? baseImage.implicitHeight : (baseImage.height > 0 ? baseImage.height : compositeContainer.baseH))
+
+            for (var bo = 0; bo < blurOffsets.length; bo++) {
+              var ox = blurOffsets[bo][0]
+              var oy = blurOffsets[bo][1]
+              var sx = bx + ox
+              var sy = by + oy
+              var sw = bw
+              var sh = bh
+              var dx = bx
+              var dy = by
+              var dw = bw
+              var dh = bh
+
+              if (sx < 0) {
+                var diffX = -sx
+                sx = 0
+                sw -= diffX
+                dx += diffX
+                dw -= diffX
+              }
+              if (sy < 0) {
+                var diffY = -sy
+                sy = 0
+                sh -= diffY
+                dy += diffY
+                dh -= diffY
+              }
+              if (sx + sw > imgW) {
+                var excessW = (sx + sw) - imgW
+                sw -= excessW
+                dw -= excessW
+              }
+              if (sy + sh > imgH) {
+                var excessH = (sy + sh) - imgH
+                sh -= excessH
+                dh -= excessH
+              }
+
+              if (sw > 0 && sh > 0 && dw > 0 && dh > 0 && sx >= 0 && sy >= 0 && (sx + sw) <= imgW && (sy + sh) <= imgH) {
+                try {
+                  ctx.drawImage(baseImage, sx, sy, sw, sh, dx, dy, dw, dh)
+                } catch (e) {
+                  // Ignore any edge sampling errors
+                }
+              }
+            }
+          }
+          ctx.globalAlpha = elemOpacity
+
+          // 4. Glass specular tint
+          ctx.fillStyle = "rgba(255, 255, 255, 0.07)"
+          ctx.fillRect(bx, by, bw, bh)
+        } finally {
+          ctx.restore()
+        }
 
         // 5. Crisp glass border matching exact shape
         ctx.save()
-        ctx.beginPath()
-        if (bShape === "circle") {
-          root.drawEllipsePath(ctx, bx, by, bw, bh)
-        } else if (bRad > 0) {
-          root.drawRoundedRectPath(ctx, bx, by, bw, bh, bRad)
-        } else {
-          ctx.rect(bx, by, bw, bh)
+        try {
+          ctx.beginPath()
+          if (bShape === "circle") {
+            root.drawEllipsePath(ctx, bx, by, bw, bh)
+          } else if (bRad > 0) {
+            root.drawRoundedRectPath(ctx, bx, by, bw, bh, bRad)
+          } else {
+            ctx.rect(bx, by, bw, bh)
+          }
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.35)"
+          ctx.lineWidth = 1
+          ctx.globalAlpha = elemOpacity
+          ctx.stroke()
+        } finally {
+          ctx.restore()
         }
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.35)"
-        ctx.lineWidth = 1
-        ctx.globalAlpha = elemOpacity
-        ctx.stroke()
-        ctx.restore()
       } else if (act.tool === "block_highlight" && act.start && act.end) {
         var hx = Math.min(act.start.x, act.end.x)
         var hy = Math.min(act.start.y, act.end.y)
@@ -8876,43 +8929,83 @@ Rectangle {
 
         // Clip to circular lens
         ctx.save()
-        ctx.beginPath()
-        ctx.arc(magCenterX, magCenterY, magR, 0, Math.PI * 2)
-        ctx.clip()
+        try {
+          ctx.beginPath()
+          ctx.arc(magCenterX, magCenterY, magR, 0, Math.PI * 2)
+          ctx.clip()
 
-        // Draw magnified base image
-        if (baseImage && baseImage.status === Image.Ready) {
-          var srcW = (magR * 2) / magZoom
-          var srcH = (magR * 2) / magZoom
-          var srcX = magCenterX - srcW / 2
-          var srcY = magCenterY - srcH / 2
-          ctx.drawImage(baseImage, srcX, srcY, srcW, srcH, magCenterX - magR, magCenterY - magR, magR * 2, magR * 2)
-        } else {
-          ctx.fillStyle = "#0F172A"
+          // Draw magnified base image
+          if (baseImage && baseImage.status === Image.Ready) {
+            var magImgW = (baseImage.implicitWidth > 0 ? baseImage.implicitWidth : (baseImage.width > 0 ? baseImage.width : compositeContainer.baseW))
+            var magImgH = (baseImage.implicitHeight > 0 ? baseImage.implicitHeight : (baseImage.height > 0 ? baseImage.height : compositeContainer.baseH))
+            var srcW = (magR * 2) / magZoom
+            var srcH = (magR * 2) / magZoom
+            var srcX = magCenterX - srcW / 2
+            var srcY = magCenterY - srcH / 2
+            var dstX = magCenterX - magR
+            var dstY = magCenterY - magR
+            var dstW = magR * 2
+            var dstH = magR * 2
+
+            if (srcX < 0) {
+              var diffX = -srcX
+              srcX = 0
+              srcW -= diffX
+              dstX += diffX * magZoom
+              dstW -= diffX * magZoom
+            }
+            if (srcY < 0) {
+              var diffY = -srcY
+              srcY = 0
+              srcH -= diffY
+              dstY += diffY * magZoom
+              dstH -= diffY * magZoom
+            }
+            if (srcX + srcW > magImgW) {
+              var excessW = (srcX + srcW) - magImgW
+              srcW -= excessW
+              dstW -= excessW * magZoom
+            }
+            if (srcY + srcH > magImgH) {
+              var excessH = (srcY + srcH) - magImgH
+              srcH -= excessH
+              dstH -= excessH * magZoom
+            }
+
+            if (srcW > 0 && srcH > 0 && dstW > 0 && dstH > 0 && srcX >= 0 && srcY >= 0 && (srcX + srcW) <= magImgW && (srcY + srcH) <= magImgH) {
+              try {
+                ctx.drawImage(baseImage, srcX, srcY, srcW, srcH, dstX, dstY, dstW, dstH)
+              } catch (e) {
+                // Ignore sampling error
+              }
+            }
+          } else {
+            ctx.fillStyle = "#0F172A"
+            ctx.fill()
+          }
+
+          // Lens specular glare / reflection
+          var grad = ctx.createLinearGradient(magCenterX - magR, magCenterY - magR, magCenterX + magR, magCenterY + magR)
+          grad.addColorStop(0, "rgba(255, 255, 255, 0.25)")
+          grad.addColorStop(0.4, "rgba(255, 255, 255, 0.03)")
+          grad.addColorStop(1, "rgba(0, 0, 0, 0.15)")
+          ctx.fillStyle = grad
+          ctx.beginPath()
+          ctx.arc(magCenterX, magCenterY, magR, 0, Math.PI * 2)
           ctx.fill()
+
+          // Subtle crosshair
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.35)"
+          ctx.lineWidth = 1
+          ctx.beginPath()
+          ctx.moveTo(magCenterX - 8, magCenterY)
+          ctx.lineTo(magCenterX + 8, magCenterY)
+          ctx.moveTo(magCenterX, magCenterY - 8)
+          ctx.lineTo(magCenterX, magCenterY + 8)
+          ctx.stroke()
+        } finally {
+          ctx.restore() // unclip
         }
-
-        // Lens specular glare / reflection
-        var grad = ctx.createLinearGradient(magCenterX - magR, magCenterY - magR, magCenterX + magR, magCenterY + magR)
-        grad.addColorStop(0, "rgba(255, 255, 255, 0.25)")
-        grad.addColorStop(0.4, "rgba(255, 255, 255, 0.03)")
-        grad.addColorStop(1, "rgba(0, 0, 0, 0.15)")
-        ctx.fillStyle = grad
-        ctx.beginPath()
-        ctx.arc(magCenterX, magCenterY, magR, 0, Math.PI * 2)
-        ctx.fill()
-
-        // Subtle crosshair
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.35)"
-        ctx.lineWidth = 1
-        ctx.beginPath()
-        ctx.moveTo(magCenterX - 8, magCenterY)
-        ctx.lineTo(magCenterX + 8, magCenterY)
-        ctx.moveTo(magCenterX, magCenterY - 8)
-        ctx.lineTo(magCenterX, magCenterY + 8)
-        ctx.stroke()
-
-        ctx.restore() // unclip
 
         // Outer lens metallic rim
         ctx.strokeStyle = magColor
@@ -9103,19 +9196,60 @@ Rectangle {
         // Optional Magnification Zoom inside spotlight cutout
         if (spZoom > 1.0 && baseImage && baseImage.status === Image.Ready) {
           ctx.save()
-          ctx.beginPath()
-          if (spShape === "circle") {
-            root.drawEllipsePath(ctx, spX, spY, spW, spH)
-          } else {
-            root.drawRoundedRectPath(ctx, spX, spY, spW, spH, spRad)
+          try {
+            ctx.beginPath()
+            if (spShape === "circle") {
+              root.drawEllipsePath(ctx, spX, spY, spW, spH)
+            } else {
+              root.drawRoundedRectPath(ctx, spX, spY, spW, spH, spRad)
+            }
+            ctx.clip()
+            var spImgW = (baseImage.implicitWidth > 0 ? baseImage.implicitWidth : (baseImage.width > 0 ? baseImage.width : compositeContainer.baseW))
+            var spImgH = (baseImage.implicitHeight > 0 ? baseImage.implicitHeight : (baseImage.height > 0 ? baseImage.height : compositeContainer.baseH))
+            var spZoomSrcW = spW / spZoom
+            var spZoomSrcH = spH / spZoom
+            var spZoomSrcX = (spX + spW / 2) - spZoomSrcW / 2
+            var spZoomSrcY = (spY + spH / 2) - spZoomSrcH / 2
+            var spDstX = spX
+            var spDstY = spY
+            var spDstW = spW
+            var spDstH = spH
+
+            if (spZoomSrcX < 0) {
+              var diffX = -spZoomSrcX
+              spZoomSrcX = 0
+              spZoomSrcW -= diffX
+              spDstX += diffX * spZoom
+              spDstW -= diffX * spZoom
+            }
+            if (spZoomSrcY < 0) {
+              var diffY = -spZoomSrcY
+              spZoomSrcY = 0
+              spZoomSrcH -= diffY
+              spDstY += diffY * spZoom
+              spDstH -= diffY * spZoom
+            }
+            if (spZoomSrcX + spZoomSrcW > spImgW) {
+              var excessW = (spZoomSrcX + spZoomSrcW) - spImgW
+              spZoomSrcW -= excessW
+              spDstW -= excessW * spZoom
+            }
+            if (spZoomSrcY + spZoomSrcH > spImgH) {
+              var excessH = (spZoomSrcY + spZoomSrcH) - spImgH
+              spZoomSrcH -= excessH
+              spDstH -= excessH * spZoom
+            }
+
+            if (spZoomSrcW > 0 && spZoomSrcH > 0 && spDstW > 0 && spDstH > 0 && spZoomSrcX >= 0 && spZoomSrcY >= 0 && (spZoomSrcX + spZoomSrcW) <= spImgW && (spZoomSrcY + spZoomSrcH) <= spImgH) {
+              try {
+                ctx.drawImage(baseImage, spZoomSrcX, spZoomSrcY, spZoomSrcW, spZoomSrcH, spDstX, spDstY, spDstW, spDstH)
+              } catch (e) {
+                // Ignore sampling error
+              }
+            }
+          } finally {
+            ctx.restore()
           }
-          ctx.clip()
-          var spZoomSrcW = spW / spZoom
-          var spZoomSrcH = spH / spZoom
-          var spZoomSrcX = (spX + spW / 2) - spZoomSrcW / 2
-          var spZoomSrcY = (spY + spH / 2) - spZoomSrcH / 2
-          ctx.drawImage(baseImage, spZoomSrcX, spZoomSrcY, spZoomSrcW, spZoomSrcH, spX, spY, spW, spH)
-          ctx.restore()
         }
 
         // Stroke individual spotlight rim border
