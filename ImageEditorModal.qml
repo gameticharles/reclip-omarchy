@@ -175,6 +175,10 @@ Rectangle {
   ]
 
   Component.onCompleted: {
+    var home = Quickshell.env("HOME") || ""
+    if (home.length > 0) {
+      Quickshell.execDetached(["mkdir", "-p", home + "/Pictures/Screenshots", home + "/.local/state/reclip"])
+    }
     if (!root.systemFontFamilies || root.systemFontFamilies.length <= 3) {
       var fams = (typeof Qt !== "undefined" && Qt.fontFamilies) ? Qt.fontFamilies() : []
       if (fams && fams.length > 0) {
@@ -286,6 +290,23 @@ Rectangle {
         root.showFeedback(feedbackLabel)
       } else {
         root.showFeedback("⚠ Transform failed")
+      }
+    }
+  }
+
+  Process {
+    id: ensureSaveDirProc
+    property string pendingSaveMode: ""
+    property string pendingTargetDir: ""
+    property string pendingTargetFile: ""
+    command: []
+    onExited: function(code) {
+      if (code === 0) {
+        root.proceedGrabAndSave(pendingSaveMode, pendingTargetFile)
+      } else {
+        root.isExporting = false
+        console.warn("ReClip ImageEditor: Failed to ensure directory: " + pendingTargetDir)
+        root.showFeedback("⚠ Cannot create folder: " + pendingTargetDir)
       }
     }
   }
@@ -2569,7 +2590,7 @@ Rectangle {
   function applyImageTransform(magickArgs, label) {
     if (!root.imagePath) return
     if (transformProc.running) return
-    var homeDir = Quickshell.env("HOME")
+    var homeDir = Quickshell.env("HOME") || "/home/" + (Quickshell.env("USER") || "user")
     var stateDir = homeDir + "/.local/state/reclip"
     var timeStr = Date.now()
     var targetFile = stateDir + "/transform_" + timeStr + ".png"
@@ -2585,7 +2606,7 @@ Rectangle {
     var runTransformOn = function(inputFile) {
       transformProc.targetPath = targetFile
       transformProc.feedbackLabel = label
-      var cmd = "magick " + Util.shellQuote(inputFile) + " " + magickArgs + " " + Util.shellQuote(targetFile)
+      var cmd = "mkdir -p " + Util.shellQuote(stateDir) + " && magick " + Util.shellQuote(inputFile) + " " + magickArgs + " " + Util.shellQuote(targetFile)
       transformProc.command = ["sh", "-c", cmd]
       transformProc.running = true
     }
@@ -2596,15 +2617,25 @@ Rectangle {
       root.zoomScale = 1.0
       annotationCanvas.requestPaint()
       Qt.callLater(function() {
-        compositeContainer.grabToImage(function(result) {
+        try {
+          compositeContainer.grabToImage(function(result) {
+            root.isExporting = false
+            root.zoomScale = prevZoom
+            annotationCanvas.requestPaint()
+            if (!result) return
+            var bakeFile = stateDir + "/bake_" + timeStr + ".png"
+            try {
+              result.saveToFile(bakeFile)
+            } catch (bakeErr) {
+              console.warn("ReClip ImageEditor: saveToFile bake error: " + bakeErr)
+            }
+            runTransformOn(bakeFile)
+          })
+        } catch (err) {
           root.isExporting = false
           root.zoomScale = prevZoom
-          annotationCanvas.requestPaint()
-          if (!result) return
-          var bakeFile = stateDir + "/bake_" + timeStr + ".png"
-          result.saveToFile(bakeFile)
-          runTransformOn(bakeFile)
-        })
+          console.warn("ReClip ImageEditor: grabToImage error: " + err)
+        }
       })
     } else {
       runTransformOn(root.imagePath)
@@ -2668,13 +2699,29 @@ Rectangle {
 
   function exportImage(saveMode) {
     // saveMode: "clipboard", "file", "history"
-    var homeDir = Quickshell.env("HOME")
-    var outDir = homeDir + "/.local/state/reclip"
-    var timeStr = new Date().toISOString().replace(/[:.]/g, "-")
-    var targetFile = outDir + "/annotated_" + timeStr + ".png"
+    if (root.isExporting || ensureSaveDirProc.running) {
+      root.showFeedback("Saving in progress...")
+      return
+    }
 
-    if (saveMode === "file") {
-      targetFile = homeDir + "/Pictures/Screenshots/reclip_annotated_" + timeStr + ".png"
+    var homeDir = Quickshell.env("HOME") || "/home/" + (Quickshell.env("USER") || "user")
+    var targetDir = (saveMode === "file") ? (homeDir + "/Pictures/Screenshots") : (homeDir + "/.local/state/reclip")
+    var timeStr = new Date().toISOString().replace(/[:.]/g, "-")
+    var targetFile = targetDir + (saveMode === "file" ? "/reclip_annotated_" : "/annotated_") + timeStr + ".png"
+
+    // Proactively verify and create directory to ensure write success and avoid any crash
+    ensureSaveDirProc.pendingSaveMode = saveMode
+    ensureSaveDirProc.pendingTargetDir = targetDir
+    ensureSaveDirProc.pendingTargetFile = targetFile
+    ensureSaveDirProc.command = ["mkdir", "-p", targetDir]
+    ensureSaveDirProc.running = true
+  }
+
+  function proceedGrabAndSave(saveMode, targetFile) {
+    if (!compositeContainer) {
+      root.isExporting = false
+      root.showFeedback("⚠ Canvas not available")
+      return
     }
 
     root.isExporting = true
@@ -2683,23 +2730,47 @@ Rectangle {
     annotationCanvas.requestPaint()
 
     Qt.callLater(function() {
-      compositeContainer.grabToImage(function(result) {
+      try {
+        compositeContainer.grabToImage(function(result) {
+          root.isExporting = false
+          root.zoomScale = prevZoom
+          annotationCanvas.requestPaint()
+
+          if (!result) {
+            console.warn("ReClip ImageEditor: grabToImage returned null result")
+            root.showFeedback("⚠ Image grab failed")
+            return
+          }
+
+          var saveOk = false
+          try {
+            saveOk = result.saveToFile(targetFile)
+          } catch (err) {
+            console.warn("ReClip ImageEditor: saveToFile exception: " + err)
+            saveOk = false
+          }
+
+          if (!saveOk) {
+            console.warn("ReClip ImageEditor: saveToFile returned false for " + targetFile)
+            root.showFeedback("⚠ Failed to save image file")
+            return
+          }
+
+          if (saveMode === "clipboard" || saveMode === "history") {
+            Quickshell.execDetached(["bash", "-c", "wl-copy --type image/png < " + Util.shellQuote(targetFile) + " && notify-send -a \"ReClip\" \"Annotated Image Copied\" \"Loaded to clipboard\""])
+            root.savedToClipboard(targetFile)
+            root.showFeedback("✓ Copied & saved to clips!")
+          } else if (saveMode === "file") {
+            Quickshell.execDetached(["notify-send", "-a", "ReClip", "Annotated Image Saved", "Saved to " + targetFile])
+            root.showFeedback("✓ Saved to Screenshots!")
+          }
+        })
+      } catch (grabErr) {
         root.isExporting = false
         root.zoomScale = prevZoom
-        annotationCanvas.requestPaint()
-
-        if (!result) return
-        result.saveToFile(targetFile)
-
-        if (saveMode === "clipboard" || saveMode === "history") {
-          Quickshell.execDetached(["bash", "-c", "wl-copy --type image/png < " + Util.shellQuote(targetFile) + " && notify-send -a \"ReClip\" \"Annotated Image Copied\" \"Loaded to clipboard\""])
-          root.savedToClipboard(targetFile)
-          root.showFeedback("✓ Copied & saved to clips!")
-        } else if (saveMode === "file") {
-          Quickshell.execDetached(["notify-send", "-a", "ReClip", "Annotated Image Saved", "Saved to " + targetFile])
-          root.showFeedback("✓ Saved to Screenshots!")
-        }
-      })
+        console.warn("ReClip ImageEditor: grabToImage exception: " + grabErr)
+        root.showFeedback("⚠ Export error")
+      }
     })
   }
 
