@@ -17,8 +17,8 @@ BarWidget {
     if (panelLoader.item) panelLoader.item.open(payload)
   }
 
-  function close() {
-    if (panelLoader.item) panelLoader.item.close()
+  function close(force) {
+    if (panelLoader.item) panelLoader.item.close(force)
   }
 
   function toggle() {
@@ -63,9 +63,9 @@ BarWidget {
       try { if (payloadJson) p = JSON.parse(payloadJson) } catch (e) {}
       root.open(p)
     }
-    function close() { root.close() }
+    function close() { root.close(true) }
     function show(payloadJson: string) { open(payloadJson) }
-    function hide() { root.close() }
+    function hide() { root.close(true) }
     function toggle() { root.toggle() }
     function colorStudio(subTabStr: string) {
       var sTab = 0
@@ -75,8 +75,37 @@ BarWidget {
       }
       root.open({ tab: 3, subTab: sTab })
     }
+    function qr(tabStr: string, subTabStr: string) {
+      var t = 0
+      if (tabStr) {
+        var n = parseInt(tabStr)
+        if (!isNaN(n)) t = n
+      }
+      var s = 0
+      if (subTabStr) {
+        var sn = parseInt(subTabStr)
+        if (!isNaN(sn)) s = sn
+      }
+      root.open({ qrOpen: true, qrTab: t, logoSubTab: s })
+    }
+    function qrCode(tabStr: string, subTabStr: string) { qr(tabStr, subTabStr) }
+    function fileShare(path: string) {
+      root.open({ qrOpen: true, fileShareOpen: true, filePath: path || "" })
+    }
+    function image(path: string) {
+      root.open({ annotatePath: path || "" })
+    }
+    function editImage(path: string) { image(path) }
     function incognito() {
       if (panelLoader.item) panelLoader.item.toggleIncognito()
+    }
+    function settings(sectionStr: string) {
+      var s = 0
+      if (sectionStr !== undefined && sectionStr !== "") {
+        var n = parseInt(sectionStr)
+        if (!isNaN(n)) s = n
+      }
+      root.open({ settingsOpen: true, settingsSection: s })
     }
   }
 

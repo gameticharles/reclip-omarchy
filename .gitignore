@@ -1,0 +1,25 @@
+# Python byte code and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+dist/
+
+# Editor / IDE artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+
+# Runtime and local state
+user-style.json
+*.tmp
+.DS_Store
+Thumbs.db

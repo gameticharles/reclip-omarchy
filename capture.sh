@@ -16,6 +16,29 @@ if [[ -f "$STATE_DIR/incognito" ]] || [[ ${CLIPBOARD_STATE:-} == "sensitive" ]] 
   exit 0
 fi
 
+# Query active Hyprland window for App-Aware attribution & password manager protection
+win_info=$(hyprctl activewindow -j 2>/dev/null || echo "{}")
+app_class=$(jq -r '.class // empty' <<<"$win_info" 2>/dev/null || echo "")
+app_title=$(jq -r '.title // empty' <<<"$win_info" 2>/dev/null || echo "")
+
+# Auto-ignore password managers / blacklisted apps
+app_lower=$(tr '[:upper:]' '[:lower:]' <<<"$app_class")
+case "$app_lower" in
+  *keepass*|*1password*|*bitwarden*|*authpass*|*enpass*|*lastpass*|*vault*)
+    exit 0
+    ;;
+esac
+
+if [[ -f "$STATE_DIR/settings.json" ]]; then
+  custom_blocked=$(jq -r --arg c "$app_class" '.appBlacklist // [] | index($c) // empty' "$STATE_DIR/settings.json" 2>/dev/null || true)
+  if [[ -n "$custom_blocked" ]]; then
+    exit 0
+  fi
+fi
+
+export RECLIP_APP_CLASS="$app_class"
+export RECLIP_APP_TITLE="$app_title"
+
 emit_image() {
   local mime="$1"
   local ext tmp hash file
@@ -58,8 +81,19 @@ emit_image() {
       | grep -oE '#[0-9A-Fa-f]{6}' | tr '[:lower:]' '[:upper:]' | awk '!seen[$0]++' | head -n "$limit" | jq -R . | jq -s . 2>/dev/null || echo "[]")
   fi
 
+  local qr_text=""
+  local is_qr=false
+  if command -v zbarimg &>/dev/null; then
+    qr_text=$(timeout 1s zbarimg -q --raw "$file" 2>/dev/null | head -c 8192 || true)
+    if [[ -n "$qr_text" ]]; then
+      is_qr=true
+    fi
+  fi
+
   jq -cn --arg mime "$mime" --arg path "$file" --arg captured_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" --argjson colors "$colors" \
-    '{type:"image", mime:$mime, path:$path, capturedAt:$captured_at, colors:$colors}'
+    --arg app_class "$app_class" --arg app_title "$app_title" \
+    --argjson isQr "$is_qr" --arg qrText "$qr_text" \
+    '{type:"image", mime:$mime, path:$path, capturedAt:$captured_at, colors:$colors, sourceApp:$app_class, sourceTitle:$app_title, isQr:$isQr, qrText:$qrText}'
 }
 
 emit_text() {
@@ -97,7 +131,9 @@ emit_text() {
       $text = undef;
     }
     $text = decode("UTF-8", $raw) unless defined $text;
-    print "{\"type\":\"text\",\"text\":", encode_json($text), "}\n";
+    my $app = $ENV{"RECLIP_APP_CLASS"} || "";
+    my $title = $ENV{"RECLIP_APP_TITLE"} || "";
+    print encode_json({type => "text", text => $text, sourceApp => $app, sourceTitle => $title}), "\n";
   '
 }
 

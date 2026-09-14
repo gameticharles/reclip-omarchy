@@ -28,6 +28,9 @@ Rectangle {
   property string detectedFormat: "HEX"
   property string copyStatusText: ""
 
+  readonly property var currentTints: ColorStudio.generateTints(root.currentHex, 10)
+  readonly property var currentShades: ColorStudio.generateShades(root.currentHex, 10)
+
   readonly property color bgCol: Color.popups.background || Color.background || "#1e1e2e"
   readonly property color fgCol: Color.popups.text || Color.text || "#cdd6f4"
   readonly property color borderCol: Color.popups.border || Color.border || "#313244"
@@ -936,6 +939,84 @@ Rectangle {
                       onClicked: root.setColor(modelData)
                     }
                     PanelToolTip { visible: recMouse.containsMouse; text: "Recent: " + modelData }
+                  }
+                }
+              }
+            }
+          }
+
+          // ----------------------------------------------------
+          // E. TINTS & SHADES (LIGHTER & DARKER STEPS)
+          // ----------------------------------------------------
+          Rectangle {
+            width: parent.width
+            height: Style.space(98)
+            radius: Style.space(8)
+            color: Util.alpha(root.fgCol, 0.03)
+            border.width: 1
+            border.color: Util.alpha(root.fgCol, 0.08)
+
+            Column {
+              anchors.fill: parent
+              anchors.margins: Style.space(10)
+              spacing: Style.space(6)
+
+              Text {
+                text: "TINTS & SHADES (10 STEPS)"
+                color: Util.alpha(root.fgCol, 0.6)
+                font.family: root.fontFamily
+                font.pixelSize: Style.space(8)
+                font.bold: true
+              }
+
+              // Row 1: Tints (Lighter Steps)
+              Row {
+                width: parent.width
+                spacing: Style.space(4)
+                Repeater {
+                  model: root.currentTints
+                  Rectangle {
+                    width: (parent.width - Style.space(36)) / 10
+                    height: Style.space(20)
+                    radius: Style.space(3)
+                    color: modelData
+                    border.width: root.currentHex.toUpperCase() === modelData.toUpperCase() ? 2 : 1
+                    border.color: root.currentHex.toUpperCase() === modelData.toUpperCase() ? Color.accent : Util.alpha(root.fgCol, 0.2)
+
+                    MouseArea {
+                      id: tintMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.setColor(modelData)
+                    }
+                    PanelToolTip { visible: tintMouse.containsMouse; text: "Tint: " + modelData }
+                  }
+                }
+              }
+
+              // Row 2: Shades (Darker Steps)
+              Row {
+                width: parent.width
+                spacing: Style.space(4)
+                Repeater {
+                  model: root.currentShades
+                  Rectangle {
+                    width: (parent.width - Style.space(36)) / 10
+                    height: Style.space(20)
+                    radius: Style.space(3)
+                    color: modelData
+                    border.width: root.currentHex.toUpperCase() === modelData.toUpperCase() ? 2 : 1
+                    border.color: root.currentHex.toUpperCase() === modelData.toUpperCase() ? Color.accent : Util.alpha(root.fgCol, 0.2)
+
+                    MouseArea {
+                      id: shadeMouse
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.setColor(modelData)
+                    }
+                    PanelToolTip { visible: shadeMouse.containsMouse; text: "Shade: " + modelData }
                   }
                 }
               }
