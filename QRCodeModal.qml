@@ -1024,6 +1024,7 @@ Rectangle {
 
   function copyDecodedText() {
     if (root.decodedText) {
+      Quickshell.execDetached(["bash", "-c", "printf '%s' " + Util.shellQuote(root.decodedText) + " | wl-copy"])
       root.copiedText(root.decodedText)
       root.showFeedback("✓ Decoded text copied to clipboard!")
     }
@@ -3912,7 +3913,11 @@ Rectangle {
             cursorShape: Qt.PointingHandCursor
             onClicked: {
               root.copyDropdownOpen = false
-              root.copiedText(root.textToEncode)
+              var txt = root.textToEncode
+              if (txt && txt.length > 0) {
+                Quickshell.execDetached(["bash", "-c", "printf '%s' " + Util.shellQuote(txt) + " | wl-copy"])
+              }
+              root.copiedText(txt)
               root.showFeedback("✓ Text copied to clipboard")
             }
           }

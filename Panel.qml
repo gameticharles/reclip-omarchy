@@ -816,8 +816,21 @@ Panel {
   }
 
   function copyText(str) {
-    if (!str) return
-    Quickshell.execDetached(["bash", "-c", "printf '%s' " + Util.shellQuote(str) + " | wl-copy"])
+    if (str === undefined || str === null) return
+    var s = String(str)
+    if (s.length === 0) return
+    Quickshell.execDetached(["bash", "-c", "printf '%s' " + Util.shellQuote(s) + " | wl-copy"])
+  }
+
+  function setSystemClipboard(str) {
+    copyText(str)
+  }
+
+  function pasteClipboard(str) {
+    if (str === undefined || str === null) return
+    var s = String(str)
+    if (s.length === 0) return
+    Quickshell.execDetached(["bash", "-c", "printf '%s' " + Util.shellQuote(s) + " | wl-copy && sleep 0.15 && wtype -M shift -k Insert -m shift"])
   }
 
   function prevMonth() {

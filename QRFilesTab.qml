@@ -252,8 +252,12 @@ RowLayout {
                           hoverEnabled: true
                           cursorShape: Qt.PointingHandCursor
                           onClicked: {
-                            root.copiedText(root.fileSharePin)
-                            root.showFeedback("✓ PIN " + root.fileSharePin + " copied")
+                            var pin = root.fileSharePin
+                            if (pin && pin.length > 0) {
+                              Quickshell.execDetached(["bash", "-c", "printf '%s' " + Util.shellQuote(pin) + " | wl-copy"])
+                            }
+                            root.copiedText(pin)
+                            root.showFeedback("✓ PIN " + pin + " copied")
                           }
                         }
                         PanelToolTip {
@@ -349,7 +353,11 @@ RowLayout {
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
-                      root.copiedText(root.fileShareUrl)
+                      var targetUrl = root.fileShareUrl
+                      if (targetUrl && targetUrl.length > 0) {
+                        Quickshell.execDetached(["bash", "-c", "printf '%s' " + Util.shellQuote(targetUrl) + " | wl-copy"])
+                      }
+                      root.copiedText(targetUrl)
                       root.showFeedback("✓ Wi-Fi download link copied to clipboard")
                     }
                   }
