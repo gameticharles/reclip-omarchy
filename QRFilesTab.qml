@@ -262,7 +262,7 @@ RowLayout {
                         }
                         PanelToolTip {
                           visible: copyPinM.containsMouse
-                          text: "Copy 4-digit protection key"
+                          text: "Copy 6-digit protection key"
                         }
                       }
                     }
@@ -314,6 +314,102 @@ RowLayout {
                   PanelToolTip {
                     visible: singleShotM.containsMouse
                     text: "Automatically shut down local server after download completes"
+                  }
+                }
+
+                // Options: Allow Send to PC (Reverse Drop) Toggle
+                Rectangle {
+                  Layout.fillWidth: true
+                  Layout.preferredHeight: Style.space(22)
+                  radius: 0
+                  color: root.fileShareAllowUpload
+                         ? Util.alpha(Color.accent, 0.15)
+                         : (allowUploadM.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.08) : "transparent")
+                  border.width: 1
+                  border.color: root.fileShareAllowUpload ? Color.accent : Util.alpha(Color.popups.border || Color.border, 0.25)
+
+                  Row {
+                    anchors.centerIn: parent
+                    spacing: Style.space(4)
+                    Text {
+                      text: root.fileShareAllowUpload ? "󰄲" : "󰄱"
+                      color: root.fileShareAllowUpload ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.6)
+                      font.pixelSize: Style.space(7)
+                      anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Text {
+                      text: "Allow Send to PC"
+                      color: root.fileShareAllowUpload ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.7)
+                      font.family: Style.font.menuFamily
+                      font.pixelSize: Style.space(6.5)
+                      font.bold: root.fileShareAllowUpload
+                      anchors.verticalCenter: parent.verticalCenter
+                    }
+                  }
+
+                  MouseArea {
+                    id: allowUploadM
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      root.fileShareAllowUpload = !root.fileShareAllowUpload
+                      if (root.fileShareList && root.fileShareList.length > 0 && root.fileShareRunning) {
+                        root.startFileShareList(root.fileShareList)
+                      }
+                    }
+                  }
+                  PanelToolTip {
+                    visible: allowUploadM.containsMouse
+                    text: "Allow connected phones or devices to upload files directly to ~/Downloads/ReClip-Drop"
+                  }
+                }
+
+                // Options: Allow Clipboard Beam Toggle
+                Rectangle {
+                  Layout.fillWidth: true
+                  Layout.preferredHeight: Style.space(22)
+                  radius: 0
+                  color: root.fileShareAllowBeam
+                         ? Util.alpha(Color.accent, 0.15)
+                         : (allowBeamM.containsMouse ? Util.alpha(Color.popups.text || Color.text, 0.08) : "transparent")
+                  border.width: 1
+                  border.color: root.fileShareAllowBeam ? Color.accent : Util.alpha(Color.popups.border || Color.border, 0.25)
+
+                  Row {
+                    anchors.centerIn: parent
+                    spacing: Style.space(4)
+                    Text {
+                      text: root.fileShareAllowBeam ? "󰄲" : "󰄱"
+                      color: root.fileShareAllowBeam ? Color.accent : Util.alpha(Color.popups.text || Color.text, 0.6)
+                      font.pixelSize: Style.space(7)
+                      anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Text {
+                      text: "Quick Beam Sync"
+                      color: root.fileShareAllowBeam ? (Color.popups.text || Color.text) : Util.alpha(Color.popups.text || Color.text, 0.7)
+                      font.family: Style.font.menuFamily
+                      font.pixelSize: Style.space(6.5)
+                      font.bold: root.fileShareAllowBeam
+                      anchors.verticalCenter: parent.verticalCenter
+                    }
+                  }
+
+                  MouseArea {
+                    id: allowBeamM
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      root.fileShareAllowBeam = !root.fileShareAllowBeam
+                      if (root.fileShareList && root.fileShareList.length > 0 && root.fileShareRunning) {
+                        root.startFileShareList(root.fileShareList)
+                      }
+                    }
+                  }
+                  PanelToolTip {
+                    visible: allowBeamM.containsMouse
+                    text: "Allow connected peers to beam notes and clipboard text snippets to/from PC"
                   }
                 }
 

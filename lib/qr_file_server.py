@@ -34,6 +34,7 @@ import html
 import secrets
 import subprocess
 import threading
+import shutil
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 PREFERRED_PORTS = [53317, 53318, 8080, 8000, 8888, 0]
@@ -202,16 +203,22 @@ class ThreadedFileShareServer(socketserver.ThreadingMixIn, HTTPServer):
     allow_reuse_address = True
     request_queue_size = 128  # Hardened TCP listen backlog for burst connections / simultaneous QR scans
 
-    def __init__(self, server_address, RequestHandlerClass, files_meta, lan_ip, single_shot=False, token=None, pin=None, save_dir=None):
+    def __init__(self, server_address, RequestHandlerClass, files_meta, lan_ip, single_shot=False, token=None, pin=None, save_dir=None, allow_upload=True, allow_beam=True, max_upload_size=1024*1024*1024, max_session_quota=5*1024*1024*1024):
         super().__init__(server_address, RequestHandlerClass)
         self.files_meta = files_meta
         self.files_map = {item["name"]: item["path"] for item in files_meta}
         self.lan_ip = lan_ip
         self.single_shot = single_shot
         self.token = token or secrets.token_hex(16)
-        self.pin = pin or f"{secrets.randbelow(9000) + 1000}"
+        # High-entropy 6-digit cryptographic PIN by default (1,000,000 combinations + rate limit & lockout)
+        self.pin = str(pin).strip() if pin else f"{secrets.randbelow(900000) + 100000}"
         self.save_dir = os.path.expanduser(save_dir or "~/Downloads/ReClip-Drop")
         os.makedirs(self.save_dir, exist_ok=True)
+        self.allow_upload = bool(allow_upload)
+        self.allow_beam = bool(allow_beam)
+        self.max_upload_size = int(max_upload_size)
+        self.max_session_upload_quota = int(max_session_quota)
+        self.session_uploaded_bytes = 0
         self.beam_text = ""
         self.should_stop = False
         self.download_completed = False
@@ -219,6 +226,12 @@ class ThreadedFileShareServer(socketserver.ThreadingMixIn, HTTPServer):
         self.zip_cache_path = None
         self.folder_zip_cache = {}
         self.download_count = 0
+
+        # Rate limiting and lockout state
+        self.attempt_lock = threading.Lock()
+        self.failed_attempts = {}       # client_ip -> {"count": int, "locked_until": float}
+        self.global_failed_attempts = 0
+        self.global_locked_until = 0.0
 
     def server_close(self):
         super().server_close()
@@ -989,13 +1002,13 @@ body {
 .pin-inputs {
   display: flex;
   justify-content: center;
-  gap: 0.75rem;
+  gap: 0.5rem;
   margin-bottom: 1.5rem;
 }
 .pin-digit {
-  width: 52px;
-  height: 60px;
-  font-size: 1.75rem;
+  width: 44px;
+  height: 54px;
+  font-size: 1.5rem;
   font-family: monospace;
   font-weight: 800;
   text-align: center;
@@ -1005,6 +1018,10 @@ body {
   color: var(--accent);
   outline: none;
   transition: all 0.15s ease;
+}
+@media (max-width: 400px) {
+  .pin-inputs { gap: 0.35rem; }
+  .pin-digit { width: 38px; height: 48px; font-size: 1.3rem; }
 }
 .pin-digit:focus {
   border-color: var(--accent);
@@ -1345,13 +1362,15 @@ PIN_PAGE_HTML = """<!DOCTYPE html>
       </svg>
     </div>
     <h1 class="pin-title">Protected Transfer</h1>
-    <p class="pin-desc">Enter the 4-digit quick PIN displayed in ReClip on your computer screen.</p>
+    <p class="pin-desc">Enter the 6-digit security PIN displayed in ReClip on your computer screen.</p>
     
     <div class="pin-inputs" id="pin-boxes">
       <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="pin-digit" id="p0" autofocus>
       <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="pin-digit" id="p1">
       <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="pin-digit" id="p2">
       <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="pin-digit" id="p3">
+      <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="pin-digit" id="p4">
+      <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="pin-digit" id="p5">
     </div>
 
     <button type="button" class="btn btn-primary" style="width: 100%;" onclick="submitPin()">
@@ -1400,15 +1419,24 @@ if (window.matchMedia) {
 }
 updateThemeUI(getEffectiveTheme());
 
-    var digits = [document.getElementById('p0'), document.getElementById('p1'), document.getElementById('p2'), document.getElementById('p3')];
+    var digits = [
+      document.getElementById('p0'),
+      document.getElementById('p1'),
+      document.getElementById('p2'),
+      document.getElementById('p3'),
+      document.getElementById('p4'),
+      document.getElementById('p5')
+    ];
+    var pinLen = digits.length;
+
     digits.forEach(function(inp, idx) {
       inp.addEventListener('input', function(e) {
         var v = inp.value.replace(/[^0-9]/g, '');
         inp.value = v ? v.slice(-1) : '';
-        if (inp.value && idx < 3) {
+        if (inp.value && idx < pinLen - 1) {
           digits[idx + 1].focus();
         }
-        if (idx === 3 && inp.value) {
+        if (idx === pinLen - 1 && inp.value) {
           submitPin();
         }
       });
@@ -1419,25 +1447,42 @@ updateThemeUI(getEffectiveTheme());
           submitPin();
         }
       });
+      inp.addEventListener('paste', function(e) {
+        e.preventDefault();
+        var pasteData = (e.clipboardData || window.clipboardData).getData('text').trim().replace(/[^0-9]/g, '');
+        if (pasteData) {
+          for (var i = 0; i < pinLen; i++) {
+            digits[i].value = pasteData[i] || '';
+          }
+          var nextFocus = Math.min(pasteData.length, pinLen - 1);
+          digits[nextFocus].focus();
+          if (pasteData.length >= pinLen) {
+            submitPin();
+          }
+        }
+      });
     });
 
     function submitPin() {
       var pin = digits.map(function(d) { return d.value; }).join('');
       var errBox = document.getElementById('pin-error');
       var card = document.getElementById('pin-card');
-      if (pin.length < 4) {
-        if (errBox) errBox.innerText = 'Please enter all 4 digits';
+      if (pin.length < pinLen) {
+        if (errBox) { errBox.style.color = '#f43f5e'; errBox.innerText = 'Please enter all ' + pinLen + ' digits'; }
         return;
       }
-      if (errBox) errBox.innerText = 'Verifying...';
+      if (errBox) { errBox.style.color = 'var(--text-muted)'; errBox.innerText = 'Verifying...'; }
 
       fetch('/api/verify-pin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin: pin })
       }).then(function(res) {
-        return res.json();
-      }).then(function(data) {
+        return res.json().then(function(data) {
+          return { status: res.status, data: data };
+        });
+      }).then(function(result) {
+        var data = result.data;
         if (data.success) {
           if (errBox) { errBox.style.color = 'var(--success)'; errBox.innerText = '✓ Verified! Loading...'; }
           setTimeout(function() {
@@ -1447,11 +1492,15 @@ updateThemeUI(getEffectiveTheme());
           if (errBox) { errBox.style.color = '#f43f5e'; errBox.innerText = data.error || 'Invalid PIN'; }
           card.classList.add('shake');
           setTimeout(function() { card.classList.remove('shake'); }, 400);
-          digits.forEach(function(d) { d.value = ''; });
-          digits[0].focus();
+          if (result.status === 429) {
+            digits.forEach(function(d) { d.disabled = true; });
+          } else {
+            digits.forEach(function(d) { d.value = ''; });
+            digits[0].focus();
+          }
         }
       }).catch(function(err) {
-        if (errBox) errBox.innerText = 'Connection error. Try again.';
+        if (errBox) { errBox.style.color = '#f43f5e'; errBox.innerText = 'Connection error. Try again.'; }
       });
     }
   </script>
@@ -1470,19 +1519,28 @@ class FileShareHandler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
 
         # 1. Query parameter ?token=...
-        if query.get("token", [""])[0] == self.server.token:
+        token_q = query.get("token", [""])[0]
+        if token_q and secrets.compare_digest(token_q, self.server.token):
             return True, True
 
         # 2. Cookie reclip_auth=...
         cookie_header = self.headers.get("Cookie", "")
-        if f"reclip_auth={self.server.token}" in cookie_header:
-            return True, False
+        if cookie_header:
+            for part in cookie_header.split(";"):
+                part = part.strip()
+                if part.startswith("reclip_auth="):
+                    val = part[len("reclip_auth="):].strip()
+                    if secrets.compare_digest(val, self.server.token):
+                        return True, False
 
         # 3. Header Authorization / X-ReClip-Token
         auth_header = self.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer ") and auth_header[7:].strip() == self.server.token:
-            return True, False
-        if self.headers.get("X-ReClip-Token", "") == self.server.token:
+        if auth_header.startswith("Bearer "):
+            bearer_tok = auth_header[7:].strip()
+            if bearer_tok and secrets.compare_digest(bearer_tok, self.server.token):
+                return True, False
+        x_token = self.headers.get("X-ReClip-Token", "").strip()
+        if x_token and secrets.compare_digest(x_token, self.server.token):
             return True, False
 
         return False, False
@@ -1513,11 +1571,27 @@ class FileShareHandler(BaseHTTPRequestHandler):
 
         # Route 2: Two-Way Reverse Drop File Upload (P1)
         if clean_path in ("upload", "api/upload"):
+            if not self.server.allow_upload:
+                resp = json.dumps({"success": False, "error": "Uploads are disabled on this host."}).encode("utf-8")
+                self.send_response(403)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+                return
             self.handle_upload()
             return
 
         # Route 3: Clipboard Text Beam (P2)
         if clean_path in ("api/beam-text", "beam-text"):
+            if not self.server.allow_beam:
+                resp = json.dumps({"success": False, "error": "Clipboard beam is disabled on this host."}).encode("utf-8")
+                self.send_response(403)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+                return
             self.handle_beam_text_post()
             return
 
@@ -1525,43 +1599,172 @@ class FileShareHandler(BaseHTTPRequestHandler):
 
     def handle_verify_pin(self):
         client_ip = self.client_address[0]
-        content_length = int(self.headers.get("Content-Length", 0))
-        post_data = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        now = time.time()
+
+        # Enforce rate limiting and lockout state
+        with self.server.attempt_lock:
+            # Clean expired lockout records (> 30 min old)
+            expired = [ip for ip, data in self.server.failed_attempts.items()
+                       if now > data.get("locked_until", 0.0) and (now - data.get("last_attempt", 0.0) > 1800)]
+            for ip in expired:
+                self.server.failed_attempts.pop(ip, None)
+
+            # Global lockout check
+            if now < self.server.global_locked_until:
+                retry_after = int(self.server.global_locked_until - now) + 1
+                resp = json.dumps({
+                    "success": False,
+                    "error": f"Service temporarily locked due to excessive failed attempts. Please wait {retry_after}s.",
+                    "retry_after": retry_after
+                }).encode("utf-8")
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.send_header("Retry-After", str(retry_after))
+                self.end_headers()
+                self.wfile.write(resp)
+                return
+
+            client_state = self.server.failed_attempts.get(client_ip, {"count": 0, "locked_until": 0.0, "last_attempt": now})
+            if now < client_state.get("locked_until", 0.0):
+                retry_after = int(client_state["locked_until"] - now) + 1
+                resp = json.dumps({
+                    "success": False,
+                    "error": f"Too many failed PIN attempts. IP locked out for {retry_after}s.",
+                    "retry_after": retry_after
+                }).encode("utf-8")
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.send_header("Retry-After", str(retry_after))
+                self.end_headers()
+                self.wfile.write(resp)
+                return
+
+        # Cap request body: at most 1024 bytes
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except (ValueError, TypeError):
+            content_length = 0
+
+        if content_length > 1024:
+            self.send_error(413, "Request body too large for PIN verification")
+            return
+
+        # Read body with read deadline
+        try:
+            self.connection.settimeout(5.0)
+            post_data = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        except Exception:
+            post_data = b"{}"
+        finally:
+            try:
+                self.connection.settimeout(None)
+            except Exception:
+                pass
+
         try:
             req = json.loads(post_data.decode("utf-8"))
             pin_attempt = str(req.get("pin", "")).strip()
         except Exception:
             pin_attempt = ""
 
-        if pin_attempt == self.server.pin:
-            emit_event({
-                "event": "pin_verified",
-                "client": client_ip
-            })
-            resp = json.dumps({"success": True, "token": self.server.token}).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(resp)))
-            self.send_header("Set-Cookie", f"reclip_auth={self.server.token}; Path=/; Max-Age=86400; SameSite=Lax")
-            self.end_headers()
-            self.wfile.write(resp)
-        else:
-            emit_event({
-                "event": "pin_failed",
-                "client": client_ip,
-                "attempt": pin_attempt
-            })
-            resp = json.dumps({"success": False, "error": "Invalid PIN. Check the 4-digit PIN on ReClip."}).encode("utf-8")
-            self.send_response(401)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(resp)))
-            self.end_headers()
-            self.wfile.write(resp)
+        # Enforce artificial timing delay (0.5s) to throttle burst brute-force attacks
+        time.sleep(0.5)
+
+        # Constant-time comparison
+        is_valid = secrets.compare_digest(pin_attempt, self.server.pin)
+
+        with self.server.attempt_lock:
+            if is_valid:
+                # Reset failure counts for this client
+                if client_ip in self.server.failed_attempts:
+                    self.server.failed_attempts[client_ip]["count"] = 0
+                    self.server.failed_attempts[client_ip]["locked_until"] = 0.0
+
+                emit_event({
+                    "event": "pin_verified",
+                    "client": client_ip
+                })
+                resp = json.dumps({"success": True, "token": self.server.token}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.send_header("Set-Cookie", f"reclip_auth={self.server.token}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly")
+                self.end_headers()
+                self.wfile.write(resp)
+            else:
+                # Increment failed attempts
+                if client_ip not in self.server.failed_attempts:
+                    self.server.failed_attempts[client_ip] = {"count": 0, "locked_until": 0.0, "last_attempt": now}
+                self.server.failed_attempts[client_ip]["count"] += 1
+                self.server.failed_attempts[client_ip]["last_attempt"] = now
+                self.server.global_failed_attempts += 1
+
+                client_count = self.server.failed_attempts[client_ip]["count"]
+                if client_count >= 5:
+                    # 15 minutes lockout (900s)
+                    self.server.failed_attempts[client_ip]["locked_until"] = now + 900.0
+
+                if self.server.global_failed_attempts >= 20:
+                    # 15 minutes global lockout
+                    self.server.global_locked_until = now + 900.0
+
+                emit_event({
+                    "event": "pin_failed",
+                    "client": client_ip,
+                    "attempt": pin_attempt[:2] + "****" if len(pin_attempt) > 2 else "******"
+                })
+
+                if self.server.failed_attempts[client_ip]["locked_until"] > now:
+                    retry_after = 900
+                    resp = json.dumps({
+                        "success": False,
+                        "error": "Too many failed PIN attempts. IP locked out for 15 minutes.",
+                        "retry_after": retry_after
+                    }).encode("utf-8")
+                    self.send_response(429)
+                    self.send_header("Retry-After", str(retry_after))
+                else:
+                    remaining = max(0, 5 - client_count)
+                    resp = json.dumps({
+                        "success": False,
+                        "error": f"Invalid PIN. {remaining} attempt{'s' if remaining != 1 else ''} remaining before lockout."
+                    }).encode("utf-8")
+                    self.send_response(401)
+
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
 
     def handle_beam_text_post(self):
         client_ip = self.client_address[0]
-        content_length = int(self.headers.get("Content-Length", 0))
-        post_data = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        if not self.server.allow_beam:
+            self.send_error(403, "Clipboard beam is disabled on this host")
+            return
+
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except (ValueError, TypeError):
+            content_length = 0
+
+        # Cap text beam payload to 128 KB
+        if content_length > 131072:
+            self.send_error(413, "Clipboard beam payload too large (max 128KB)")
+            return
+
+        try:
+            self.connection.settimeout(5.0)
+            post_data = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        except Exception:
+            post_data = b"{}"
+        finally:
+            try:
+                self.connection.settimeout(None)
+            except Exception:
+                pass
+
         try:
             req = json.loads(post_data.decode("utf-8"))
             text = str(req.get("text", "")).strip()
@@ -1592,22 +1795,89 @@ class FileShareHandler(BaseHTTPRequestHandler):
         self.wfile.write(resp)
 
     def handle_upload(self):
-        """Streaming file upload from phone to ~/Downloads/ReClip-Drop with real-time throughput."""
+        """Streaming file upload from phone to ~/Downloads/ReClip-Drop with quota, disk space verification, read deadlines, and atomic partial-file cleanup."""
         client_ip = self.client_address[0]
+        if not self.server.allow_upload:
+            resp = json.dumps({"success": False, "error": "Uploads are disabled on this host."}).encode("utf-8")
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+            return
+
+        # 1. Validate Content-Length header
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except (ValueError, TypeError):
+            content_length = -1
+
+        if content_length <= 0:
+            resp = json.dumps({"success": False, "error": "Missing or invalid Content-Length header"}).encode("utf-8")
+            self.send_response(411)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+            return
+
+        # 2. Check per-file upload size cap
+        if content_length > self.server.max_upload_size:
+            resp = json.dumps({
+                "success": False,
+                "error": f"Upload rejected: File size ({format_size(content_length)}) exceeds maximum allowed limit ({format_size(self.server.max_upload_size)})."
+            }).encode("utf-8")
+            self.send_response(413)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+            return
+
+        # 3. Check session upload quota
+        if (self.server.session_uploaded_bytes + content_length) > self.server.max_session_upload_quota:
+            resp = json.dumps({
+                "success": False,
+                "error": f"Upload rejected: Session quota of {format_size(self.server.max_session_upload_quota)} exceeded."
+            }).encode("utf-8")
+            self.send_response(413)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+            return
+
+        # 4. Check available host disk space before creating any file on disk
+        try:
+            disk_stat = shutil.disk_usage(self.server.save_dir)
+            # Require space for the file plus a 256MB safety margin for the operating system
+            min_required = content_length + (256 * 1024 * 1024)
+            if disk_stat.free < min_required:
+                resp = json.dumps({
+                    "success": False,
+                    "error": f"Insufficient disk space on host (Free: {format_size(disk_stat.free)}, Required: {format_size(min_required)})."
+                }).encode("utf-8")
+                self.send_response(507)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+                return
+        except Exception:
+            pass
+
+        # 5. Sanitize filename and prevent collision
         raw_name = self.headers.get("X-Filename", "")
         if raw_name:
             filename = urllib.parse.unquote(raw_name)
         else:
             filename = f"reclip_drop_{int(time.time())}.bin"
 
-        # Sanitize filename
         filename = os.path.basename(filename).replace("/", "_").replace("\\", "_").strip()
+        filename = filename.lstrip(".")
         if not filename:
             filename = f"reclip_drop_{int(time.time())}.bin"
 
-        content_length = int(self.headers.get("Content-Length", 0))
-
-        # Collision avoidance: name (1).ext
         base, ext = os.path.splitext(filename)
         dest_path = os.path.join(self.server.save_dir, filename)
         counter = 1
@@ -1616,6 +1886,10 @@ class FileShareHandler(BaseHTTPRequestHandler):
             counter += 1
 
         final_filename = os.path.basename(dest_path)
+
+        # Temporary partial upload path (.filename.token.part)
+        part_filename = f".{final_filename}.{secrets.token_hex(4)}.part"
+        part_path = os.path.join(self.server.save_dir, part_filename)
 
         emit_event({
             "event": "upload_started",
@@ -1628,15 +1902,25 @@ class FileShareHandler(BaseHTTPRequestHandler):
         chunk_size = 64 * 1024
         start_time = time.time()
         last_emit = start_time
+        # Max overall transfer deadline: at least 60s, or 10KB/s plus 60s buffer, capped at 1800s
+        max_duration = min(1800.0, max(60.0, (content_length / 10240) + 60.0))
+        upload_succeeded = False
 
         try:
-            with open(dest_path, "wb") as out_f:
+            # Set socket read deadline (15s per chunk) to eliminate indefinitely hung threads
+            self.connection.settimeout(15.0)
+
+            with open(part_path, "wb") as out_f:
                 remaining = content_length
                 while remaining > 0:
+                    if time.time() - start_time > max_duration:
+                        raise TimeoutError(f"Upload exceeded maximum deadline of {int(max_duration)}s")
+
                     to_read = min(remaining, chunk_size)
                     chunk = self.rfile.read(to_read)
                     if not chunk:
-                        break
+                        raise ConnectionResetError(f"Premature end of stream: received {bytes_received}/{content_length} bytes")
+
                     out_f.write(chunk)
                     bytes_received += len(chunk)
                     remaining -= len(chunk)
@@ -1659,6 +1943,15 @@ class FileShareHandler(BaseHTTPRequestHandler):
                         })
                         last_emit = now
 
+            # Verify integrity
+            if bytes_received != content_length:
+                raise IOError(f"Incomplete upload: expected {content_length} bytes, received {bytes_received} bytes")
+
+            # Atomic rename from .part to final destination
+            os.replace(part_path, dest_path)
+            upload_succeeded = True
+            self.server.session_uploaded_bytes += bytes_received
+
             emit_event({
                 "event": "upload_completed",
                 "client": client_ip,
@@ -1668,7 +1961,11 @@ class FileShareHandler(BaseHTTPRequestHandler):
                 "size_str": format_size(bytes_received)
             })
 
-            send_desktop_notification("ReClip File Drop", f"Received {final_filename} ({format_size(bytes_received)})\nSaved to ReClip-Drop", "document-save")
+            send_desktop_notification(
+                "ReClip File Drop",
+                f"Received {final_filename} ({format_size(bytes_received)})\nSaved to ReClip-Drop",
+                "document-save"
+            )
 
             resp = json.dumps({
                 "success": True,
@@ -1683,14 +1980,39 @@ class FileShareHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(resp)
 
+        except (TimeoutError, socket.timeout) as e:
+            emit_event({"event": "upload_error", "client": client_ip, "message": f"Timeout: {str(e)}"})
+            resp = json.dumps({"success": False, "error": f"Upload timed out: {str(e)}"}).encode("utf-8")
+            try:
+                self.send_response(408)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+            except Exception:
+                pass
         except Exception as e:
             emit_event({"event": "upload_error", "client": client_ip, "message": str(e)})
-            if os.path.exists(dest_path) and bytes_received == 0:
+            resp = json.dumps({"success": False, "error": f"Upload failed: {str(e)}"}).encode("utf-8")
+            try:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+            except Exception:
+                pass
+        finally:
+            try:
+                self.connection.settimeout(None)
+            except Exception:
+                pass
+            # Enforce deletion of partial files on EVERY incomplete or error path
+            if not upload_succeeded and os.path.exists(part_path):
                 try:
-                    os.unlink(dest_path)
+                    os.unlink(part_path)
                 except Exception:
                     pass
-            self.send_error(500, f"Upload error: {str(e)}")
 
     def handle_get_or_head(self, send_body=True):
         parsed = urllib.parse.urlparse(self.path)
@@ -1726,6 +2048,9 @@ class FileShareHandler(BaseHTTPRequestHandler):
 
         # 3. Clipboard Beam GET (P2)
         if clean_path in ("api/beam-text", "beam-text"):
+            if not self.server.allow_beam:
+                self.send_error(403, "Clipboard beam is disabled on this host")
+                return
             text = get_desktop_clipboard() or self.server.beam_text
             resp = json.dumps({"success": True, "text": text}).encode("utf-8")
             self.send_response(200)
@@ -2079,6 +2404,91 @@ class FileShareHandler(BaseHTTPRequestHandler):
 
         page_title = f"ReClip Drop &middot; {self.server.files_meta[0]['name']}" if is_single else f"ReClip Drop &middot; {count} files"
 
+        quickbar_items = []
+        if self.server.allow_upload:
+            quickbar_items.append("""      <a href="#reverse-drop" class="quickbar-btn">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <span>Send to PC</span>
+      </a>""")
+        if self.server.allow_beam:
+            quickbar_items.append("""      <a href="#clipboard-beam" class="quickbar-btn">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        <span>Clipboard Beam</span>
+      </a>""")
+        quickbar_items.append(f"""      <a href="#files-section" class="quickbar-btn">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/></svg>
+        <span>Files ({count})</span>
+      </a>""")
+        quickbar_html = "\n".join(quickbar_items)
+
+        reverse_drop_section_html = ""
+        if self.server.allow_upload:
+            reverse_drop_section_html = """    <!-- P1: Reverse Drop Section -->
+    <section class="section-card" id="reverse-drop">
+      <div class="section-header">
+        <div class="section-icon-box">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </div>
+        <div>
+          <h2 class="section-title">Reverse Drop &middot; Send to PC</h2>
+          <p class="section-desc">Drop or select files from your phone to send directly to <code>~/Downloads/ReClip-Drop</code> on PC</p>
+        </div>
+      </div>
+
+      <div class="dropzone" id="dropzone" onclick="document.getElementById('file-input').click()">
+        <input type="file" id="file-input" multiple style="display:none" onchange="handleFilesSelected(this.files)">
+        <div class="dropzone-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+        </div>
+        <div class="dropzone-prompt">Tap to choose photos, videos, or files</div>
+        <div class="dropzone-sub">Files transfer locally at maximum Wi-Fi speed &middot; Zero cloud storage</div>
+      </div>
+
+      <div class="upload-queue" id="upload-queue"></div>
+    </section>"""
+
+        clipboard_beam_section_html = ""
+        if self.server.allow_beam:
+            clipboard_beam_section_html = """    <!-- P2: Clipboard Beam Section -->
+    <section class="section-card" id="clipboard-beam">
+      <div class="section-header">
+        <div class="section-icon-box">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>
+          </svg>
+        </div>
+        <div>
+          <h2 class="section-title">Quick Clipboard Beam</h2>
+          <p class="section-desc">Beam notes, URLs, or text snippets between your phone and computer in real time</p>
+        </div>
+      </div>
+
+      <textarea class="beam-textarea" id="beam-textarea" placeholder="Paste a link, note, or code snippet to beam to your PC clipboard..."></textarea>
+      
+      <div class="beam-btn-row">
+        <button type="button" class="btn btn-primary" onclick="beamTextToPC()">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
+          <span>Beam to PC Clipboard</span>
+        </button>
+        <button type="button" class="btn btn-secondary" onclick="fetchPCClipboard()">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/></svg>
+          <span>Fetch PC Clipboard</span>
+        </button>
+      </div>
+
+      <div class="pc-clip-display" id="pc-clip-display" style="display:none;">
+        <div class="pc-clip-display-header">
+          <span>Desktop Clipboard Content</span>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="copyText(document.getElementById(\'pc-clip-text\').innerText, \'PC Clipboard\')">Copy</button>
+        </div>
+        <div class="pc-clip-text" id="pc-clip-text"></div>
+      </div>
+    </section>"""
+
         html_content = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2133,83 +2543,12 @@ class FileShareHandler(BaseHTTPRequestHandler):
 
     <!-- Quick Navigation Bar -->
     <div class="feature-quickbar">
-      <a href="#reverse-drop" class="quickbar-btn">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-        <span>Send to PC</span>
-      </a>
-      <a href="#clipboard-beam" class="quickbar-btn">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-        <span>Clipboard Beam</span>
-      </a>
-      <a href="#files-section" class="quickbar-btn">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/></svg>
-        <span>Files ({count})</span>
-      </a>
+{quickbar_html}
     </div>
 
-    <!-- P1: Reverse Drop Section -->
-    <section class="section-card" id="reverse-drop">
-      <div class="section-header">
-        <div class="section-icon-box">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-          </svg>
-        </div>
-        <div>
-          <h2 class="section-title">Reverse Drop &middot; Send to PC</h2>
-          <p class="section-desc">Drop or select files from your phone to send directly to <code>~/Downloads/ReClip-Drop</code> on PC</p>
-        </div>
-      </div>
+{reverse_drop_section_html}
 
-      <div class="dropzone" id="dropzone" onclick="document.getElementById('file-input').click()">
-        <input type="file" id="file-input" multiple style="display:none" onchange="handleFilesSelected(this.files)">
-        <div class="dropzone-icon">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-          </svg>
-        </div>
-        <div class="dropzone-prompt">Tap to choose photos, videos, or files</div>
-        <div class="dropzone-sub">Files transfer locally at maximum Wi-Fi speed &middot; Zero cloud storage</div>
-      </div>
-
-      <div class="upload-queue" id="upload-queue"></div>
-    </section>
-
-    <!-- P2: Clipboard Beam Section -->
-    <section class="section-card" id="clipboard-beam">
-      <div class="section-header">
-        <div class="section-icon-box">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>
-          </svg>
-        </div>
-        <div>
-          <h2 class="section-title">Quick Clipboard Beam</h2>
-          <p class="section-desc">Beam notes, URLs, or text snippets between your phone and computer in real time</p>
-        </div>
-      </div>
-
-      <textarea class="beam-textarea" id="beam-textarea" placeholder="Paste a link, note, or code snippet to beam to your PC clipboard..."></textarea>
-      
-      <div class="beam-btn-row">
-        <button type="button" class="btn btn-primary" onclick="beamTextToPC()">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
-          <span>Beam to PC Clipboard</span>
-        </button>
-        <button type="button" class="btn btn-secondary" onclick="fetchPCClipboard()">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/></svg>
-          <span>Fetch PC Clipboard</span>
-        </button>
-      </div>
-
-      <div class="pc-clip-display" id="pc-clip-display" style="display:none;">
-        <div class="pc-clip-display-header">
-          <span>Desktop Clipboard Content</span>
-          <button type="button" class="btn btn-secondary btn-sm" onclick="copyText(document.getElementById(\'pc-clip-text\').innerText, \'PC Clipboard\')">Copy</button>
-        </div>
-        <div class="pc-clip-text" id="pc-clip-text"></div>
-      </div>
-    </section>
+{clipboard_beam_section_html}
 
     <!-- Download Files Section -->
     <section id="files-section">
@@ -2267,7 +2606,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
         if send_body:
             self.wfile.write(data)
 
-def start_server_on_ports(ports_to_try, handler_class, files_meta, lan_ip, single_shot=False, token=None, pin=None, save_dir=None):
+def start_server_on_ports(ports_to_try, handler_class, files_meta, lan_ip, single_shot=False, token=None, pin=None, save_dir=None, allow_upload=True, allow_beam=True, max_upload_size=1024*1024*1024, max_session_quota=5*1024*1024*1024):
     """Attempt binding to ports in sequence until successful."""
     for port in ports_to_try:
         try:
@@ -2279,7 +2618,11 @@ def start_server_on_ports(ports_to_try, handler_class, files_meta, lan_ip, singl
                 single_shot=single_shot,
                 token=token,
                 pin=pin,
-                save_dir=save_dir
+                save_dir=save_dir,
+                allow_upload=allow_upload,
+                allow_beam=allow_beam,
+                max_upload_size=max_upload_size,
+                max_session_quota=max_session_quota
             )
             actual_port = server.server_address[1]
             return server, actual_port
@@ -2293,9 +2636,13 @@ def main():
     parser.add_argument("--port", type=int, default=0, help="Port to bind (default: try 53317, 53318, etc.)")
     parser.add_argument("--ip", type=str, default=None, help="Specific IP to advertise in QR")
     parser.add_argument("--no-single-shot", action="store_true", help="Keep server running after download")
+    parser.add_argument("--no-upload", action="store_true", help="Disable reverse drop file uploads from peers")
+    parser.add_argument("--no-beam", action="store_true", help="Disable peer clipboard beaming")
+    parser.add_argument("--max-upload-size", type=int, default=1024*1024*1024, help="Max single file upload size in bytes (default: 1GB)")
+    parser.add_argument("--max-session-quota", type=int, default=5*1024*1024*1024, help="Max total session uploads in bytes (default: 5GB)")
     parser.add_argument("--timeout", type=int, default=1800, help="Server timeout in seconds (default: 1800s)")
     parser.add_argument("--token", type=str, default=None, help="Security session token")
-    parser.add_argument("--pin", type=str, default=None, help="4-digit quick PIN")
+    parser.add_argument("--pin", type=str, default=None, help="6-digit quick PIN")
     parser.add_argument("--save-dir", type=str, default=None, help="Directory to save reverse drop uploads")
 
     args = parser.parse_args()
@@ -2348,6 +2695,8 @@ def main():
 
     lan_ip = args.ip or get_lan_ip()
     single_shot = not args.no_single_shot
+    allow_upload = not args.no_upload
+    allow_beam = not args.no_beam
 
     if args.port > 0:
         ports_to_try = [args.port]
@@ -2363,7 +2712,11 @@ def main():
             single_shot=single_shot,
             token=args.token,
             pin=args.pin,
-            save_dir=args.save_dir
+            save_dir=args.save_dir,
+            allow_upload=allow_upload,
+            allow_beam=allow_beam,
+            max_upload_size=args.max_upload_size,
+            max_session_quota=args.max_session_quota
         )
     except Exception as e:
         emit_event({"event": "error", "message": f"Failed to bind server: {str(e)}"})
@@ -2382,6 +2735,9 @@ def main():
         "token": httpd.token,
         "pin": httpd.pin,
         "save_dir": httpd.save_dir,
+        "allow_upload": allow_upload,
+        "allow_beam": allow_beam,
+        "max_upload_size": args.max_upload_size,
         "count": len(files_meta),
         "total_size": total_sz,
         "total_size_str": format_size(total_sz),

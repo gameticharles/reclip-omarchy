@@ -184,6 +184,8 @@ Rectangle {
   property string fileShareTotalSizeStr: ""
   property bool fileShareRunning: false
   property bool fileShareSingleShot: false
+  property bool fileShareAllowUpload: true
+  property bool fileShareAllowBeam: true
   property string fileShareStatus: "idle" // "idle", "starting", "serving", "downloading", "completed", "error"
   property string fileShareStatusMsg: ""
   property string fileShareClientIp: ""
@@ -838,6 +840,12 @@ Rectangle {
     var args = ["python3", root.fileShareScript]
     if (!root.fileShareSingleShot) {
       args.push("--no-single-shot")
+    }
+    if (!root.fileShareAllowUpload) {
+      args.push("--no-upload")
+    }
+    if (!root.fileShareAllowBeam) {
+      args.push("--no-beam")
     }
     for (var i = 0; i < paths.length; i++) {
       args.push(paths[i])

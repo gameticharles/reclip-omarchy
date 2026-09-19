@@ -57,6 +57,8 @@ Panel {
   property string settingsPasteModifiers: "SUPER + CTRL + SHIFT"
   property bool settingsEnableQuickPaste: true
   property bool settingsClipActionsOnHover: true
+  property bool settingsQrAllowUpload: true
+  property bool settingsQrAllowBeam: true
   property string paletteScript: pluginDir + "/extract-palette.sh"
   property var imagePalettes: ({})
   property var paletteQueue: []
@@ -950,6 +952,8 @@ Panel {
       if (s.clipActionsOnHover !== undefined) root.settingsClipActionsOnHover = Boolean(s.clipActionsOnHover)
       if (s.smartBump !== undefined) root.settingsSmartBump = Boolean(s.smartBump)
       if (s.revisionStacking !== undefined) root.settingsRevisionStacking = Boolean(s.revisionStacking)
+      if (s.qrAllowUpload !== undefined) root.settingsQrAllowUpload = Boolean(s.qrAllowUpload)
+      if (s.qrAllowBeam !== undefined) root.settingsQrAllowBeam = Boolean(s.qrAllowBeam)
       if (Array.isArray(s.appBlacklist)) root.settingsAppBlacklist = s.appBlacklist
     } catch(e) {}
   }
@@ -966,6 +970,8 @@ Panel {
       clipActionsOnHover: root.settingsClipActionsOnHover,
       smartBump: root.settingsSmartBump,
       revisionStacking: root.settingsRevisionStacking,
+      qrAllowUpload: root.settingsQrAllowUpload,
+      qrAllowBeam: root.settingsQrAllowBeam,
       appBlacklist: root.settingsAppBlacklist
     }
     settingsFile.setText(JSON.stringify(obj, null, 2) + "\n")
@@ -7253,6 +7259,16 @@ Panel {
     // ==========================================
     QRCodeModal {
       id: qrCodeModal
+      fileShareAllowUpload: root.settingsQrAllowUpload
+      fileShareAllowBeam: root.settingsQrAllowBeam
+      onFileShareAllowUploadChanged: {
+        root.settingsQrAllowUpload = qrCodeModal.fileShareAllowUpload
+        root.saveSettings()
+      }
+      onFileShareAllowBeamChanged: {
+        root.settingsQrAllowBeam = qrCodeModal.fileShareAllowBeam
+        root.saveSettings()
+      }
       onClosed: { if (root.lastActiveModal === "qr") root.lastActiveModal = "" }
       onCopiedText: function(text) {
         root.setSystemClipboard(text)
