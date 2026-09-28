@@ -35,9 +35,75 @@ import secrets
 import subprocess
 import threading
 import shutil
+import hmac
+import hashlib
+import stat
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 PREFERRED_PORTS = [53317, 53318, 8080, 8000, 8888, 0]
+
+# Clipboard beam throttling: bounds how often a single client may rewrite the
+# host clipboard (and fire a desktop notification) per rolling window.
+BEAM_MAX_PER_WINDOW = 5
+BEAM_WINDOW = 10.0
+
+# Maximum number of folder ZIPs retained on disk for the session. Each entry is
+# a real temp file, so the cache is capped and evicted LRU.
+FOLDER_ZIP_CACHE_MAX = 10
+
+def iter_share_files(root):
+    """Yield (abs_path, rel_path) for regular files under root, never escaping it.
+
+    os.walk() alone is not enough: followlinks=False stops it from *descending*
+    into symlinked directories but still reports them in dirnames, and symlinked
+    *files* still appear in filenames. Either one lets a symlink planted inside
+    a shared folder pull /etc/shadow (or any host file) into a ZIP served to a
+    remote peer. So directory symlinks are pruned explicitly, file symlinks are
+    skipped, and every resolved path is confirmed to remain under root as
+    defence in depth against TOCTOU swaps during the walk.
+    """
+    root_real = os.path.realpath(root)
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        # Prune symlinked subdirectories in place so os.walk never yields them.
+        dirnames[:] = [d for d in dirnames
+                       if not os.path.islink(os.path.join(dirpath, d))]
+        for fn in filenames:
+            fp = os.path.join(dirpath, fn)
+            try:
+                st = os.lstat(fp)
+            except OSError:
+                continue
+            # Skip anything that is not a plain regular file (symlinks, FIFOs,
+            # sockets, devices) -- only real content should leave the host.
+            if not stat.S_ISREG(st.st_mode):
+                continue
+            # Final containment check against the resolved real path.
+            try:
+                real = os.path.realpath(fp)
+                if os.path.commonpath([real, root_real]) != root_real:
+                    continue
+            except (OSError, ValueError):
+                continue
+            yield fp, os.path.relpath(fp, root)
+
+def content_disposition_value(disposition, download_name):
+    """Build a header-safe Content-Disposition value (RFC 6266).
+
+    BaseHTTPRequestHandler.send_header() writes header lines verbatim, so a
+    filename containing a double quote or CRLF would otherwise break out of the
+    filename= parameter and let a crafted shared-file name inject arbitrary
+    response headers. The quoted ASCII fallback is therefore stripped of quotes,
+    CR, LF and other control characters; the exact UTF-8 name still reaches
+    modern clients through the RFC 5987 filename* parameter, which is
+    percent-encoded and cannot terminate the header.
+    """
+    ascii_name = "".join(
+        ch if 0x20 <= ord(ch) < 0x7F else "_" for ch in download_name
+    ).replace('"', "'").replace("\\", "_").strip()
+    if not ascii_name or ascii_name in (".", ".."):
+        ascii_name = "download"
+    encoded_name = urllib.parse.quote(download_name, safe="")
+    return f"{disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"
 
 def get_lan_ip():
     """Detect primary outbound LAN IP."""
@@ -156,20 +222,38 @@ def get_text_preview(file_path, max_bytes=16384, max_lines=40):
     except Exception:
         return None
 
+_emit_lock = threading.Lock()
+
 def emit_event(event_dict):
-    """Emit JSON event line to stdout and flush."""
+    """Emit JSON event line to stdout and flush (thread-safe)."""
     try:
         line = json.dumps(event_dict)
-        sys.stdout.write(line + "\n")
-        sys.stdout.flush()
+        with _emit_lock:
+            sys.stdout.write(line + "\n")
+            sys.stdout.flush()
     except Exception:
         pass
+
+def _escape_pango(text):
+    """Escape Pango markup metacharacters so notification text renders literally.
+
+    notify-send parses the summary and body as Pango markup, so a beamed snippet
+    or an uploaded filename containing markup would otherwise be interpreted.
+    notify-send 0.8.x (the version shipped on most Omarchy installs) has no
+    --no-markup flag, so escaping the input is the portable fix.
+    """
+    return (text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;"))
 
 def send_desktop_notification(title, message, icon="document-save"):
     """Spawn background notify-send to avoid blocking request thread."""
     def _notify():
         try:
-            subprocess.run(["notify-send", title, message, f"--icon={icon}"], check=False, timeout=3)
+            subprocess.run(
+                ["notify-send", _escape_pango(title), _escape_pango(message), f"--icon={icon}"],
+                check=False, timeout=3,
+            )
         except Exception:
             pass
     threading.Thread(target=_notify, daemon=True).start()
@@ -214,6 +298,7 @@ class ThreadedFileShareServer(socketserver.ThreadingMixIn, HTTPServer):
         self.pin = str(pin).strip() if pin else f"{secrets.randbelow(900000) + 100000}"
         self.save_dir = os.path.expanduser(save_dir or "~/Downloads/ReClip-Drop")
         os.makedirs(self.save_dir, exist_ok=True)
+        self._sweep_stale_uploads()
         self.allow_upload = bool(allow_upload)
         self.allow_beam = bool(allow_beam)
         self.max_upload_size = int(max_upload_size)
@@ -224,14 +309,86 @@ class ThreadedFileShareServer(socketserver.ThreadingMixIn, HTTPServer):
         self.download_completed = False
         self.completion_time = 0.0
         self.zip_cache_path = None
-        self.folder_zip_cache = {}
+        self.folder_zip_cache = {}          # folder_path -> temp_zip_path
+        self._folder_zip_cache_order = []   # LRU insertion order
+        self.zip_cache_lock = threading.Lock()
         self.download_count = 0
+
+        # Beam rate limiting: BEAM_MAX_PER_WINDOW beams per BEAM_WINDOW seconds
+        # per client IP, bounding clipboard-rewrite and notification flooding.
+        self.beam_lock = threading.Lock()
+        self.beam_rate = {}                 # client_ip -> list of timestamps
 
         # Rate limiting and lockout state
         self.attempt_lock = threading.Lock()
         self.failed_attempts = {}       # client_ip -> {"count": int, "locked_until": float}
         self.global_failed_attempts = 0
         self.global_locked_until = 0.0
+
+        # Upload serialization: guards session_uploaded_bytes, disk-space checks,
+        # and destination-filename reservation so concurrent uploads cannot
+        # collectively exceed quota or silently overwrite one another.
+        self.upload_lock = threading.Lock()
+
+        # Guards the remaining cross-thread session state (download_count,
+        # download_completed, completion_time) so increments are not lost and
+        # single-shot completion is never observed half-written. Deliberately
+        # separate from upload_lock so a completed download never contends with
+        # an in-flight multi-gigabyte quota reservation.
+        self.state_lock = threading.Lock()
+
+    def csrf_token(self):
+        """Derive the per-session CSRF token from the auth token via HMAC.
+
+        Deterministic for the life of the session, so it can be embedded in the
+        portal HTML without any extra round-trip, and unforgeable without the
+        server token.
+        """
+        return hmac.new(self.token.encode("utf-8"), b"reclip-csrf-v1", hashlib.sha256).hexdigest()
+
+    def _sweep_stale_uploads(self):
+        """Remove leftover .part/.reserve markers from a previous crashed session.
+
+        Without this, a hard kill mid-upload leaves hidden placeholders behind
+        that permanently block those destination filenames in the collision loop.
+        """
+        now = time.time()
+        try:
+            entries = os.scandir(self.save_dir)
+        except OSError:
+            return
+        with entries:
+            for entry in entries:
+                name = entry.name
+                if not (name.endswith(".part") or name.endswith(".reserve")):
+                    continue
+                try:
+                    if entry.is_file(follow_symlinks=False) and (now - entry.stat(follow_symlinks=False).st_mtime) < 3600:
+                        continue
+                    os.unlink(entry.path)
+                except OSError:
+                    pass
+
+    def cache_folder_zip(self, folder_path, temp_zip):
+        """Insert a folder ZIP into the cache, evicting the oldest beyond the cap.
+
+        Unbounded growth matters here: every cached entry is a real temp file
+        held open on disk for the whole session, so a client walking many shared
+        folders would otherwise accumulate GBs in the system temp directory.
+        """
+        with self.zip_cache_lock:
+            if folder_path in self.folder_zip_cache:
+                self._folder_zip_cache_order.remove(folder_path)
+            self.folder_zip_cache[folder_path] = temp_zip
+            self._folder_zip_cache_order.append(folder_path)
+            while len(self._folder_zip_cache_order) > FOLDER_ZIP_CACHE_MAX:
+                evicted = self._folder_zip_cache_order.pop(0)
+                old = self.folder_zip_cache.pop(evicted, None)
+                if old and old != temp_zip:
+                    try:
+                        os.unlink(old)
+                    except OSError:
+                        pass
 
     def server_close(self):
         super().server_close()
@@ -1227,6 +1384,14 @@ function formatBytes(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
+// CSRF token derived server-side from the session token and embedded in the
+// page head. A cross-origin page cannot read this document, so it cannot forge
+// the header a cookie-authenticated POST requires.
+function csrfToken() {
+  var m = document.querySelector('meta[name="reclip-csrf"]');
+  return m ? m.getAttribute('content') : '';
+}
+
 function processUploadQueue() {
   if (isUploading || uploadQueue.length === 0) return;
   isUploading = true;
@@ -1241,6 +1406,7 @@ function processUploadQueue() {
   xhr.open('POST', '/upload', true);
   xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
   xhr.setRequestHeader('X-File-Size', file.size);
+  xhr.setRequestHeader('X-CSRF-Token', csrfToken());
 
   var startTime = Date.now();
   xhr.upload.onprogress = function(e) {
@@ -1290,7 +1456,7 @@ function beamTextToPC() {
   }
   fetch('/api/beam-text', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() },
     body: JSON.stringify({ text: text })
   }).then(function(res) {
     return res.json();
@@ -1513,6 +1679,30 @@ class FileShareHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def check_csrf(self):
+        """Validate the X-CSRF-Token header for cookie-authenticated requests.
+
+        Returns True when the request may proceed. Requests authenticated by the
+        ?token= query parameter, an Authorization bearer, or X-ReClip-Token are
+        exempt: those already require the caller to know the secret token, so a
+        cross-site forgery adds no capability. Only ambient cookie auth -- the
+        case a malicious page can ride on -- must present the CSRF token.
+        """
+        parsed = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+        token_q = query.get("token", [""])[0]
+        if token_q and secrets.compare_digest(token_q, self.server.token):
+            return True
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer ") and secrets.compare_digest(auth_header[7:].strip(), self.server.token):
+            return True
+        x_token = self.headers.get("X-ReClip-Token", "").strip()
+        if x_token and secrets.compare_digest(x_token, self.server.token):
+            return True
+
+        presented = self.headers.get("X-CSRF-Token", "").strip()
+        return bool(presented) and secrets.compare_digest(presented, self.server.csrf_token())
+
     def is_authenticated(self):
         """Check if request is authorized via query token or session cookie."""
         parsed = urllib.parse.urlparse(self.path)
@@ -1563,10 +1753,13 @@ class FileShareHandler(BaseHTTPRequestHandler):
         # Check authentication for remaining POST endpoints
         auth, _ = self.is_authenticated()
         if not auth:
-            self.send_response(401)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"success": False, "error": "Authentication required. Enter PIN."}).encode("utf-8"))
+            self._send_json(401, {"success": False, "error": "Authentication required. Enter PIN."})
+            return
+
+        # CSRF: reject ambient cookie-authenticated forgeries. /api/verify-pin is
+        # exempt because it is the pre-auth credential check itself.
+        if not self.check_csrf():
+            self._send_json(403, {"success": False, "error": "Missing or invalid CSRF token."})
             return
 
         # Route 2: Two-Way Reverse Drop File Upload (P1)
@@ -1690,6 +1883,12 @@ class FileShareHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(resp)))
+                # NOTE: no Secure attribute. The session token travels in clear
+                # text because this is a plain-HTTP LAN server by design, so any
+                # peer able to observe the traffic can capture the cookie. Adding
+                # Secure would make the cookie unusable over http://. This is a
+                # known, accepted risk of the zero-setup LAN design -- run ReClip
+                # on a trusted network only. See the security notes in README.md.
                 self.send_header("Set-Cookie", f"reclip_auth={self.server.token}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly")
                 self.end_headers()
                 self.wfile.write(resp)
@@ -1744,6 +1943,34 @@ class FileShareHandler(BaseHTTPRequestHandler):
             self.send_error(403, "Clipboard beam is disabled on this host")
             return
 
+        # Rate limit BEFORE reading the body so a spamming client cannot keep
+        # this thread occupied reading 128 KB payloads indefinitely.
+        now = time.time()
+        with self.server.beam_lock:
+            history = [t for t in self.server.beam_rate.get(client_ip, []) if now - t < BEAM_WINDOW]
+            if len(history) >= BEAM_MAX_PER_WINDOW:
+                retry_after = int(BEAM_WINDOW - (now - history[0])) + 1
+                self.server.beam_rate[client_ip] = history
+                retry = max(1, retry_after)
+                resp = json.dumps({
+                    "success": False,
+                    "error": f"Too many beams. Try again in {retry}s.",
+                    "retry_after": retry
+                }).encode("utf-8")
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.send_header("Retry-After", str(retry))
+                self.end_headers()
+                self.wfile.write(resp)
+                return
+            history.append(now)
+            self.server.beam_rate[client_ip] = history
+            # Drop idle client buckets so the dict cannot grow without bound.
+            if len(self.server.beam_rate) > 64:
+                cutoff = now - (BEAM_WINDOW * 2)
+                self.server.beam_rate = {ip: ts for ip, ts in self.server.beam_rate.items() if ts and ts[-1] >= cutoff}
+
         try:
             content_length = int(self.headers.get("Content-Length", 0))
         except (ValueError, TypeError):
@@ -1773,7 +2000,10 @@ class FileShareHandler(BaseHTTPRequestHandler):
 
         if text:
             set_desktop_clipboard(text)
-            self.server.beam_text = text
+            # Publish under the lock so a concurrent GET never observes a
+            # partially-published value and the field is always a whole string.
+            with self.server.beam_lock:
+                self.server.beam_text = text
             preview = (text[:60] + "...") if len(text) > 60 else text
             emit_event({
                 "event": "text_beamed",
@@ -1794,17 +2024,19 @@ class FileShareHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(resp)
 
+    def _send_json(self, code, payload):
+        """Write a complete JSON response with a correct Content-Length."""
+        resp = json.dumps(payload).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp)))
+        self.end_headers()
+        self.wfile.write(resp)
+
     def handle_upload(self):
         """Streaming file upload from phone to ~/Downloads/ReClip-Drop with quota, disk space verification, read deadlines, and atomic partial-file cleanup."""
         client_ip = self.client_address[0]
-        if not self.server.allow_upload:
-            resp = json.dumps({"success": False, "error": "Uploads are disabled on this host."}).encode("utf-8")
-            self.send_response(403)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(resp)))
-            self.end_headers()
-            self.wfile.write(resp)
-            return
+        # NOTE: allow_upload is already enforced in do_POST() before dispatch here.
 
         # 1. Validate Content-Length header
         try:
@@ -1834,58 +2066,99 @@ class FileShareHandler(BaseHTTPRequestHandler):
             self.wfile.write(resp)
             return
 
-        # 3. Check session upload quota
-        if (self.server.session_uploaded_bytes + content_length) > self.server.max_session_upload_quota:
-            resp = json.dumps({
-                "success": False,
-                "error": f"Upload rejected: Session quota of {format_size(self.server.max_session_upload_quota)} exceeded."
-            }).encode("utf-8")
-            self.send_response(413)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(resp)))
-            self.end_headers()
-            self.wfile.write(resp)
-            return
+        # 3–5. Atomically check quota, disk space, and reserve a unique destination
+        # filename — all under upload_lock so concurrent uploads cannot collectively
+        # bypass the 5 GB session cap, exhaust disk, or collide on the same path.
+        # Errors are recorded and responded to *after* the lock is released so a
+        # slow socket write never blocks other upload threads.
+        quota_reserved = False
+        dest_path = None
+        final_filename = None
+        reserve_path = None
+        reject = None
 
-        # 4. Check available host disk space before creating any file on disk
-        try:
-            disk_stat = shutil.disk_usage(self.server.save_dir)
-            # Require space for the file plus a 256MB safety margin for the operating system
-            min_required = content_length + (256 * 1024 * 1024)
-            if disk_stat.free < min_required:
-                resp = json.dumps({
+        with self.server.upload_lock:
+            # 3. Session quota check-and-reserve
+            if (self.server.session_uploaded_bytes + content_length) > self.server.max_session_upload_quota:
+                reject = (413, {
                     "success": False,
-                    "error": f"Insufficient disk space on host (Free: {format_size(disk_stat.free)}, Required: {format_size(min_required)})."
-                }).encode("utf-8")
-                self.send_response(507)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(resp)))
-                self.end_headers()
-                self.wfile.write(resp)
-                return
-        except Exception:
-            pass
+                    "error": f"Upload rejected: Session quota of {format_size(self.server.max_session_upload_quota)} exceeded."
+                })
 
-        # 5. Sanitize filename and prevent collision
-        raw_name = self.headers.get("X-Filename", "")
-        if raw_name:
-            filename = urllib.parse.unquote(raw_name)
-        else:
-            filename = f"reclip_drop_{int(time.time())}.bin"
+            # 4. Disk space check — performed inside the same lock so inflight
+            # reservations are already counted via session_uploaded_bytes.
+            if reject is None:
+                try:
+                    disk_stat = shutil.disk_usage(self.server.save_dir)
+                    # Require space for the file plus a 256 MB safety margin for the OS
+                    min_required = content_length + (256 * 1024 * 1024)
+                    if disk_stat.free < min_required:
+                        reject = (507, {
+                            "success": False,
+                            "error": f"Insufficient disk space on host (Free: {format_size(disk_stat.free)}, Required: {format_size(min_required)})."
+                        })
+                except Exception:
+                    pass
 
-        filename = os.path.basename(filename).replace("/", "_").replace("\\", "_").strip()
-        filename = filename.lstrip(".")
-        if not filename:
-            filename = f"reclip_drop_{int(time.time())}.bin"
+            if reject is None:
+                # 5. Sanitize filename and atomically reserve a unique destination
+                # path. Selection and reservation both happen inside the lock, and
+                # the placeholder is created with O_EXCL so two threads uploading the
+                # same filename can never select the same dest_path.
+                raw_name = self.headers.get("X-Filename", "")
+                if raw_name:
+                    filename = urllib.parse.unquote(raw_name)
+                else:
+                    filename = f"reclip_drop_{int(time.time())}.bin"
 
-        base, ext = os.path.splitext(filename)
-        dest_path = os.path.join(self.server.save_dir, filename)
-        counter = 1
-        while os.path.exists(dest_path):
-            dest_path = os.path.join(self.server.save_dir, f"{base} ({counter}){ext}")
-            counter += 1
+                filename = os.path.basename(filename).replace("/", "_").replace("\\", "_").strip()
+                filename = filename.lstrip(".")
+                if not filename:
+                    filename = f"reclip_drop_{int(time.time())}.bin"
 
-        final_filename = os.path.basename(dest_path)
+                base, ext = os.path.splitext(filename)
+                counter = 1
+                while True:
+                    cand = filename if counter == 1 else f"{base} ({counter}){ext}"
+                    dest_path = os.path.join(self.server.save_dir, cand)
+                    reserve_path = dest_path + ".reserve"
+                    # Claim FIRST, then validate. The marker claim (O_EXCL) and
+                    # the "already finalized?" check must be one atomic step:
+                    # checking dest_path before claiming leaves a window where a
+                    # peer renames its upload in and drops its marker, letting us
+                    # claim a name that is already taken and overwrite it.
+                    try:
+                        fd = os.open(reserve_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                        os.close(fd)
+                    except FileExistsError:
+                        # Another upload holds this name in flight.
+                        counter += 1
+                        continue
+                    except OSError as e:
+                        reject = (500, {"success": False, "error": f"Upload failed: {str(e)}"})
+                        dest_path = None
+                        reserve_path = None
+                        break
+                    # We now own the name exclusively. Release and try the next
+                    # counter if a completed upload already occupies it.
+                    if os.path.exists(dest_path):
+                        try:
+                            os.unlink(reserve_path)
+                        except OSError:
+                            pass
+                        counter += 1
+                        continue
+                    break
+
+                if reject is None:
+                    final_filename = os.path.basename(dest_path)
+                    # Reserve quota now; it is released in finally if the upload fails.
+                    self.server.session_uploaded_bytes += content_length
+                    quota_reserved = True
+
+        if reject is not None:
+            self._send_json(reject[0], reject[1])
+            return
 
         # Temporary partial upload path (.filename.token.part)
         part_filename = f".{final_filename}.{secrets.token_hex(4)}.part"
@@ -1950,7 +2223,20 @@ class FileShareHandler(BaseHTTPRequestHandler):
             # Atomic rename from .part to final destination
             os.replace(part_path, dest_path)
             upload_succeeded = True
-            self.server.session_uploaded_bytes += bytes_received
+            # The destination now exists on its own, so drop the reservation
+            # marker immediately -- BEFORE replying 200. Waiting for the finally
+            # block would let a client that lists the directory on success
+            # observe the marker as stray debris. The finally block remains as
+            # the safety net for every failure path.
+            if reserve_path and os.path.exists(reserve_path):
+                try:
+                    os.unlink(reserve_path)
+                except OSError:
+                    pass
+            reserve_path = None
+            # Quota was pre-reserved by content_length; correct to actual bytes.
+            with self.server.upload_lock:
+                self.server.session_uploaded_bytes += (bytes_received - content_length)
 
             emit_event({
                 "event": "upload_completed",
@@ -2008,9 +2294,22 @@ class FileShareHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             # Enforce deletion of partial files on EVERY incomplete or error path
-            if not upload_succeeded and os.path.exists(part_path):
+            if not upload_succeeded:
+                if os.path.exists(part_path):
+                    try:
+                        os.unlink(part_path)
+                    except Exception:
+                        pass
+                # Release the pre-reserved quota so subsequent uploads are not
+                # permanently blocked by a failed transfer.
+                if quota_reserved:
+                    with self.server.upload_lock:
+                        self.server.session_uploaded_bytes -= content_length
+            # Always remove the destination placeholder so the filename is not
+            # permanently poisoned by a failed or cancelled upload.
+            if reserve_path and os.path.exists(reserve_path):
                 try:
-                    os.unlink(part_path)
+                    os.unlink(reserve_path)
                 except Exception:
                     pass
 
@@ -2051,13 +2350,18 @@ class FileShareHandler(BaseHTTPRequestHandler):
             if not self.server.allow_beam:
                 self.send_error(403, "Clipboard beam is disabled on this host")
                 return
-            text = get_desktop_clipboard() or self.server.beam_text
+            # Snapshot the published text under the lock, but do NOT hold it
+            # across get_desktop_clipboard() -- that spawns a 2 s subprocess and
+            # would stall every concurrent beam and rate-limit check.
+            with self.server.beam_lock:
+                published = self.server.beam_text
+            text = get_desktop_clipboard() or published
             resp = json.dumps({"success": True, "text": text}).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(resp)))
             if need_cookie:
-                self.send_header("Set-Cookie", f"reclip_auth={self.server.token}; Path=/; Max-Age=86400; SameSite=Lax")
+                self.send_header("Set-Cookie", f"reclip_auth={self.server.token}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly")
             self.end_headers()
             if send_body:
                 self.wfile.write(resp)
@@ -2065,19 +2369,26 @@ class FileShareHandler(BaseHTTPRequestHandler):
 
         # 4. Status API
         if clean_path in ("api/status", "status.json"):
+            # Strip the absolute "path" field: exposing the host's directory
+            # layout to any authenticated peer discloses more than the share
+            # itself, and nothing in the portal consumes it.
+            public_files = [
+                {k: v for k, v in item.items() if k != "path"}
+                for item in self.server.files_meta
+            ]
             status_data = {
                 "status": "online",
                 "ip": self.server.lan_ip,
                 "count": len(self.server.files_meta),
                 "total_size": sum(item["size"] for item in self.server.files_meta),
-                "files": self.server.files_meta
+                "files": public_files
             }
             body = json.dumps(status_data, indent=2).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             if need_cookie:
-                self.send_header("Set-Cookie", f"reclip_auth={self.server.token}; Path=/; Max-Age=86400; SameSite=Lax")
+                self.send_header("Set-Cookie", f"reclip_auth={self.server.token}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly")
             self.end_headers()
             if send_body:
                 self.wfile.write(body)
@@ -2127,26 +2438,76 @@ class FileShareHandler(BaseHTTPRequestHandler):
         # 10. 404 Not Found
         self.send_404_page(clean_path, send_body=send_body)
 
+    def _estimate_tree_size(self, root, budget=8 * 1024 * 1024 * 1024):
+        """Sum regular-file sizes under root, giving up once budget is exceeded.
+
+        Used to refuse a bundle we already know cannot fit on the temp
+        filesystem, instead of discovering it halfway through a multi-hour deflate.
+        """
+        total = 0
+        try:
+            for fp, _ in iter_share_files(root):
+                try:
+                    total += os.path.getsize(fp)
+                except OSError:
+                    continue
+                if total > budget:
+                    return total
+        except OSError:
+            pass
+        return total
+
+    def _temp_zip_ready(self, estimated_bytes, target_dir=None):
+        """Verify free space for a ZIP before creating it; return bool."""
+        where = target_dir or tempfile.gettempdir()
+        try:
+            free = shutil.disk_usage(where).free
+        except OSError:
+            return False
+        # ZIP_DEFLATED on already-compressed media barely shrinks, so budget the
+        # full estimated size plus a 256 MB margin rather than assuming a ratio.
+        return free > estimated_bytes + (256 * 1024 * 1024)
+
+    def _safe_temp_suffix(self, name):
+        """Build a bounded, path-separator-free tempfile suffix from a name."""
+        cleaned = "".join(c if (c.isalnum() or c in "._-") else "_" for c in name)
+        cleaned = cleaned.strip("._")[:40] or "folder"
+        return f"_{cleaned}.zip"
+
     def send_folder_zip(self, folder_path, folder_name, send_body=True):
         """Bundle a folder recursively into a ZIP archive and stream to client."""
         client_ip = self.client_address[0]
         temp_zip = self.server.folder_zip_cache.get(folder_path)
         if not temp_zip or not os.path.exists(temp_zip):
+            estimated = self._estimate_tree_size(folder_path)
+            if not self._temp_zip_ready(estimated):
+                self.send_error(507, "Insufficient disk space to build folder archive")
+                return
             emit_event({"event": "zipping", "client": client_ip, "folder": folder_name})
-            tf = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{folder_name}.zip")
+            # #12: the folder name is host-controlled but may still contain
+            # separators, NULs, or exceed NAME_MAX; sanitize before it becomes
+            # part of a temp path.
+            tf = tempfile.NamedTemporaryFile(delete=False, suffix=self._safe_temp_suffix(folder_name))
             temp_zip = tf.name
             tf.close()
-            with zipfile.ZipFile(temp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-                parent_dir = os.path.dirname(os.path.abspath(folder_path))
-                for root_dir, _, filenames in os.walk(folder_path):
-                    for fn in filenames:
-                        fp = os.path.join(root_dir, fn)
+            parent_dir = os.path.dirname(os.path.abspath(folder_path))
+            try:
+                with zipfile.ZipFile(temp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+                    # iter_share_files skips symlinks and cannot escape folder_path.
+                    for fp, _ in iter_share_files(folder_path):
                         rel_path = os.path.relpath(fp, parent_dir)
                         try:
                             zf.write(fp, arcname=rel_path)
                         except Exception:
                             pass
-            self.server.folder_zip_cache[folder_path] = temp_zip
+            except Exception:
+                try:
+                    os.unlink(temp_zip)
+                except OSError:
+                    pass
+                self.send_error(500, "Failed to build folder archive")
+                return
+            self.server.cache_folder_zip(folder_path, temp_zip)
 
         self.send_file(temp_zip, f"{folder_name}.zip", force_download=True, send_body=send_body, is_bundle=True)
 
@@ -2154,29 +2515,63 @@ class FileShareHandler(BaseHTTPRequestHandler):
         """Create or reuse single-file ZIP archive containing all shared files and folders."""
         client_ip = self.client_address[0]
         if not self.server.zip_cache_path or not os.path.exists(self.server.zip_cache_path):
+            estimated = 0
+            for item in self.server.files_meta:
+                ipath = item["path"]
+                if item.get("is_dir"):
+                    estimated += self._estimate_tree_size(ipath)
+                else:
+                    try:
+                        estimated += os.path.getsize(ipath)
+                    except OSError:
+                        pass
+            if not self._temp_zip_ready(estimated):
+                self.send_error(507, "Insufficient disk space to build archive")
+                return
+
             emit_event({"event": "zipping", "client": client_ip, "count": len(self.server.files_meta)})
             tf = tempfile.NamedTemporaryFile(delete=False, suffix="_ReClip-Files.zip")
             self.server.zip_cache_path = tf.name
             tf.close()
 
-            with zipfile.ZipFile(self.server.zip_cache_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for item in self.server.files_meta:
-                    ipath = item["path"]
-                    if item.get("is_dir"):
-                        parent_dir = os.path.dirname(os.path.abspath(ipath))
-                        for root_dir, _, filenames in os.walk(ipath):
-                            for fn in filenames:
-                                fp = os.path.join(root_dir, fn)
+            try:
+                with zipfile.ZipFile(self.server.zip_cache_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for item in self.server.files_meta:
+                        ipath = item["path"]
+                        if item.get("is_dir"):
+                            parent_dir = os.path.dirname(os.path.abspath(ipath))
+                            for fp, _ in iter_share_files(ipath):
                                 rel_path = os.path.relpath(fp, parent_dir)
                                 try:
                                     zf.write(fp, arcname=rel_path)
                                 except Exception:
                                     pass
-                    else:
-                        if os.path.exists(ipath):
-                            zf.write(ipath, arcname=item["name"])
+                        else:
+                            # A shared *file* is itself a legitimate symlink target
+                            # chosen by the user, so it is resolved and bundled
+                            # directly rather than skipped.
+                            if os.path.exists(ipath):
+                                zf.write(ipath, arcname=item["name"])
+            except Exception:
+                try:
+                    os.unlink(self.server.zip_cache_path)
+                except OSError:
+                    pass
+                self.server.zip_cache_path = None
+                self.send_error(500, "Failed to build archive")
+                return
 
         self.send_file(self.server.zip_cache_path, "ReClip-Files.zip", force_download=True, send_body=send_body, is_bundle=True)
+
+    def _send_range_not_satisfiable(self, file_size):
+        """Emit 416 with the mandatory Content-Range: bytes */<size>."""
+        try:
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{file_size}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        except Exception:
+            pass
 
     def send_file(self, file_path, download_name, force_download=True, send_body=True, is_bundle=False):
         client_ip = self.client_address[0]
@@ -2200,39 +2595,65 @@ class FileShareHandler(BaseHTTPRequestHandler):
             "action": "download" if force_download else "preview"
         })
 
-        # RFC 7233 Range header
+        # RFC 7233 Range header -- single range only, per §3.1.
         range_header = self.headers.get("Range")
         start = 0
         end = file_size - 1
         status_code = 200
 
-        if range_header and range_header.startswith("bytes="):
-            try:
-                ranges = range_header[6:].split("-")
-                if ranges[0]:
-                    start = int(ranges[0])
-                if len(ranges) > 1 and ranges[1]:
-                    end = int(ranges[1])
+        if range_header:
+            spec = range_header.split("=", 1)
+            if len(spec) != 2 or spec[0].strip().lower() != "bytes":
+                self._send_range_not_satisfiable(file_size)
+                return
+            raw_range = spec[1].strip()
+            # Multi-range requests are answered with the whole entity rather
+            # than a multipart/byteranges body, which is explicitly permitted.
+            if "," in raw_range:
+                pass
+            else:
+                bounds = raw_range.split("-")
+                if len(bounds) != 2:
+                    self._send_range_not_satisfiable(file_size)
+                    return
+                first, last = bounds[0].strip(), bounds[1].strip()
+                try:
+                    if not first:
+                        # Suffix range: last N bytes.
+                        if not last:
+                            raise ValueError("empty suffix range")
+                        suffix = int(last)
+                        if suffix <= 0:
+                            self._send_range_not_satisfiable(file_size)
+                            return
+                        start = max(0, file_size - suffix)
+                        end = file_size - 1
+                    else:
+                        start = int(first)
+                        end = int(last) if last else file_size - 1
+                except ValueError:
+                    self._send_range_not_satisfiable(file_size)
+                    return
+                # Unsatisfiable per RFC 7233 §2.1: reject rather than silently
+                # clamp, otherwise a client asking for 500-100 gets the wrong
+                # bytes with a 206 and silently corrupts its file.
+                if start >= file_size or end < start:
+                    self._send_range_not_satisfiable(file_size)
+                    return
+                end = min(end, file_size - 1)
                 status_code = 206
-            except Exception:
-                start = 0
-                end = file_size - 1
-                status_code = 200
 
-        start = max(0, min(start, file_size - 1))
-        end = max(start, min(end, file_size - 1))
         content_length = (end - start) + 1
 
         try:
             self.send_response(status_code)
             self.send_header("Content-Type", mime_type)
             self.send_header("Content-Length", str(content_length))
-            encoded_name = urllib.parse.quote(download_name)
             disposition = "attachment" if force_download else "inline"
-            self.send_header("Content-Disposition", f'{disposition}; filename="{download_name}"; filename*=UTF-8\'\'{encoded_name}')
+            self.send_header("Content-Disposition", content_disposition_value(disposition, download_name))
             self.send_header("Accept-Ranges", "bytes")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Connection", "close")
-            self.send_header("Access-Control-Allow-Origin", "*")
             if status_code == 206:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
             self.end_headers()
@@ -2276,7 +2697,14 @@ class FileShareHandler(BaseHTTPRequestHandler):
                         last_emit = now
 
             if end == file_size - 1 and bytes_sent == content_length:
-                self.server.download_count += 1
+                # Guard the shared counters so concurrent downloads cannot lose
+                # increments or observe a torn single-shot completion state.
+                with self.server.state_lock:
+                    self.server.download_count += 1
+                    if self.server.single_shot and force_download:
+                        if len(self.server.files_meta) == 1 or is_bundle:
+                            self.server.download_completed = True
+                            self.server.completion_time = time.time()
                 emit_event({
                     "event": "completed",
                     "client": client_ip,
@@ -2287,10 +2715,6 @@ class FileShareHandler(BaseHTTPRequestHandler):
                     "is_bundle": is_bundle,
                     "action": "download" if force_download else "preview"
                 })
-                if self.server.single_shot and force_download:
-                    if len(self.server.files_meta) == 1 or is_bundle:
-                        self.server.download_completed = True
-                        self.server.completion_time = time.time()
 
         except (BrokenPipeError, ConnectionResetError):
             emit_event({"event": "client_disconnected", "client": client_ip})
@@ -2496,6 +2920,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>{html.escape(page_title)}</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <meta name="reclip-csrf" content="{self.server.csrf_token()}">
   <script>
     (function() {{
       var p = new URLSearchParams(window.location.search);
@@ -2527,7 +2952,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
         <div class="brand-title">ReClip <span class="brand-tag">Wi-Fi Drop</span></div>
       </a>
       <div class="nav-status">
-        <span class="nav-pin-badge" title="LAN Quick PIN">🔒 PIN: {self.server.pin}</span>
+        <span class="nav-pin-badge" title="LAN session active">&#128274; PIN verified</span>
         <span class="nav-pill">
           <span class="pulse-dot"></span>
           <span>{self.server.lan_ip}</span>
@@ -2600,7 +3025,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         if need_cookie:
-            self.send_header("Set-Cookie", f"reclip_auth={self.server.token}; Path=/; Max-Age=86400; SameSite=Lax")
+            self.send_header("Set-Cookie", f"reclip_auth={self.server.token}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly")
         self.send_header("Connection", "close")
         self.end_headers()
         if send_body:
@@ -2657,14 +3082,14 @@ def main():
         if os.path.isdir(abs_p):
             file_count = 0
             dir_size = 0
-            for root_dir, _, filenames in os.walk(abs_p):
-                for fn in filenames:
-                    fp = os.path.join(root_dir, fn)
-                    try:
-                        dir_size += os.path.getsize(fp)
-                        file_count += 1
-                    except OSError:
-                        pass
+            # Symlink-safe so a planted link cannot inflate the advertised size
+            # or drag an unrelated subtree into the count.
+            for fp, _ in iter_share_files(abs_p):
+                try:
+                    dir_size += os.path.getsize(fp)
+                    file_count += 1
+                except OSError:
+                    pass
             bname = os.path.basename(abs_p.rstrip("/"))
             files_meta.append({
                 "index": idx,
