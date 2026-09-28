@@ -750,6 +750,11 @@ body {
   border-color: var(--accent);
   background: rgba(56, 189, 248, 0.09);
 }
+.dropzone:focus-visible, .dropzone.focused {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-color: var(--accent);
+}
 .dropzone-icon {
   margin: 0 auto 0.5rem auto;
   width: 44px;
@@ -771,6 +776,16 @@ body {
   font-size: 0.75rem;
   color: var(--text-muted);
 }
+.session-banner {
+  background: rgba(244, 63, 94, 0.12);
+  border: 1px solid rgba(244, 63, 94, 0.4);
+  border-radius: var(--radius-sm);
+  color: #fda4af;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.7rem 0.85rem;
+  margin-bottom: 0.75rem;
+}
 .upload-queue {
   margin-top: 1rem;
   display: flex;
@@ -787,20 +802,44 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.4rem;
   margin-bottom: 0.4rem;
+}
+.upload-cancel {
+  flex: 0 0 auto;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  border: 1px solid var(--card-border);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.upload-cancel:hover, .upload-cancel:focus-visible {
+  color: #fda4af;
+  border-color: rgba(244, 63, 94, 0.5);
+  background: rgba(244, 63, 94, 0.12);
+  outline: none;
 }
 .upload-item-name {
   font-size: 0.85rem;
   font-weight: 600;
+  flex: 1 1 auto;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 65%;
 }
 .upload-item-stat {
   font-size: 0.75rem;
   font-family: monospace;
   color: var(--text-muted);
+  flex: 0 0 auto;
+  white-space: nowrap;
+  text-align: right;
 }
 .prog-bar-track {
   width: 100%;
@@ -1326,7 +1365,156 @@ function applyFilters() {
 
 // P1: Reverse Drop File Uploads
 var uploadQueue = [];
-var isUploading = false;
+var activeJobs = {};            // uid -> job currently in flight
+var activeUploads = 0;
+var MAX_CONCURRENT_UPLOADS = 2;
+var MAX_RETRIES = 3;
+var RETRY_BASE_MS = 1200;
+var STALL_TIMEOUT_MS = 20000;   // no byte progress for this long => socket is dead
+var ABSOLUTE_TIMEOUT_MS = 45 * 60 * 1000;
+var RETRYABLE_STATUS = [0, 408, 425, 429, 500, 502, 503, 504];
+var wakeLock = null;
+var consecutiveNetErrors = 0;
+
+// Server limits, injected as meta tags. Used to reject hopeless uploads before
+// spending minutes streaming a body that the server will 413 anyway.
+function reclipConfig() {
+  function meta(name) {
+    var m = document.querySelector('meta[name="' + name + '"]');
+    return m ? (m.getAttribute('content') || '') : '';
+  }
+  function num(name) {
+    var v = parseInt(meta(name), 10);
+    return isNaN(v) ? 0 : v;
+  }
+  return {
+    maxUploadSize: num('reclip-max-upload-size'),
+    maxSessionQuota: num('reclip-max-session-quota'),
+    sessionUsed: num('reclip-session-used'),
+    maxConcurrent: num('reclip-max-concurrent-uploads'),
+    singleShot: meta('reclip-single-shot') === '1'
+  };
+}
+
+function haptic(pattern) {
+  try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (e) {}
+}
+
+function acquireWakeLock() {
+  if (wakeLock || !navigator.wakeLock || activeUploads === 0) return;
+  try {
+    navigator.wakeLock.request('screen').then(function(lock) {
+      wakeLock = lock;
+      lock.addEventListener('release', function() { wakeLock = null; });
+    }).catch(function() { wakeLock = null; });
+  } catch (e) { wakeLock = null; }
+}
+
+function releaseWakeLock() {
+  if (!wakeLock) return;
+  try { wakeLock.release(); } catch (e) {}
+  wakeLock = null;
+}
+
+function setSessionState(state, msg) {
+  var b = document.getElementById('session-banner');
+  if (!b) return;
+  if (state === 'ok') { b.style.display = 'none'; b.textContent = ''; return; }
+  b.textContent = msg;
+  b.style.display = 'block';
+}
+
+function serverErrorText(xhr, fallback) {
+  try {
+    var data = JSON.parse(xhr.responseText);
+    if (data && typeof data.error === 'string' && data.error) return data.error;
+  } catch (e) {}
+  return fallback || ('Upload failed (HTTP ' + (xhr.status || 0) + ')');
+}
+
+function setStat(uid, text, color) {
+  var el = document.getElementById(uid + '_stat');
+  if (!el) return;
+  el.textContent = text;
+  el.style.color = color || '';
+}
+
+function setFill(uid, pct, cls) {
+  var el = document.getElementById(uid + '_fill');
+  if (!el) return;
+  if (pct !== null) el.style.width = pct + '%';
+  if (cls !== undefined) {
+    el.classList.remove('success', 'error');
+    if (cls) el.classList.add(cls);
+  }
+}
+
+function buildUploadItem(uid, file) {
+  // Built with createElement + textContent on purpose: interpolating file.name
+  // into innerHTML lets a crafted filename inject live markup, and the CSRF
+  // token now lives in this document.
+  var item = document.createElement('div');
+  item.className = 'upload-item';
+  item.id = uid;
+
+  var header = document.createElement('div');
+  header.className = 'upload-item-header';
+
+  var nameEl = document.createElement('span');
+  nameEl.className = 'upload-item-name';
+  nameEl.textContent = file.name;
+  nameEl.title = file.name;
+
+  var cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'upload-cancel';
+  cancelBtn.setAttribute('aria-label', 'Cancel upload of ' + file.name);
+  cancelBtn.textContent = '\u2715';
+  cancelBtn.addEventListener('click', function() { cancelUpload(uid); });
+
+  var statEl = document.createElement('span');
+  statEl.className = 'upload-item-stat';
+  statEl.id = uid + '_stat';
+  statEl.textContent = 'Queued';
+
+  header.appendChild(nameEl);
+  header.appendChild(cancelBtn);
+  header.appendChild(statEl);
+
+  var track = document.createElement('div');
+  track.className = 'prog-bar-track';
+  var fill = document.createElement('div');
+  fill.className = 'prog-bar-fill';
+  fill.id = uid + '_fill';
+  track.appendChild(fill);
+
+  item.appendChild(header);
+  item.appendChild(track);
+  return item;
+}
+
+function removeUploadItem(uid) {
+  var el = document.getElementById(uid);
+  if (el && el.parentNode) el.parentNode.removeChild(el);
+}
+
+function cancelUpload(uid) {
+  for (var i = 0; i < uploadQueue.length; i++) {
+    if (uploadQueue[i].uid === uid) {
+      uploadQueue[i].cancelled = true;
+      removeUploadItem(uid);
+      showToast('Upload cancelled');
+      haptic(10);
+      return;
+    }
+  }
+  var job = activeJobs[uid];
+  if (job && job.xhr) {
+    job.cancelled = true;
+    setStat(uid, 'Cancelling…', 'var(--text-muted)');
+    try { job.xhr.abort(); } catch (e) {}
+  }
+}
 
 function initDropzone() {
   var dz = document.getElementById('dropzone');
@@ -1351,6 +1539,17 @@ function initDropzone() {
       handleFilesSelected(e.dataTransfer.files);
     }
   });
+  // Keyboard activation: the dropzone is a div, so it needs explicit wiring to
+  // be reachable at all without a pointer.
+  dz.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      var input = document.getElementById('file-input');
+      if (input) input.click();
+    }
+  });
+  dz.addEventListener('focus', function() { dz.classList.add('focused'); });
+  dz.addEventListener('blur', function() { dz.classList.remove('focused'); });
 }
 
 function handleFilesSelected(files) {
@@ -1360,28 +1559,19 @@ function handleFilesSelected(files) {
 
   for (var i = 0; i < files.length; i++) {
     var file = files[i];
-    var uid = 'up_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
-    uploadQueue.push({ file: file, uid: uid });
-
-    var item = document.createElement('div');
-    item.className = 'upload-item';
-    item.id = uid;
-    item.innerHTML = '<div class="upload-item-header">' +
-      '<span class="upload-item-name">' + file.name + '</span>' +
-      '<span class="upload-item-stat" id="' + uid + '_stat">Queued</span>' +
-      '</div>' +
-      '<div class="prog-bar-track">' +
-      '<div class="prog-bar-fill" id="' + uid + '_fill"></div>' +
-      '</div>';
-    queueList.prepend(item);
+    var uid = 'up_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substr(2, 5);
+    uploadQueue.push({ uid: uid, file: file, cancelled: false, attempt: 0, xhr: null, finished: false });
+    queueList.prepend(buildUploadItem(uid, file));
   }
+  haptic(8);
   processUploadQueue();
 }
 
 function formatBytes(bytes) {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 }
 
 // CSRF token derived server-side from the session token and embedded in the
@@ -1392,60 +1582,221 @@ function csrfToken() {
   return m ? m.getAttribute('content') : '';
 }
 
+function releaseSlot(job) {
+  // Guarded so a double release can never decrement twice.
+  if (activeJobs[job.uid] !== job) return;
+  delete activeJobs[job.uid];
+  activeUploads = Math.max(0, activeUploads - 1);
+  if (activeUploads === 0) releaseWakeLock();
+}
+
+function finishJob(job) {
+  if (job.finished) return;
+  job.finished = true;
+  releaseSlot(job);
+  processUploadQueue();
+}
+
+function failJob(job, message, retryable) {
+  setFill(job.uid, null, 'error');
+  setStat(job.uid, message, '#f43f5e');
+  showToast(message);
+  haptic([40, 60, 40]);
+  if (retryable && job.attempt < MAX_RETRIES && !job.cancelled) {
+    var wait = job.retryAfterMs || (RETRY_BASE_MS * Math.pow(2, job.attempt));
+    job.attempt += 1;
+    setStat(job.uid, 'Retrying in ' + Math.round(wait / 1000) + 's (' + job.attempt + '/' + MAX_RETRIES + ')…', 'var(--text-muted)');
+    // Release the concurrency slot immediately: a backing-off job must not
+    // occupy one, or two failures would stall every other queued file.
+    releaseSlot(job);
+    setTimeout(function() {
+      if (job.cancelled) { removeUploadItem(job.uid); return; }
+      uploadQueue.unshift(job);
+      processUploadQueue();
+    }, wait);
+    return;
+  }
+  finishJob(job);
+}
+
 function processUploadQueue() {
-  if (isUploading || uploadQueue.length === 0) return;
-  isUploading = true;
-  var current = uploadQueue.shift();
-  var file = current.file;
-  var uid = current.uid;
+  var cap = reclipConfig().maxConcurrent || MAX_CONCURRENT_UPLOADS;
+  while (activeUploads < cap && uploadQueue.length > 0) {
+    var job = uploadQueue.shift();
+    if (job.cancelled) { removeUploadItem(job.uid); continue; }
+    if (job.finished) continue;
+    startUpload(job);
+  }
+  if (activeUploads === 0 && uploadQueue.length === 0) releaseWakeLock();
+}
 
-  var stat = document.getElementById(uid + '_stat');
-  var fill = document.getElementById(uid + '_fill');
+function startUpload(job) {
+  var file = job.file;
+  var cfg = reclipConfig();
 
+  // Reject before touching the socket: streaming a body the server is going to
+  // refuse wastes the user's time and the session quota for nothing.
+  if (cfg.maxUploadSize > 0 && file.size > cfg.maxUploadSize) {
+    setStat(job.uid, 'Too large', '#f43f5e');
+    setFill(job.uid, null, 'error');
+    showToast(file.name + ' is larger than the ' + formatBytes(cfg.maxUploadSize) + ' limit');
+    haptic([40, 60, 40]);
+    return;
+  }
+  if (cfg.maxSessionQuota > 0 && cfg.sessionUsed + file.size > cfg.maxSessionQuota) {
+    setStat(job.uid, 'Over session quota', '#f43f5e');
+    setFill(job.uid, null, 'error');
+    showToast('This file would exceed the session upload quota');
+    haptic([40, 60, 40]);
+    return;
+  }
+
+  activeUploads += 1;
+  activeJobs[job.uid] = job;
+  job.finished = false;
+  job.xhr = null;
+  acquireWakeLock();
+  attemptUpload(job);
+}
+
+function attemptUpload(job) {
+  var file = job.file;
+  var uid = job.uid;
   var xhr = new XMLHttpRequest();
-  xhr.open('POST', '/upload', true);
-  xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
-  xhr.setRequestHeader('X-File-Size', file.size);
-  xhr.setRequestHeader('X-CSRF-Token', csrfToken());
+  job.xhr = xhr;
+  job.retryAfterMs = 0;
 
   var startTime = Date.now();
+  var stallTimer = null;
+  var settled = false;
+
+  function bumpWatchdog() {
+    if (stallTimer) clearTimeout(stallTimer);
+    stallTimer = setTimeout(function() {
+      if (settled) return;
+      job.stalled = true;
+      try { xhr.abort(); } catch (e) {}
+      // If abort somehow did not settle us, fail it by hand rather than let the
+      // slot leak -- this is the deadlock that used to brick the whole queue.
+      if (!settled) { settled = true; failJob(job, 'Transfer stalled', true); }
+    }, STALL_TIMEOUT_MS);
+  }
+
+  function retryAfterMs() {
+    var h = xhr.getResponseHeader('Retry-After');
+    if (!h) return 0;
+    var secs = parseInt(h, 10);
+    return isNaN(secs) ? 0 : Math.min(secs * 1000, 60000);
+  }
+
+  function done() {
+    if (settled) return false;
+    settled = true;
+    if (stallTimer) clearTimeout(stallTimer);
+    return true;
+  }
+
+  xhr.open('POST', '/upload', true);
+  xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+  xhr.setRequestHeader('X-File-Size', String(file.size));
+  xhr.setRequestHeader('X-CSRF-Token', csrfToken());
+  xhr.timeout = ABSOLUTE_TIMEOUT_MS;
+
+  setStat(uid, job.attempt > 0 ? ('Retrying (' + job.attempt + '/' + MAX_RETRIES + ')…') : 'Uploading…', 'var(--text-muted)');
+  setFill(uid, '0%', null);
+  bumpWatchdog();
+
   xhr.upload.onprogress = function(e) {
-    if (e.lengthComputable) {
-      var pct = Math.round((e.loaded / e.total) * 100);
-      var elapsed = (Date.now() - startTime) / 1000;
-      var speed = elapsed > 0 ? (e.loaded / elapsed) : 0;
-      var speedStr = formatBytes(speed) + '/s';
-      if (fill) fill.style.width = pct + '%';
-      if (stat) stat.innerText = pct + '% · ' + speedStr;
-    }
+    bumpWatchdog();
+    if (!e.lengthComputable) return;
+    var pct = Math.round((e.loaded / e.total) * 100);
+    var elapsed = (Date.now() - startTime) / 1000;
+    var speed = elapsed > 0 ? (e.loaded / elapsed) : 0;
+    setFill(uid, pct + '%', null);
+    setStat(uid, pct + '% · ' + formatBytes(speed) + '/s', '');
   };
 
   xhr.onload = function() {
-    isUploading = false;
+    if (!done()) return;
     if (xhr.status >= 200 && xhr.status < 300) {
-      if (fill) { fill.style.width = '100%'; fill.classList.add('success'); }
-      if (stat) { stat.innerText = '✓ Sent (' + formatBytes(file.size) + ')'; stat.style.color = 'var(--success)'; }
-      showToast('✓ ' + file.name + ' uploaded to PC!');
-    } else {
-      if (fill) fill.classList.add('error');
-      if (stat) { stat.innerText = '⚠ Error (' + xhr.status + ')'; stat.style.color = '#f43f5e'; }
-      showToast('Upload failed: ' + file.name);
+      consecutiveNetErrors = 0;
+      setSessionState('ok');
+      setFill(uid, '100%', 'success');
+      var done2 = xhr.responseText;
+      var label = '✓ Sent';
+      try {
+        var parsed = JSON.parse(done2);
+        if (parsed && parsed.size_str) label += ' (' + parsed.size_str + ')';
+      } catch (e) {}
+      setStat(uid, label, 'var(--success)');
+      showToast('✓ ' + file.name + ' sent to PC');
+      haptic([12]);
+      finishJob(job);
+      return;
     }
-    processUploadQueue();
+    job.retryAfterMs = retryAfterMs();
+    var retryable = RETRYABLE_STATUS.indexOf(xhr.status) !== -1;
+    failJob(job, serverErrorText(xhr), retryable);
   };
 
   xhr.onerror = function() {
-    isUploading = false;
-    if (fill) fill.classList.add('error');
-    if (stat) { stat.innerText = '⚠ Network Error'; stat.style.color = '#f43f5e'; }
-    showToast('Network error uploading ' + file.name);
-    processUploadQueue();
+    if (!done()) return;
+    consecutiveNetErrors += 1;
+    if (consecutiveNetErrors >= 2) {
+      setSessionState('lost',
+        'Cannot reach the PC — the ReClip session may have ended. Re-scan the QR code to reconnect.');
+    }
+    failJob(job, 'Network error — ' + (navigator.onLine ? 'PC unreachable' : 'device offline'), true);
   };
 
-  xhr.send(file);
+  xhr.ontimeout = function() {
+    if (!done()) return;
+    failJob(job, 'Transfer timed out', true);
+  };
+
+  xhr.onabort = function() {
+    if (!done()) return;
+    if (job.cancelled) {
+      setFill(uid, null, null);
+      setStat(uid, 'Cancelled', 'var(--text-muted)');
+      removeUploadItem(uid);
+      showToast('Upload cancelled');
+      finishJob(job);
+      return;
+    }
+    // Aborted by our own stall watchdog.
+    failJob(job, job.stalled ? 'Transfer stalled — retrying' : 'Upload aborted', true);
+  };
+
+  try {
+    xhr.send(file);
+  } catch (e) {
+    if (done()) failJob(job, 'Could not start upload', true);
+  }
 }
 
+document.addEventListener('visibilitychange', function() {
+  // The OS drops the wake lock whenever the page is hidden; take it back so a
+  // backgrounded upload is not throttled.
+  if (document.visibilityState === 'visible' && activeUploads > 0) acquireWakeLock();
+});
+
+window.addEventListener('online', function() {
+  consecutiveNetErrors = 0;
+  setSessionState('ok');
+});
+
 // P2: Clipboard Beam
+// Turns a non-2xx API response into a real message. The server explains itself
+// ("Beam limit reached — try again in 12s"); the UI used to throw that away and
+// show a generic failure.
+function apiError(res) {
+  return res.json().catch(function() { return {}; }).then(function(data) {
+    if (data && data.error) return new Error(data.error);
+    return new Error('HTTP ' + res.status);
+  });
+}
+
 function beamTextToPC() {
   var ta = document.getElementById('beam-textarea');
   if (!ta) return;
@@ -1459,21 +1810,24 @@ function beamTextToPC() {
     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() },
     body: JSON.stringify({ text: text })
   }).then(function(res) {
+    if (!res.ok) return apiError(res).then(function(err) { throw err; });
     return res.json();
   }).then(function(data) {
     if (data.success) {
       showToast('⚡ Text beamed to PC clipboard!');
       ta.value = '';
+      haptic([12]);
     } else {
       showToast('⚠ Failed to beam text');
     }
   }).catch(function(err) {
-    showToast('⚠ Error: ' + err);
+    showToast('⚠ ' + (err && err.message ? err.message : err));
   });
 }
 
 function fetchPCClipboard() {
   fetch('/api/beam-text').then(function(res) {
+    if (!res.ok) return apiError(res).then(function(err) { throw err; });
     return res.json();
   }).then(function(data) {
     var box = document.getElementById('pc-clip-display');
@@ -1484,7 +1838,7 @@ function fetchPCClipboard() {
       showToast('Fetched PC clipboard');
     }
   }).catch(function(err) {
-    showToast('⚠ Failed to fetch PC clipboard');
+    showToast('⚠ ' + (err && err.message ? err.message : err));
   });
 }
 
@@ -1497,7 +1851,7 @@ PIN_PAGE_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>ReClip LAN Security &middot; Enter PIN</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <script>
@@ -1531,7 +1885,7 @@ PIN_PAGE_HTML = """<!DOCTYPE html>
     <p class="pin-desc">Enter the 6-digit security PIN displayed in ReClip on your computer screen.</p>
     
     <div class="pin-inputs" id="pin-boxes">
-      <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="pin-digit" id="p0" autofocus>
+      <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="pin-digit" id="p0" autocomplete="one-time-code" autofocus>
       <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="pin-digit" id="p1">
       <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="pin-digit" id="p2">
       <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="pin-digit" id="p3">
@@ -2651,6 +3005,15 @@ class FileShareHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(content_length))
             disposition = "attachment" if force_download else "inline"
             self.send_header("Content-Disposition", content_disposition_value(disposition, download_name))
+            if not force_download:
+                # Inline previews render user-supplied content inside the ReClip
+                # origin. Without this, a shared .html/.svg file is stored XSS:
+                # its script can fetch the portal, read the CSRF token out of
+                # the DOM, and fire authenticated POSTs with the session cookie.
+                # `sandbox` with no tokens means an opaque origin and no script
+                # execution, while images/video/PDF still preview fine.
+                self.send_header("Content-Security-Policy", "sandbox")
+            self.send_header("X-Frame-Options", "DENY")
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Connection", "close")
@@ -2735,6 +3098,8 @@ class FileShareHandler(BaseHTTPRequestHandler):
         self.send_response(404)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
         self.end_headers()
         if send_body:
             self.wfile.write(data)
@@ -2861,7 +3226,12 @@ class FileShareHandler(BaseHTTPRequestHandler):
         </div>
       </div>
 
-      <div class="dropzone" id="dropzone" onclick="document.getElementById('file-input').click()">
+      <div class="session-banner" id="session-banner" role="status" aria-live="polite" style="display:none"></div>
+
+      <div class="dropzone" id="dropzone" role="button" tabindex="0"
+           aria-label="Choose files to send to the PC"
+           aria-describedby="dropzone-sub"
+           onclick="document.getElementById('file-input').click()">
         <input type="file" id="file-input" multiple style="display:none" onchange="handleFilesSelected(this.files)">
         <div class="dropzone-icon">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -2869,10 +3239,10 @@ class FileShareHandler(BaseHTTPRequestHandler):
           </svg>
         </div>
         <div class="dropzone-prompt">Tap to choose photos, videos, or files</div>
-        <div class="dropzone-sub">Files transfer locally at maximum Wi-Fi speed &middot; Zero cloud storage</div>
+        <div class="dropzone-sub" id="dropzone-sub">Files transfer locally at maximum Wi-Fi speed &middot; Zero cloud storage</div>
       </div>
 
-      <div class="upload-queue" id="upload-queue"></div>
+      <div class="upload-queue" id="upload-queue" role="status" aria-live="polite" aria-relevant="additions text"></div>
     </section>"""
 
         clipboard_beam_section_html = ""
@@ -2917,10 +3287,15 @@ class FileShareHandler(BaseHTTPRequestHandler):
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>{html.escape(page_title)}</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <meta name="reclip-csrf" content="{self.server.csrf_token()}">
+  <meta name="reclip-max-upload-size" content="{self.server.max_upload_size}">
+  <meta name="reclip-max-session-quota" content="{self.server.max_session_upload_quota}">
+  <meta name="reclip-session-used" content="{self.server.session_uploaded_bytes}">
+  <meta name="reclip-single-shot" content="{'1' if self.server.single_shot else '0'}">
+  <meta name="reclip-max-concurrent-uploads" content="2">
   <script>
     (function() {{
       var p = new URLSearchParams(window.location.search);
@@ -3024,6 +3399,8 @@ class FileShareHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
         if need_cookie:
             self.send_header("Set-Cookie", f"reclip_auth={self.server.token}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly")
         self.send_header("Connection", "close")
