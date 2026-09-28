@@ -351,6 +351,7 @@ class ThreadedFileShareServer(socketserver.ThreadingMixIn, HTTPServer):
 
         Without this, a hard kill mid-upload leaves hidden placeholders behind
         that permanently block those destination filenames in the collision loop.
+
         """
         now = time.time()
         try:
@@ -537,7 +538,7 @@ body {
 .nav-inner {
   max-width: 1100px;
   margin: 0 auto;
-  padding: 0.75rem 1.25rem;
+  padding: calc(0.75rem + env(safe-area-inset-top, 0px)) 1.25rem 0.75rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -648,7 +649,7 @@ body {
   max-width: 1100px;
   width: 100%;
   margin: 0 auto;
-  padding: 1.5rem 1.25rem 3rem 1.25rem;
+  padding: 1.5rem 1.25rem calc(3rem + env(safe-area-inset-bottom, 0px)) 1.25rem;
 }
 
 /* Feature Navigation Tabs */
@@ -792,6 +793,44 @@ body {
   flex-direction: column;
   gap: 0.6rem;
 }
+/* Aggregate header for the batch. Sending 30 photos one at a time gives 30
+   rows and no answer to "is it done yet?", which is the only question the
+   person actually has. */
+.queue-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-bottom: 0.15rem;
+}
+.queue-summary.is-visible {
+  display: flex;
+}
+.queue-summary-title {
+  font-weight: 600;
+  color: var(--text-main);
+}
+.queue-clear {
+  background: transparent;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.queue-clear:hover, .queue-clear:focus-visible {
+  color: var(--text-main);
+  border-color: var(--card-border-hover);
+  outline: none;
+}
+.queue-summary[hidden] {
+  display: none;
+}
 .upload-item {
   background: var(--input-bg);
   border: 1px solid var(--card-border);
@@ -807,16 +846,19 @@ body {
 }
 .upload-cancel {
   flex: 0 0 auto;
-  width: 1.5rem;
-  height: 1.5rem;
+  width: 2.25rem;
+  height: 2.25rem;
   border-radius: 50%;
   border: 1px solid var(--card-border);
   background: transparent;
   color: var(--text-muted);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   line-height: 1;
   cursor: pointer;
   transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .upload-cancel:hover, .upload-cancel:focus-visible {
   color: #fda4af;
@@ -840,6 +882,9 @@ body {
   flex: 0 0 auto;
   white-space: nowrap;
   text-align: right;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .prog-bar-track {
   width: 100%;
@@ -967,6 +1012,44 @@ body {
   min-width: 200px;
   position: relative;
 }
+/* Visually hidden but exposed to screen readers: a placeholder is not a label,
+   and it disappears the moment the user types. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.search-clear {
+  position: absolute;
+  right: 0.4rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1.5rem;
+  height: 1.5rem;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.search-clear:hover, .search-clear:focus-visible {
+  color: var(--text-main);
+  outline: none;
+}
+.search-clear.is-visible {
+  display: flex;
+}
 .search-input {
   width: 100%;
   background: var(--input-bg);
@@ -1084,6 +1167,86 @@ body {
   flex: 1;
 }
 
+/* Download lifecycle states.
+   A plain <a download> gives the user nothing: the tap looks identical whether
+   the file is 2 KB or 2 GB, and a server-side ZIP that takes 40s to build looks
+   exactly like a dead link. These states give every download a visible outcome. */
+.btn.is-working {
+  opacity: 0.75;
+  pointer-events: none;
+}
+.btn-dl.is-working .dl-label,
+.btn-dl.is-done .dl-label {
+  display: none;
+}
+.btn-dl.is-working::after {
+  content: "Starting…";
+}
+.btn-dl.is-done {
+  background: var(--success);
+  color: #ffffff;
+}
+.btn-dl.is-done::after {
+  content: "✓ Started";
+}
+/* A prepared ZIP: the server is still deflating, so no bytes have moved yet. */
+.btn-dl.is-preparing::after {
+  content: "Preparing ZIP…";
+}
+.btn-dl.is-failed {
+  background: #f43f5e;
+  color: #ffffff;
+}
+.btn-dl.is-failed::after {
+  content: "Failed — retry";
+}
+.card.is-done {
+  border-color: var(--success);
+}
+.card-dl-status {
+  display: none;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-top: 0.35rem;
+}
+.card-dl-status.is-visible {
+  display: block;
+}
+.card-dl-status.is-error {
+  color: #f43f5e;
+}
+
+/* No-match state for search + category filtering. */
+.no-results {
+  display: none;
+  text-align: center;
+  padding: 2.5rem 1rem;
+  color: var(--text-muted);
+  border: 1px dashed var(--card-border);
+  border-radius: var(--radius-md);
+  background: var(--card-bg);
+}
+.no-results.is-visible {
+  display: block;
+}
+.no-results-icon {
+  font-size: 1.75rem;
+  margin-bottom: 0.5rem;
+  opacity: 0.6;
+}
+.no-results-title {
+  font-weight: 700;
+  color: var(--text-main);
+  margin-bottom: 0.2rem;
+}
+.no-results-hint {
+  font-size: 0.8rem;
+}
+.no-results-clear {
+  margin-top: 0.9rem;
+}
+
 /* Multi-file Bundle Banner */
 .bundle-banner {
   background: var(--bundle-grad);
@@ -1110,8 +1273,9 @@ body {
 /* Toast */
 .toast-box {
   position: fixed;
-  bottom: 1.5rem;
+  bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
   left: 50%;
+  max-width: min(92vw, 30rem);
   transform: translateX(-50%) translateY(100px);
   background: var(--card-bg);
   color: var(--text-main);
@@ -1128,10 +1292,22 @@ body {
   opacity: 0;
   pointer-events: none;
   transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  text-align: center;
+  justify-content: center;
 }
 .toast-box.show {
   transform: translateX(-50%) translateY(0);
   opacity: 1;
+}
+.toast-box.is-error {
+  border-color: #f43f5e;
+  color: #fda4af;
+  background: rgba(244, 63, 94, 0.14);
+}
+.toast-box.is-success {
+  border-color: var(--success);
+  color: var(--success);
+  background: rgba(52, 211, 153, 0.12);
 }
 
 /* Lightbox Modal */
@@ -1145,11 +1321,55 @@ body {
   align-items: center;
   justify-content: center;
   padding: 1rem;
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+}
+.lightbox[hidden] {
+  display: none;
 }
 .lightbox-content {
   max-width: 90vw;
   max-height: 85vh;
   object-fit: contain;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+}
+.lightbox-close {
+  position: absolute;
+  top: calc(0.75rem + env(safe-area-inset-top, 0px));
+  right: 0.75rem;
+  width: 2.75rem;
+  height: 2.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  color: #ffffff;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 2;
+}
+.lightbox-close:hover, .lightbox-close:focus-visible {
+  background: rgba(255, 255, 255, 0.2);
+  outline: none;
+}
+.lightbox-caption {
+  position: absolute;
+  bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 90vw;
+  padding: 0.35rem 0.85rem;
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: var(--radius-sm);
+  color: #f8fafc;
+  font-size: 0.78rem;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* PIN Lock Screen CSS */
@@ -1160,6 +1380,8 @@ body {
   min-height: 100vh;
   background: var(--bg);
   padding: 1.5rem;
+  padding-top: calc(1.5rem + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
   position: relative;
 }
 .pin-card {
@@ -1194,6 +1416,20 @@ body {
   font-size: 0.85rem;
   color: var(--text-muted);
   margin-bottom: 1.5rem;
+}
+.pin-strength {
+  display: flex;
+  gap: 4px;
+  justify-content: center;
+  margin: -1rem 0 1.25rem 0;
+}
+.pin-strength-bar {
+  height: 3px;
+  flex: 1 1 0;
+  max-width: 2.5rem;
+  border-radius: 2px;
+  background: var(--card-border);
+  transition: background 0.2s ease;
 }
 .pin-inputs {
   display: flex;
@@ -1240,8 +1476,8 @@ body {
 }
 
 @media (max-width: 600px) {
-  .portal-container { padding: 1rem 0.75rem 3rem 0.75rem; }
-  .nav-inner { padding: 0.5rem 0.75rem; gap: 0.4rem; }
+  .portal-container { padding: 1rem 0.75rem calc(3rem + env(safe-area-inset-bottom, 0px)) 0.75rem; }
+  .nav-inner { padding: calc(0.5rem + env(safe-area-inset-top, 0px)) 0.75rem 0.5rem; gap: 0.4rem; }
   .brand-title { font-size: 0.95rem; }
   .brand-tag { display: none; }
   .nav-pin-badge { font-size: 0.7rem; padding: 0.2rem 0.45rem; }
@@ -1249,6 +1485,28 @@ body {
   .bundle-banner { flex-direction: column; align-items: stretch; }
   .file-grid { grid-template-columns: 1fr; }
   .dropzone { padding: 1.25rem 0.75rem; }
+  /* Touch targets: 44px is the smallest reliably tappable size on a phone,
+     and this page is almost always viewed on one. */
+  .btn { padding: 0.7rem 1rem; font-size: 0.9rem; min-height: 2.75rem; }
+  .btn-sm { padding: 0.55rem 0.8rem; font-size: 0.8rem; min-height: 2.5rem; }
+  .filter-chip { padding: 0.5rem 0.85rem; font-size: 0.8rem; min-height: 2.25rem; }
+  .quickbar-btn { padding: 0.6rem 0.9rem; min-height: 2.5rem; }
+  .theme-toggle-btn { width: 2.5rem; height: 2.5rem; }
+  .pin-theme-btn { top: calc(0.75rem + env(safe-area-inset-top, 0px)); right: 0.75rem; }
+  .upload-item { padding: 0.85rem; }
+  .beam-textarea { font-size: 0.9rem; min-height: 96px; }
+  .search-input { font-size: 0.9rem; min-height: 2.5rem; }
+  .toast-box { font-size: 0.82rem; padding: 0.75rem 1rem; }
+  .queue-clear { padding: 0.45rem 0.75rem; min-height: 2.25rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .pulse-dot { animation: none; }
 }
 """
 PORTAL_JS = """
@@ -1288,14 +1546,22 @@ if (window.matchMedia) {
 }
 updateThemeUI(getEffectiveTheme());
 
+var toastTimer = null;
+
 function showToast(msg, type) {
   var t = document.getElementById('toast');
   if (!t) return;
-  t.innerText = msg;
-  t.className = 'toast-box show';
-  setTimeout(function() {
+  // textContent, not innerHTML: this string can carry a filename, and the
+  // page holds the CSRF token.
+  t.textContent = msg;
+  // `type` was accepted and ignored, so every failure rendered in the same
+  // green-ish neutral box as a success. Colour is what a user scans first.
+  t.className = 'toast-box show' + (type ? ' is-' + type : '');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(function() {
     t.className = 'toast-box';
-  }, 2500);
+    toastTimer = null;
+  }, 3200);
 }
 
 function copyText(text, label) {
@@ -1325,16 +1591,90 @@ function fallbackCopy(text, label) {
 }
 
 // Lightbox
-function openLightbox(src, title, size) {
+// Wrapping the img is what makes the image itself tappable: without it the
+// click landed on the backdrop and closed the viewer the instant it opened.
+function openLightbox(src, title) {
   var lb = document.getElementById('lightbox');
   var img = document.getElementById('lightbox-img');
   if (!lb || !img) return;
   img.src = src;
+  img.alt = title || 'Preview';
+  var cap = document.getElementById('lightbox-caption');
+  if (cap) {
+    cap.textContent = title || '';
+    cap.style.display = title ? 'block' : 'none';
+  }
+  lb.hidden = false;
   lb.style.display = 'flex';
+  var close = document.getElementById('lightbox-close');
+  if (close) close.focus();
 }
 function closeLightbox() {
   var lb = document.getElementById('lightbox');
-  if (lb) lb.style.display = 'none';
+  if (!lb) return;
+  lb.hidden = true;
+  lb.style.display = 'none';
+  var img = document.getElementById('lightbox-img');
+  // Release the decoded bitmap; a phone that just streamed a 12 MP photo
+  // should not hold it for the rest of the session.
+  if (img) img.removeAttribute('src');
+}
+
+// Download lifecycle
+// The download button is a real <a download>, so there is no XHR to hook and
+// no progress event to read. What we can do is stop the tap from looking
+// identical whether the file is 2 KB or 2 GB, and tell the user when the
+// browser has taken the file.
+function markDownload(anchor, stateName, statusText) {
+  if (!anchor) return;
+  anchor.classList.remove('is-working', 'is-done', 'is-preparing', 'is-failed');
+  if (stateName) anchor.classList.add(stateName);
+  var card = anchor.closest ? anchor.closest('.file-card') : null;
+  var status = card ? card.querySelector('.card-dl-status') : null;
+  if (status) {
+    status.textContent = statusText || '';
+    status.classList.toggle('is-visible', !!statusText);
+    status.classList.toggle('is-error', stateName === 'is-failed');
+  }
+  if (card && stateName === 'is-done') card.classList.add('is-done');
+}
+
+function onDownloadTap(ev) {
+  var anchor = ev.target && ev.target.closest ? ev.target.closest('a.btn-dl') : null;
+  if (!anchor) return;
+  // A folder/bundle ZIP is deflated server-side before the first byte moves,
+  // which can take tens of seconds. Say so, or it reads as a dead link.
+  var href = anchor.getAttribute('href') || '';
+  var isZip = href.indexOf('bundle') !== -1 || href.indexOf('zip') !== -1;
+  markDownload(anchor, isZip ? 'is-preparing' : 'is-working',
+    isZip ? 'Building ZIP on the PC — this can take a moment…' : 'Starting download…');
+  haptic(8);
+  // The browser takes over from here. If the transfer never lands, the status
+  // line is the user's cue to re-tap, so it has to persist rather than vanish.
+  setTimeout(function() {
+    markDownload(anchor, 'is-done', isZip ? 'ZIP download started' : 'Download started — check your browser downloads');
+  }, 900);
+}
+
+function onPreviewTap(ev) {
+  var btn = ev.target && ev.target.closest ? ev.target.closest('.js-preview-image') : null;
+  if (!btn) return;
+  openLightbox(btn.getAttribute('data-src'), btn.getAttribute('data-name'));
+}
+
+function initDownloadTracking() {
+  var grid = document.getElementById('file-grid');
+  if (grid) {
+    grid.addEventListener('click', onDownloadTap);
+    grid.addEventListener('click', onPreviewTap);
+  }
+  var bundle = document.querySelector('.bundle-banner a[href="/bundle"]');
+  if (bundle) {
+    bundle.addEventListener('click', function() {
+      showToast('Building ZIP on the PC — large shares can take a moment', 'success');
+      haptic(8);
+    });
+  }
 }
 
 // Search and Category Filter
@@ -1348,25 +1688,87 @@ function onSearchInput(val) {
 function filterCategory(cat, btn) {
   currentFilter = cat;
   var chips = document.querySelectorAll('.filter-chip');
-  chips.forEach(function(c) { c.classList.remove('active'); });
-  if (btn) btn.classList.add('active');
+  chips.forEach(function(c) {
+    var on = c === btn;
+    c.classList.toggle('active', on);
+    // A chip is a toggle; without aria-pressed a screen reader announces every
+    // category identically and gives no way to tell what is currently applied.
+    c.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  applyFilters();
+}
+function clearFilters() {
+  currentFilter = 'all';
+  currentSearch = '';
+  var input = document.querySelector('.search-input');
+  if (input) input.value = '';
+  var clear = document.querySelector('.search-clear');
+  if (clear) clear.classList.remove('is-visible');
+  var chips = document.querySelectorAll('.filter-chip');
+  chips.forEach(function(c) {
+    var on = c.getAttribute('data-cat') === 'all';
+    c.classList.toggle('active', on);
+    c.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
   applyFilters();
 }
 function applyFilters() {
   var cards = document.querySelectorAll('.file-card');
+  var visible = 0;
   cards.forEach(function(card) {
     var cat = card.getAttribute('data-cat') || 'other';
     var name = (card.getAttribute('data-name') || '').toLowerCase();
     var matchCat = (currentFilter === 'all' || cat === currentFilter);
     var matchSearch = (!currentSearch || name.indexOf(currentSearch) !== -1);
-    card.style.display = (matchCat && matchSearch) ? 'flex' : 'none';
+    var show = (matchCat && matchSearch);
+    card.style.display = show ? 'flex' : 'none';
+    if (show) visible += 1;
   });
+
+  // Filtering to nothing used to leave a blank page with no explanation.
+  var empty = document.getElementById('no-results');
+  if (empty) {
+    var filtered = (currentFilter !== 'all' || !!currentSearch);
+    if (visible === 0 && filtered) {
+      empty.classList.add('is-visible');
+      var hint = document.getElementById('no-results-hint');
+      if (hint) {
+        hint.textContent = currentSearch
+          ? 'Nothing matches "' + currentSearch + '".'
+          : 'No files in this category.';
+      }
+    } else {
+      empty.classList.remove('is-visible');
+    }
+  }
+
+  var count = document.getElementById('result-count');
+  if (count) {
+    count.textContent = (visible === cards.length)
+      ? ''
+      : visible + ' of ' + cards.length + ' shown';
+  }
+  var clear = document.querySelector('.search-clear');
+  if (clear) clear.classList.toggle('is-visible', !!currentSearch);
+}
+
+function initFilters() {
+  var chips = document.querySelectorAll('.filter-chip');
+  chips.forEach(function(c) {
+    var on = c.classList.contains('active');
+    c.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  applyFilters();
 }
 
 // P1: Reverse Drop File Uploads
 var uploadQueue = [];
 var activeJobs = {};            // uid -> job currently in flight
 var activeUploads = 0;
+var batchTotal = 0;             // files ever added to this batch
+var batchDone = 0;              // files that reached a terminal success
+var batchFailed = 0;            // files that gave up for good
+var batchBytes = 0;             // bytes handed to the server this batch
 var MAX_CONCURRENT_UPLOADS = 2;
 var MAX_RETRIES = 3;
 var RETRY_BASE_MS = 1200;
@@ -1374,6 +1776,7 @@ var STALL_TIMEOUT_MS = 20000;   // no byte progress for this long => socket is d
 var ABSOLUTE_TIMEOUT_MS = 45 * 60 * 1000;
 var RETRYABLE_STATUS = [0, 408, 425, 429, 500, 502, 503, 504];
 var wakeLock = null;
+var wakePending = false;
 var consecutiveNetErrors = 0;
 
 // Server limits, injected as meta tags. Used to reject hopeless uploads before
@@ -1401,13 +1804,29 @@ function haptic(pattern) {
 }
 
 function acquireWakeLock() {
-  if (wakeLock || !navigator.wakeLock || activeUploads === 0) return;
+  if (wakeLock || wakePending || !navigator.wakeLock || activeUploads === 0) return;
+  wakePending = true;
+  var request;
   try {
-    navigator.wakeLock.request('screen').then(function(lock) {
-      wakeLock = lock;
-      lock.addEventListener('release', function() { wakeLock = null; });
-    }).catch(function() { wakeLock = null; });
-  } catch (e) { wakeLock = null; }
+    request = navigator.wakeLock.request('screen');
+  } catch (e) {
+    wakePending = false;
+    return;
+  }
+  Promise.resolve(request).then(function(lock) {
+    wakePending = false;
+    // The transfer can finish while the wake-lock prompt is still pending. If
+    // that happened, hand it straight back instead of holding the screen awake
+    // for the rest of the session.
+    if (activeUploads === 0) {
+      try { lock.release(); } catch (e) {}
+      return;
+    }
+    wakeLock = lock;
+    lock.addEventListener('release', function() { wakeLock = null; });
+  }).catch(function() {
+    wakePending = false;
+  });
 }
 
 function releaseWakeLock() {
@@ -1419,8 +1838,12 @@ function releaseWakeLock() {
 function setSessionState(state, msg) {
   var b = document.getElementById('session-banner');
   if (!b) return;
-  if (state === 'ok') { b.style.display = 'none'; b.textContent = ''; return; }
-  b.textContent = msg;
+  if (state === 'ok') {
+    b.style.display = 'none';
+    b.textContent = '';
+    return;
+  }
+  b.textContent = msg || 'Reconnecting…';
   b.style.display = 'block';
 }
 
@@ -1557,14 +1980,23 @@ function handleFilesSelected(files) {
   var queueList = document.getElementById('upload-queue');
   if (!queueList) return;
 
+  var added = 0;
   for (var i = 0; i < files.length; i++) {
     var file = files[i];
     var uid = 'up_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substr(2, 5);
     uploadQueue.push({ uid: uid, file: file, cancelled: false, attempt: 0, xhr: null, finished: false });
-    queueList.prepend(buildUploadItem(uid, file));
+    // appendChild, not prepend: the queue is processed FIFO, so prepending made
+    // the newest file appear on top while the oldest was the one transferring.
+    // The list has to read top-to-bottom in the order work actually happens.
+    queueList.appendChild(buildUploadItem(uid, file));
+    batchTotal += 1;
+    added += 1;
   }
-  haptic(8);
-  processUploadQueue();
+  if (added > 0) {
+    haptic(8);
+    updateBatchSummary();
+    processUploadQueue();
+  }
 }
 
 function formatBytes(bytes) {
@@ -1590,33 +2022,100 @@ function releaseSlot(job) {
   if (activeUploads === 0) releaseWakeLock();
 }
 
-function finishJob(job) {
+function updateBatchSummary() {
+  var el = document.getElementById('queue-summary');
+  if (!el) return;
+  if (batchTotal === 0) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  var settled = batchDone + batchFailed;
+  var title = document.getElementById('queue-summary-title');
+  if (title) {
+    if (settled < batchTotal) {
+      title.textContent = 'Sending ' + settled + ' of ' + batchTotal +
+        (batchBytes ? ' · ' + formatBytes(batchBytes) : '') + '…';
+    } else if (batchFailed === 0) {
+      title.textContent = '✓ All ' + batchDone + ' file' + (batchDone === 1 ? '' : 's') +
+        ' sent' + (batchBytes ? ' · ' + formatBytes(batchBytes) : '');
+    } else {
+      title.textContent = '✓ ' + batchDone + ' sent' +
+        (batchFailed ? ', ' + batchFailed + ' failed' : '') +
+        (batchBytes ? ' · ' + formatBytes(batchBytes) : '');
+    }
+  }
+  // One summary beats N toasts when 20 photos land in a few seconds.
+  if (settled === batchTotal && batchTotal > 1) {
+    if (batchFailed === 0) showToast('✓ All ' + batchDone + ' files sent to PC', 'success');
+    else showToast(batchDone + ' sent, ' + batchFailed + ' failed', 'error');
+    haptic([15, 40, 15]);
+  }
+}
+
+function clearFinishedUploads() {
+  // Drop the rows that reached a terminal state so a 40-file batch does not
+  // leave the user scrolling through history.
+  var items = document.querySelectorAll('.upload-item');
+  for (var i = 0; i < items.length; i++) {
+    var el = items[i];
+    if (el.getAttribute('data-state') === 'done' || el.getAttribute('data-state') === 'failed') {
+      if (el.parentNode) el.parentNode.removeChild(el);
+    }
+  }
+  var remaining = document.querySelectorAll('.upload-item');
+  if (remaining.length === 0) {
+    batchTotal = 0;
+    batchDone = 0;
+    batchFailed = 0;
+    batchBytes = 0;
+  }
+  updateBatchSummary();
+}
+
+function finishJob(job, state) {
   if (job.finished) return;
   job.finished = true;
+  if (state === 'done') batchDone += 1;
+  else if (state === 'failed') batchFailed += 1;
+  var el = document.getElementById(job.uid);
+  if (el && state) el.setAttribute('data-state', state);
   releaseSlot(job);
+  updateBatchSummary();
   processUploadQueue();
 }
 
 function failJob(job, message, retryable) {
   setFill(job.uid, null, 'error');
   setStat(job.uid, message, '#f43f5e');
-  showToast(message);
+  showToast(message, 'error');
   haptic([40, 60, 40]);
   if (retryable && job.attempt < MAX_RETRIES && !job.cancelled) {
     var wait = job.retryAfterMs || (RETRY_BASE_MS * Math.pow(2, job.attempt));
     job.attempt += 1;
-    setStat(job.uid, 'Retrying in ' + Math.round(wait / 1000) + 's (' + job.attempt + '/' + MAX_RETRIES + ')…', 'var(--text-muted)');
+    // Keep the reason visible: "retrying" on its own hides whether the PC went
+    // away, the server said 503, or the transfer simply stalled.
+    var reason = message.length > 52 ? message.slice(0, 51) + '…' : message;
+    setStat(job.uid, reason + ' · retry ' + job.attempt + '/' + MAX_RETRIES, 'var(--text-muted)');
     // Release the concurrency slot immediately: a backing-off job must not
     // occupy one, or two failures would stall every other queued file.
     releaseSlot(job);
+    // Hand the freed slot to whatever is waiting, without waiting out the
+    // backoff, so a retry never blocks unrelated files.
+    processUploadQueue();
     setTimeout(function() {
       if (job.cancelled) { removeUploadItem(job.uid); return; }
+      // The retry jumps to the head of the queue, so move its row to the top
+      // too. Leaving it in place would show the list in an order the queue
+      // does not actually follow.
+      var row = document.getElementById(job.uid);
+      if (row && row.parentNode) row.parentNode.insertBefore(row, row.parentNode.firstChild);
       uploadQueue.unshift(job);
       processUploadQueue();
     }, wait);
     return;
   }
-  finishJob(job);
+  finishJob(job, 'failed');
 }
 
 function processUploadQueue() {
@@ -1639,15 +2138,17 @@ function startUpload(job) {
   if (cfg.maxUploadSize > 0 && file.size > cfg.maxUploadSize) {
     setStat(job.uid, 'Too large', '#f43f5e');
     setFill(job.uid, null, 'error');
-    showToast(file.name + ' is larger than the ' + formatBytes(cfg.maxUploadSize) + ' limit');
+    showToast(file.name + ' is larger than the ' + formatBytes(cfg.maxUploadSize) + ' limit', 'error');
     haptic([40, 60, 40]);
+    finishJob(job, 'failed');
     return;
   }
   if (cfg.maxSessionQuota > 0 && cfg.sessionUsed + file.size > cfg.maxSessionQuota) {
     setStat(job.uid, 'Over session quota', '#f43f5e');
     setFill(job.uid, null, 'error');
-    showToast('This file would exceed the session upload quota');
+    showToast('This file would exceed the session upload quota', 'error');
     haptic([40, 60, 40]);
+    finishJob(job, 'failed');
     return;
   }
 
@@ -1729,9 +2230,12 @@ function attemptUpload(job) {
         if (parsed && parsed.size_str) label += ' (' + parsed.size_str + ')';
       } catch (e) {}
       setStat(uid, label, 'var(--success)');
-      showToast('✓ ' + file.name + ' sent to PC');
+      // One toast per file turns a 20-photo send into 20 stacked toasts that
+      // overwrite each other; the batch summary carries the aggregate instead.
+      if (batchTotal <= 1) showToast('✓ ' + file.name + ' sent to PC', 'success');
+      batchBytes += file.size;
       haptic([12]);
-      finishJob(job);
+      finishJob(job, 'done');
       return;
     }
     job.retryAfterMs = retryAfterMs();
@@ -1761,7 +2265,7 @@ function attemptUpload(job) {
       setStat(uid, 'Cancelled', 'var(--text-muted)');
       removeUploadItem(uid);
       showToast('Upload cancelled');
-      finishJob(job);
+      finishJob(job, 'cancelled');
       return;
     }
     // Aborted by our own stall watchdog.
@@ -1802,7 +2306,14 @@ function beamTextToPC() {
   if (!ta) return;
   var text = ta.value;
   if (!text.trim()) {
-    showToast('Please enter text to beam');
+    showToast('Please enter text to beam', 'error');
+    ta.focus();
+    return;
+  }
+  // Mirrors the server's 128 KB cap. Catching it here saves a doomed upload
+  // and tells the user why, instead of a bare 413 from the far end.
+  if (text.length > 131072) {
+    showToast('Text is too large to beam (max 128KB)', 'error');
     return;
   }
   fetch('/api/beam-text', {
@@ -1814,14 +2325,15 @@ function beamTextToPC() {
     return res.json();
   }).then(function(data) {
     if (data.success) {
-      showToast('⚡ Text beamed to PC clipboard!');
+      showToast('⚡ Text beamed to PC clipboard!', 'success');
       ta.value = '';
+      ta.focus();
       haptic([12]);
     } else {
-      showToast('⚠ Failed to beam text');
+      showToast('⚠ Failed to beam text', 'error');
     }
   }).catch(function(err) {
-    showToast('⚠ ' + (err && err.message ? err.message : err));
+    showToast('⚠ ' + (err && err.message ? err.message : err), 'error');
   });
 }
 
@@ -1833,17 +2345,29 @@ function fetchPCClipboard() {
     var box = document.getElementById('pc-clip-display');
     var txt = document.getElementById('pc-clip-text');
     if (box && txt) {
-      txt.innerText = data.text || '(empty clipboard)';
+      txt.textContent = data.text || '(empty clipboard)';
       box.style.display = 'block';
-      showToast('Fetched PC clipboard');
+      showToast('Fetched PC clipboard', 'success');
     }
   }).catch(function(err) {
-    showToast('⚠ ' + (err && err.message ? err.message : err));
+    showToast('⚠ ' + (err && err.message ? err.message : err), 'error');
   });
 }
 
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeLightbox();
+});
+
 document.addEventListener('DOMContentLoaded', function() {
   initDropzone();
+  initFilters();
+  initDownloadTracking();
+  var clearBtn = document.getElementById('queue-clear');
+  if (clearBtn) clearBtn.addEventListener('click', clearFinishedUploads);
+  var searchClear = document.querySelector('.search-clear');
+  if (searchClear) searchClear.addEventListener('click', clearFilters);
+  var noResultsClear = document.getElementById('no-results-clear');
+  if (noResultsClear) noResultsClear.addEventListener('click', clearFilters);
 });
 """
 
@@ -3138,18 +3662,30 @@ class FileShareHandler(BaseHTTPRequestHandler):
                 dl_text = "Download Folder (ZIP)"
             else:
                 meta_label = size_str
-                preview_btn = f'''<a href="/preview/{enc_name}" target="_blank" class="btn btn-secondary btn-sm" title="Open Preview">
+                if cat == "image":
+                    # Images open in the in-page lightbox. Tapping through to a
+                    # new tab loses the session context on mobile and costs a
+                    # back-navigation for something the user can just look at.
+                    # The src/name travel as data attributes rather than as an
+                    # inline onclick: a filename containing a quote or an angle
+                    # bracket would otherwise terminate the attribute and leave
+                    # a syntax error behind.
+                    preview_btn = f'''<button type="button" class="btn btn-secondary btn-sm js-preview-image" data-src="/preview/{enc_name}" data-name="{html.escape(name, quote=True)}" title="Open Preview">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                </button>'''
+                else:
+                    preview_btn = f'''<a href="/preview/{enc_name}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm" title="Open Preview">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
                 </a>'''
                 dl_action = f"/download/{enc_name}"
                 dl_text = "Download"
 
             card = f'''
-            <div class="file-card" data-cat="{cat}" data-name="{html.escape(name)}">
+            <div class="file-card" data-cat="{cat}" data-name="{html.escape(name, quote=True)}">
               <div class="card-top">
                 <div class="file-icon-wrap">{svg_icon}</div>
                 <div class="card-info">
-                  <div class="card-name" title="{html.escape(name)}">{html.escape(name)}</div>
+                  <div class="card-name" title="{html.escape(name, quote=True)}">{html.escape(name)}</div>
                   <div class="card-meta-row">
                     <span class="badge" style="background:{badge_color}22; color:{badge_color}; border:1px solid {badge_color}44;">{cat_label}</span>
                     <span>{meta_label}</span>
@@ -3159,21 +3695,22 @@ class FileShareHandler(BaseHTTPRequestHandler):
               <div class="card-bottom">
                 <a href="{dl_action}" class="btn btn-primary btn-sm btn-dl" download>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                  <span>{dl_text}</span>
+                  <span class="dl-label">{dl_text}</span>
                 </a>
                 {preview_btn}
               </div>
+              <div class="card-dl-status"></div>
             </div>
             '''
             cards_html.append(card)
 
         # Chips
         chip_order = ['folder', 'image', 'video', 'audio', 'archive', 'document', 'code', 'text', 'other']
-        chips_html = ['<button type="button" class="filter-chip active" onclick="filterCategory(\'all\', this)">All</button>']
+        chips_html = ['<button type="button" class="filter-chip active" data-cat="all" aria-pressed="true" onclick="filterCategory(\'all\', this)">All</button>']
         for c in chip_order:
             if c in categories_present:
                 lbl, _, _ = get_category_badge_info(c)
-                chips_html.append(f'<button type="button" class="filter-chip" onclick="filterCategory(\'{c}\', this)">{lbl}</button>')
+                chips_html.append(f'<button type="button" class="filter-chip" data-cat="{c}" aria-pressed="false" onclick="filterCategory(\'{c}\', this)">{lbl}</button>')
 
         # Bundle Banner
         bundle_banner_html = ""
@@ -3240,6 +3777,11 @@ class FileShareHandler(BaseHTTPRequestHandler):
         </div>
         <div class="dropzone-prompt">Tap to choose photos, videos, or files</div>
         <div class="dropzone-sub" id="dropzone-sub">Files transfer locally at maximum Wi-Fi speed &middot; Zero cloud storage</div>
+      </div>
+
+      <div class="queue-summary" id="queue-summary" hidden>
+        <span class="queue-summary-title" id="queue-summary-title"></span>
+        <button type="button" class="queue-clear" id="queue-clear">Clear finished</button>
       </div>
 
       <div class="upload-queue" id="upload-queue" role="status" aria-live="polite" aria-relevant="additions text"></div>
@@ -3364,30 +3906,43 @@ class FileShareHandler(BaseHTTPRequestHandler):
 
       <div class="filter-bar">
         <div class="search-box">
+          <label class="sr-only" for="search-input">Filter shared files by name</label>
           <span class="search-icon">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
           </span>
-          <input type="text" class="search-input" placeholder="Filter files..." oninput="onSearchInput(this.value)">
+          <input type="text" id="search-input" class="search-input" placeholder="Filter files..." autocomplete="off" oninput="onSearchInput(this.value)">
+          <button type="button" class="search-clear" aria-label="Clear filter">&times;</button>
         </div>
-        <div class="chip-group">
+        <div class="chip-group" role="group" aria-label="Filter by file type">
           {''.join(chips_html)}
         </div>
+        <span class="sr-only" id="result-count" role="status" aria-live="polite"></span>
       </div>
 
       <div class="file-grid" id="file-grid">
         {''.join(cards_html)}
       </div>
+
+      <div class="no-results" id="no-results">
+        <div class="no-results-icon" aria-hidden="true">&#128269;</div>
+        <div class="no-results-title">No matching files</div>
+        <div class="no-results-hint" id="no-results-hint"></div>
+        <button type="button" class="btn btn-secondary btn-sm no-results-clear" id="no-results-clear">Clear filters</button>
+      </div>
     </section>
 
   </main>
 
-  <!-- Lightbox Modal -->
-  <div class="lightbox" id="lightbox" style="display:none;" onclick="closeLightbox()">
-    <img src="" alt="Preview" class="lightbox-content" id="lightbox-img">
+  <!-- Lightbox Modal. The close handler is on the backdrop rather than the
+       container so a tap on the image itself does not dismiss the viewer. -->
+  <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Image preview" hidden style="display:none;" onclick="if (event.target === this) closeLightbox();">
+    <button type="button" class="lightbox-close" id="lightbox-close" aria-label="Close preview" onclick="closeLightbox();">&times;</button>
+    <img src="" alt="" class="lightbox-content" id="lightbox-img" onclick="event.stopPropagation();">
+    <div class="lightbox-caption" id="lightbox-caption" style="display:none;"></div>
   </div>
 
   <!-- Toast Notification Box -->
-  <div class="toast-box" id="toast"></div>
+  <div class="toast-box" id="toast" role="status" aria-live="polite"></div>
 
   <script>
 {PORTAL_JS}

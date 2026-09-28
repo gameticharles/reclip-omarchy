@@ -13,8 +13,10 @@ because the failure mode only exists when handler threads actually overlap.
 Run:  python3 -m unittest discover -s tests -v
 """
 
+import html
 import http.client
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -22,6 +24,7 @@ import threading
 import time
 import unittest
 import zipfile
+from html.parser import HTMLParser
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 
@@ -458,6 +461,123 @@ class TestContentDispositionEscaping(unittest.TestCase):
 
     def test_empty_name_gets_placeholder(self):
         self.assertIn('filename="download"', qfs.content_disposition_value("attachment", ""))
+
+
+class TestPortalHtmlEscaping(unittest.TestCase):
+    """The portal renders user-controlled filenames into HTML.
+
+    A filename is attacker-controlled data, so it must never land in a place
+    the browser parses as script. The image-preview button is the sharp edge:
+    it used to be wired with an inline onclick built from the filename, where a
+    single double quote terminated the attribute and left a syntax error (or,
+    with a weaker escaper, a live handler).
+    """
+
+    HOSTILE = '"><img src=x onerror=alert(1)>.png'
+
+    def _render(self, names):
+        save_dir = tempfile.mkdtemp(prefix="reclip-html-")
+        self.addCleanup(shutil.rmtree, save_dir, True)
+        files_meta = []
+        for name in names:
+            path = os.path.join(save_dir, "f%d.bin" % len(files_meta))
+            with open(path, "wb") as fh:
+                fh.write(b"\x89PNG\r\n\x1a\n")
+            files_meta.append({
+                "name": name, "path": path, "size": 8, "size_str": "8 B",
+                "is_dir": False, "file_count": 0,
+            })
+        harness = ServerHarness(save_dir, files_meta)
+        self.addCleanup(harness.stop)
+        conn = harness.client()
+        conn.request("GET", f"/?token={harness.token}")
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", "replace")
+        conn.close()
+        self.assertEqual(resp.status, 200)
+        return body
+
+    def test_filename_never_becomes_live_markup(self):
+        """The payload may appear as *text* (that is the point), but never as a
+        parsed element and never as an event-handler attribute."""
+        page = self._render([self.HOSTILE])
+
+        class Collector(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.imgs = []
+                self.attr_values = []
+
+            def handle_starttag(self, tag, attrs):
+                if tag == "img":
+                    self.imgs.append(dict(attrs))
+                for key, value in attrs:
+                    self.attr_values.append((tag, key, value))
+
+        collector = Collector()
+        collector.feed(page)
+
+        # The attacker asked for an <img onerror=...>. Every <img> on the page
+        # is one ReClip authored (the lightbox); none may carry the payload.
+        self.assertTrue(collector.imgs, "expected the lightbox <img> to exist")
+        for attrs in collector.imgs:
+            self.assertNotIn("onerror", attrs, "payload landed on an <img> handler")
+            self.assertNotEqual(attrs.get("src"), "x", "payload landed on an <img> src")
+        # The page has legitimate static handlers (toggleTheme, closeLightbox),
+        # so the check is that the payload never rides along inside one.
+        for tag, key, value in collector.attr_values:
+            if key.startswith("on"):
+                self.assertNotIn("alert", value,
+                                 f"payload reached the {tag} {key} handler")
+        # And it is still visible to the user, escaped, as the filename.
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;", page)
+
+    def test_no_inline_js_built_from_filename(self):
+        """Every onclick must be a static handler, never one containing the name."""
+        page = self._render([self.HOSTILE, "it's a photo.png"])
+        for match in re.finditer(r'onclick="([^"]*)"', page):
+            handler = match.group(1)
+            self.assertNotIn("openLightbox", handler,
+                             "lightbox wired via inline JS built from a filename")
+            self.assertNotIn("alert", handler)
+            self.assertNotIn("img src=x", handler)
+
+    def test_hostile_name_round_trips_through_data_attribute(self):
+        """data-name is escaped for the attribute, so getAttribute() returns the
+        exact original name and the lightbox caption is correct."""
+        page = self._render([self.HOSTILE])
+        values = re.findall(r'data-name="([^"]*)"', page)
+        self.assertIn(self.HOSTILE, [html.unescape(v) for v in values])
+
+    def test_page_html_is_well_formed(self):
+        """A truncated attribute shows up as a parser error, which is how the
+        inline-onclick bug presented itself."""
+        page = self._render([self.HOSTILE])
+
+        class Checker(HTMLParser):
+            VOID = {"meta", "link", "br", "hr", "img", "input"}
+
+            def __init__(self):
+                super().__init__()
+                self.stack = []
+                self.errors = []
+
+            def handle_starttag(self, tag, attrs):
+                if tag not in self.VOID:
+                    self.stack.append(tag)
+
+            def handle_endtag(self, tag):
+                if tag in self.VOID:
+                    return
+                if self.stack and self.stack[-1] == tag:
+                    self.stack.pop()
+                else:
+                    self.errors.append(tag)
+
+        checker = Checker()
+        checker.feed(page)
+        self.assertEqual(checker.errors, [], "mismatched closing tags")
+        self.assertEqual(checker.stack, [], "unclosed tags")
 
 
 class TestRangeRequests(unittest.TestCase):

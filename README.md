@@ -168,6 +168,16 @@ Run the regression suite (includes concurrent-upload tests proving the session q
 python3 -m unittest discover -s tests -v
 ```
 
+The client portal is plain browser JavaScript, so its upload engine is tested by
+executing the real `PORTAL_JS` against a minimal DOM/XHR shim. This covers the
+retry/stall/cancellation accounting, the DOM-XSS sink, wake-lock handling, and
+the batch progress summary:
+
+```sh
+python3 -c "import re;src=open('lib/qr_file_server.py').read();open('/tmp/portal.js','w').write(re.search(r'PORTAL_JS = \"\"\"(.*?)\n\"\"\"',src,re.S).group(1))"
+node tests/portal_client_harness.js /tmp/portal.js
+```
+
 ---
 
 ## 📄 License
