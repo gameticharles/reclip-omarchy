@@ -51,6 +51,29 @@ BEAM_WINDOW = 10.0
 # a real temp file, so the cache is capped and evicted LRU.
 FOLDER_ZIP_CACHE_MAX = 10
 
+# Suffixes for the in-flight upload markers this server creates, and the age a
+# marker must reach before the crash sweep may remove it. The markers are
+# namespaced to ReClip so the sweep can prove a file is ours before unlinking
+# it: save_dir is a real user directory (~/Downloads/ReClip-Drop by default),
+# and a bare ".part"/".reserve" suffix also matches unrelated files that the
+# user or another application put there.
+RESERVE_MARKER_SUFFIX = ".reclip-reserve"
+PART_MARKER_SUFFIX = ".reclip-part"
+STALE_MARKER_MAX_AGE_SEC = 3600
+
+
+def is_reclip_upload_marker(name):
+    """True only for upload marker names this server itself writes."""
+    if not name.startswith("."):
+        return False
+    if name.endswith(RESERVE_MARKER_SUFFIX):
+        return True
+    if name.endswith(PART_MARKER_SUFFIX):
+        # Shape is ".<sanitized name>.<8 hex token>.reclip-part".
+        token = name[:-len(PART_MARKER_SUFFIX)].rsplit(".", 1)[-1]
+        return len(token) == 8 and all(c in "0123456789abcdef" for c in token)
+    return False
+
 def iter_share_files(root):
     """Yield (abs_path, rel_path) for regular files under root, never escaping it.
 
@@ -347,11 +370,16 @@ class ThreadedFileShareServer(socketserver.ThreadingMixIn, HTTPServer):
         return hmac.new(self.token.encode("utf-8"), b"reclip-csrf-v1", hashlib.sha256).hexdigest()
 
     def _sweep_stale_uploads(self):
-        """Remove leftover .part/.reserve markers from a previous crashed session.
+        """Remove leftover upload markers from a previous crashed session.
 
         Without this, a hard kill mid-upload leaves hidden placeholders behind
         that permanently block those destination filenames in the collision loop.
 
+        Only markers this server wrote are eligible: save_dir is an ordinary
+        user directory, so a name that merely ends in ".part"/".reserve" proves
+        nothing. Anything that is not a namespaced ReClip marker, is not a
+        regular file (a symlink or directory is never ours to delete), or is
+        younger than STALE_MARKER_MAX_AGE_SEC is left strictly alone.
         """
         now = time.time()
         try:
@@ -360,11 +388,14 @@ class ThreadedFileShareServer(socketserver.ThreadingMixIn, HTTPServer):
             return
         with entries:
             for entry in entries:
-                name = entry.name
-                if not (name.endswith(".part") or name.endswith(".reserve")):
+                if not is_reclip_upload_marker(entry.name):
                     continue
                 try:
-                    if entry.is_file(follow_symlinks=False) and (now - entry.stat(follow_symlinks=False).st_mtime) < 3600:
+                    # follow_symlinks=False makes a symlink report False here,
+                    # so links are skipped rather than followed and unlinked.
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    if (now - entry.stat(follow_symlinks=False).st_mtime) < STALE_MARKER_MAX_AGE_SEC:
                         continue
                     os.unlink(entry.path)
                 except OSError:
@@ -2999,7 +3030,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
                 while True:
                     cand = filename if counter == 1 else f"{base} ({counter}){ext}"
                     dest_path = os.path.join(self.server.save_dir, cand)
-                    reserve_path = dest_path + ".reserve"
+                    reserve_path = os.path.join(self.server.save_dir, f".{cand}{RESERVE_MARKER_SUFFIX}")
                     # Claim FIRST, then validate. The marker claim (O_EXCL) and
                     # the "already finalized?" check must be one atomic step:
                     # checking dest_path before claiming leaves a window where a
@@ -3038,8 +3069,8 @@ class FileShareHandler(BaseHTTPRequestHandler):
             self._send_json(reject[0], reject[1])
             return
 
-        # Temporary partial upload path (.filename.token.part)
-        part_filename = f".{final_filename}.{secrets.token_hex(4)}.part"
+        # Temporary partial upload path (.<name>.<token>.reclip-part)
+        part_filename = f".{final_filename}.{secrets.token_hex(4)}{PART_MARKER_SUFFIX}"
         part_path = os.path.join(self.server.save_dir, part_filename)
 
         emit_event({

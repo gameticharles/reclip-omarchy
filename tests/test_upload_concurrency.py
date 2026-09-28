@@ -159,7 +159,7 @@ class TestSessionQuotaUnderConcurrency(UploadTestBase):
                 os.path.getsize(os.path.join(self.save_dir, f))
                 for f in os.listdir(self.save_dir)
                 if os.path.isfile(os.path.join(self.save_dir, f))
-                and not f.endswith((".reserve", ".part"))
+                and not qfs.is_reclip_upload_marker(f)
             )
             self.assertLessEqual(
                 on_disk,
@@ -183,7 +183,7 @@ class TestSessionQuotaUnderConcurrency(UploadTestBase):
             # No partial or reservation debris may survive a clean run.
             leftovers = [
                 f for f in os.listdir(self.save_dir)
-                if f.endswith((".part", ".reserve"))
+                if qfs.is_reclip_upload_marker(f)
             ]
             self.assertEqual(leftovers, [], f"temp files leaked: {leftovers}")
         finally:
@@ -299,7 +299,7 @@ class TestFailedUploadReleasesQuota(UploadTestBase):
             )
             debris = [
                 f for f in os.listdir(self.save_dir)
-                if f.endswith((".part", ".reserve"))
+                if qfs.is_reclip_upload_marker(f)
             ]
             self.assertEqual(debris, [], f"partial files leaked: {debris}")
         finally:
@@ -683,6 +683,112 @@ class TestZipCacheEviction(unittest.TestCase):
         # Evicted entries must be unlinked, not merely dropped from the dict.
         for p in made[:5]:
             self.assertFalse(os.path.exists(p), f"evicted ZIP {p} was left on disk")
+
+
+class TestStaleMarkerSweep(unittest.TestCase):
+    """The crash sweep must only ever delete markers this server created.
+
+    save_dir is a real user directory, so a file that merely ends in
+    ".part"/".reserve" is not ours to unlink, and a symlink must never be
+    removed (or followed) regardless of age.
+    """
+
+    OLD = 7200  # seconds; comfortably past the one-hour staleness threshold
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="reclip-sweep-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.save_dir = os.path.join(self.tmp, "ReClip-Drop")
+        os.makedirs(self.save_dir)
+        self.server = qfs.ThreadedFileShareServer.__new__(qfs.ThreadedFileShareServer)
+        self.server.save_dir = self.save_dir
+
+    def _make(self, name, age=0, content=b"x", as_symlink_to=None):
+        path = os.path.join(self.save_dir, name)
+        if as_symlink_to is not None:
+            os.symlink(as_symlink_to, path)
+        else:
+            with open(path, "wb") as fh:
+                fh.write(content)
+        if age:
+            when = time.time() - age
+            os.utime(path, (when, when), follow_symlinks=False)
+        return path
+
+    def test_unrelated_user_files_are_never_deleted(self):
+        """The reported bug: any *.part/*.reserve in the download dir was unlinked."""
+        victims = [
+            self._make("my-tax-documents.part", self.OLD),
+            self._make("budget-2026.reserve", self.OLD),
+            self._make("archive.tar.part", self.OLD),
+        ]
+        self.server._sweep_stale_uploads()
+        for path in victims:
+            self.assertTrue(
+                os.path.exists(path),
+                f"unrelated user file {os.path.basename(path)} was deleted",
+            )
+
+    def test_fresh_symlink_marker_is_preserved(self):
+        """A brand-new symlink was unlinked with no age check at all."""
+        target = os.path.join(self.tmp, "precious.txt")
+        with open(target, "wb") as fh:
+            fh.write(b"precious")
+        link = self._make(
+            f".photo.png.a1b2c3d4{qfs.PART_MARKER_SUFFIX}", as_symlink_to=target
+        )
+        self.server._sweep_stale_uploads()
+        self.assertTrue(os.path.lexists(link), "symlink marker was unlinked")
+        self.assertTrue(os.path.exists(target), "symlink target was harmed")
+
+    def test_old_symlink_marker_is_still_preserved(self):
+        target = os.path.join(self.tmp, "precious.txt")
+        with open(target, "wb") as fh:
+            fh.write(b"precious")
+        link = self._make(
+            f".photo.png.a1b2c3d4{qfs.PART_MARKER_SUFFIX}",
+            age=self.OLD,
+            as_symlink_to=target,
+        )
+        self.server._sweep_stale_uploads()
+        self.assertTrue(os.path.lexists(link), "symlink was unlinked despite age")
+
+    def test_stale_marker_directory_is_not_removed(self):
+        d = os.path.join(
+            self.save_dir, f".photo.png.a1b2c3d4{qfs.PART_MARKER_SUFFIX}"
+        )
+        os.makedirs(d)
+        when = time.time() - self.OLD
+        os.utime(d, (when, when))
+        self.server._sweep_stale_uploads()
+        self.assertTrue(os.path.isdir(d), "marker directory was removed")
+
+    def test_genuine_stale_markers_are_swept(self):
+        """The cleanup the sweep exists for must still happen."""
+        stale_part = self._make(f".photo.png.a1b2c3d4{qfs.PART_MARKER_SUFFIX}", self.OLD)
+        stale_reserve = self._make(f".photo.png{qfs.RESERVE_MARKER_SUFFIX}", self.OLD)
+        self.server._sweep_stale_uploads()
+        self.assertFalse(os.path.exists(stale_part), "stale .reclip-part survived")
+        self.assertFalse(os.path.exists(stale_reserve), "stale .reclip-reserve survived")
+
+    def test_fresh_genuine_markers_survive(self):
+        """An in-flight upload younger than the threshold must not be swept."""
+        part = self._make(f".photo.png.a1b2c3d4{qfs.PART_MARKER_SUFFIX}")
+        reserve = self._make(f".photo.png{qfs.RESERVE_MARKER_SUFFIX}")
+        self.server._sweep_stale_uploads()
+        self.assertTrue(os.path.exists(part), "in-flight part was swept")
+        self.assertTrue(os.path.exists(reserve), "in-flight reserve was swept")
+
+    def test_marker_name_recognition(self):
+        self.assertTrue(qfs.is_reclip_upload_marker(f".a.png{qfs.RESERVE_MARKER_SUFFIX}"))
+        self.assertTrue(qfs.is_reclip_upload_marker(f".a.png.0123abcd{qfs.PART_MARKER_SUFFIX}"))
+        # Suffix alone is not provenance.
+        self.assertFalse(qfs.is_reclip_upload_marker("notes.part"))
+        self.assertFalse(qfs.is_reclip_upload_marker("notes.reserve"))
+        self.assertFalse(qfs.is_reclip_upload_marker(f"a.png{qfs.RESERVE_MARKER_SUFFIX}"))
+        # Malformed part token is not a marker.
+        self.assertFalse(qfs.is_reclip_upload_marker(f".a.png.NOTATOKEN{qfs.PART_MARKER_SUFFIX}"))
+        self.assertFalse(qfs.is_reclip_upload_marker(f".a.png.zzzzzzzz{qfs.PART_MARKER_SUFFIX}"))
 
 
 if __name__ == "__main__":
