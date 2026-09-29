@@ -12,7 +12,27 @@ mkdir -p "$IMAGE_DIR"
 
 types=$(wl-paste --list-types 2>/dev/null || true)
 
-if [[ -f "$STATE_DIR/incognito" ]] || [[ ${CLIPBOARD_STATE:-} == "sensitive" ]] || grep -qx 'x-kde-passwordManagerHint' <<<"$types"; then
+# "Respect sensitive-source markers" is a real setting (written and read back by
+# Panel.qml) but nothing here ever consulted it, so the toggle was inert. When
+# it is on, an application that marks its own clipboard content sensitive -- the
+# KDE passwordManagerHint, which is what KeePass and friends set -- suppresses
+# the capture. Turning it off means "capture anyway"; the explicit incognito
+# switch and the CLIPBOARD_STATE integration hook stay honoured either way,
+# because those are the user asking directly rather than a per-app hint.
+ignore_sensitive=true
+if [[ -f "$STATE_DIR/settings.json" ]]; then
+  raw_ignore=$(jq -r 'if has("ignoreSensitive") then (.ignoreSensitive | tostring) else "" end' "$STATE_DIR/settings.json" 2>/dev/null || echo "")
+  case "${raw_ignore,,}" in
+    false|0|no|off) ignore_sensitive=false ;;
+    true|1|yes|on)  ignore_sensitive=true ;;
+  esac
+fi
+
+if [[ -f "$STATE_DIR/incognito" ]] || [[ ${CLIPBOARD_STATE:-} == "sensitive" ]]; then
+  exit 0
+fi
+
+if [[ "$ignore_sensitive" == true ]] && grep -qx 'x-kde-passwordManagerHint' <<<"$types"; then
   exit 0
 fi
 

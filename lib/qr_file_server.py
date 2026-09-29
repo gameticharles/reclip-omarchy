@@ -282,6 +282,30 @@ def send_desktop_notification(title, message, icon="document-save"):
             pass
     threading.Thread(target=_notify, daemon=True).start()
 
+def constant_time_equals(presented, expected):
+    """Constant-time comparison that tolerates any input.
+
+    secrets.compare_digest() raises TypeError when given two str values
+    containing non-ASCII characters. Token and PIN checks sit in the
+    pre-authentication path, so a request carrying e.g. "?token=café" raised
+    TypeError inside the handler, killed the request thread and dropped the
+    connection before any response could be sent -- an unauthenticated way to
+    break every request.
+
+    Comparing the UTF-8 encodings keeps the constant-time guarantee (falling
+    back to == would leak the secret through timing) and makes the result False
+    for any input that simply is not the secret. Mismatched lengths still fail
+    fast, which leaks nothing: the secret is fixed-length and the length is not
+    a secret.
+    """
+    if not isinstance(presented, str) or not isinstance(expected, str):
+        return False
+    try:
+        return secrets.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
+    except (UnicodeError, AttributeError):
+        return False
+
+
 def unique_display_name(bname, used):
     """Return a name not already in `used`, recording it.
 
@@ -429,11 +453,15 @@ class ThreadedFileShareServer(socketserver.ThreadingMixIn, HTTPServer):
                     pass
 
     def _discard_zip_cache(self):
-        """Unlink and clear the shared single-file bundle archive, if any."""
-        path = self.server.zip_cache_path
+        """Unlink and clear the shared single-file bundle archive, if any.
+
+        Callers must hold zip_cache_lock. server_close() deliberately does not,
+        since the server is already torn down at that point.
+        """
+        path = self.zip_cache_path
         if not path:
             return
-        self.server.zip_cache_path = None
+        self.zip_cache_path = None
         try:
             os.unlink(path)
         except OSError:
@@ -2637,17 +2665,17 @@ class FileShareHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed.query)
         token_q = query.get("token", [""])[0]
-        if token_q and secrets.compare_digest(token_q, self.server.token):
+        if token_q and constant_time_equals(token_q, self.server.token):
             return True
         auth_header = self.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer ") and secrets.compare_digest(auth_header[7:].strip(), self.server.token):
+        if auth_header.startswith("Bearer ") and constant_time_equals(auth_header[7:].strip(), self.server.token):
             return True
         x_token = self.headers.get("X-ReClip-Token", "").strip()
-        if x_token and secrets.compare_digest(x_token, self.server.token):
+        if x_token and constant_time_equals(x_token, self.server.token):
             return True
 
         presented = self.headers.get("X-CSRF-Token", "").strip()
-        return bool(presented) and secrets.compare_digest(presented, self.server.csrf_token())
+        return bool(presented) and constant_time_equals(presented, self.server.csrf_token())
 
     def is_authenticated(self):
         """Check if request is authorized via query token or session cookie."""
@@ -2656,7 +2684,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
 
         # 1. Query parameter ?token=...
         token_q = query.get("token", [""])[0]
-        if token_q and secrets.compare_digest(token_q, self.server.token):
+        if token_q and constant_time_equals(token_q, self.server.token):
             return True, True
 
         # 2. Cookie reclip_auth=...
@@ -2666,17 +2694,17 @@ class FileShareHandler(BaseHTTPRequestHandler):
                 part = part.strip()
                 if part.startswith("reclip_auth="):
                     val = part[len("reclip_auth="):].strip()
-                    if secrets.compare_digest(val, self.server.token):
+                    if constant_time_equals(val, self.server.token):
                         return True, False
 
         # 3. Header Authorization / X-ReClip-Token
         auth_header = self.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             bearer_tok = auth_header[7:].strip()
-            if bearer_tok and secrets.compare_digest(bearer_tok, self.server.token):
+            if bearer_tok and constant_time_equals(bearer_tok, self.server.token):
                 return True, False
         x_token = self.headers.get("X-ReClip-Token", "").strip()
-        if x_token and secrets.compare_digest(x_token, self.server.token):
+        if x_token and constant_time_equals(x_token, self.server.token):
             return True, False
 
         return False, False
@@ -2821,7 +2849,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
         time.sleep(0.5)
 
         # Constant-time comparison
-        is_valid = secrets.compare_digest(pin_attempt, self.server.pin)
+        is_valid = constant_time_equals(pin_attempt, self.server.pin)
 
         with self.server.attempt_lock:
             if is_valid:
@@ -3485,59 +3513,75 @@ class FileShareHandler(BaseHTTPRequestHandler):
     def send_zip_bundle(self, send_body=True):
         """Create or reuse single-file ZIP archive containing all shared files and folders."""
         client_ip = self.client_address[0]
-        if not self.server.zip_cache_path or not os.path.exists(self.server.zip_cache_path):
-            estimated = 0
-            for item in self.server.files_meta:
-                ipath = item["path"]
-                if item.get("is_dir"):
-                    estimated += self._estimate_tree_size(ipath)
-                else:
+        # The cache check, the build and the publish have to be atomic. Two
+        # concurrent /bundle requests could both observe an empty cache and both
+        # start building; the second one's _discard_zip_cache() then unlinked the
+        # archive the first was still writing, so the first sent a truncated (or
+        # entirely missing) zip with a 200, and the finished archive was
+        # orphaned. zip_cache_lock only covered cache_folder_zip() before.
+        #
+        # Holding it across the build is what makes the cache correct: a second
+        # request blocks, then finds the finished archive and reuses it. The lock
+        # is released before send_file() streams the bytes, since reading a
+        # completed archive needs no exclusive access.
+        with self.server.zip_cache_lock:
+            if not self.server.zip_cache_path or not os.path.exists(self.server.zip_cache_path):
+                estimated = 0
+                for item in self.server.files_meta:
+                    ipath = item["path"]
+                    if item.get("is_dir"):
+                        estimated += self._estimate_tree_size(ipath)
+                    else:
+                        try:
+                            estimated += os.path.getsize(ipath)
+                        except OSError:
+                            pass
+                if not self._temp_zip_ready(estimated):
+                    self.send_error(507, "Insufficient disk space to build archive")
+                    return
+
+                emit_event({"event": "zipping", "client": client_ip, "count": len(self.server.files_meta)})
+                # A second /bundle request overwrites zip_cache_path, and
+                # server_close() only unlinks the *latest* one, so every repeat
+                # request orphaned a full archive in the system temp directory for
+                # the life of the session. Retire the previous archive first.
+                self.server._discard_zip_cache()
+                tf = tempfile.NamedTemporaryFile(delete=False, suffix="_ReClip-Files.zip")
+                self.server.zip_cache_path = tf.name
+                tf.close()
+
+                try:
+                    with zipfile.ZipFile(self.server.zip_cache_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for item in self.server.files_meta:
+                            ipath = item["path"]
+                            if item.get("is_dir"):
+                                parent_dir = os.path.dirname(os.path.abspath(ipath))
+                                for fp, _ in iter_share_files(ipath):
+                                    rel_path = os.path.relpath(fp, parent_dir)
+                                    try:
+                                        zf.write(fp, arcname=rel_path)
+                                    except Exception:
+                                        pass
+                            else:
+                                # A shared *file* is itself a legitimate symlink target
+                                # chosen by the user, so it is resolved and bundled
+                                # directly rather than skipped.
+                                if os.path.exists(ipath):
+                                    zf.write(ipath, arcname=item["name"])
+                except Exception:
                     try:
-                        estimated += os.path.getsize(ipath)
+                        os.unlink(self.server.zip_cache_path)
                     except OSError:
                         pass
-            if not self._temp_zip_ready(estimated):
-                self.send_error(507, "Insufficient disk space to build archive")
-                return
+                    self.server.zip_cache_path = None
+                    self.send_error(500, "Failed to build archive")
+                    return
 
-            emit_event({"event": "zipping", "client": client_ip, "count": len(self.server.files_meta)})
-            # A second /bundle request overwrites zip_cache_path, and
-            # server_close() only unlinks the *latest* one, so every repeat
-            # request orphaned a full archive in the system temp directory for
-            # the life of the session. Retire the previous archive first.
-            self._discard_zip_cache()
-            tf = tempfile.NamedTemporaryFile(delete=False, suffix="_ReClip-Files.zip")
-            self.server.zip_cache_path = tf.name
-            tf.close()
+            path = self.server.zip_cache_path
 
-            try:
-                with zipfile.ZipFile(self.server.zip_cache_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for item in self.server.files_meta:
-                        ipath = item["path"]
-                        if item.get("is_dir"):
-                            parent_dir = os.path.dirname(os.path.abspath(ipath))
-                            for fp, _ in iter_share_files(ipath):
-                                rel_path = os.path.relpath(fp, parent_dir)
-                                try:
-                                    zf.write(fp, arcname=rel_path)
-                                except Exception:
-                                    pass
-                        else:
-                            # A shared *file* is itself a legitimate symlink target
-                            # chosen by the user, so it is resolved and bundled
-                            # directly rather than skipped.
-                            if os.path.exists(ipath):
-                                zf.write(ipath, arcname=item["name"])
-            except Exception:
-                try:
-                    os.unlink(self.server.zip_cache_path)
-                except OSError:
-                    pass
-                self.server.zip_cache_path = None
-                self.send_error(500, "Failed to build archive")
-                return
-
-        self.send_file(self.server.zip_cache_path, "ReClip-Files.zip", force_download=True, send_body=send_body, is_bundle=True)
+        # Outside the lock: the archive is complete and immutable, so several
+        # clients can stream it concurrently.
+        self.send_file(path, "ReClip-Files.zip", force_download=True, send_body=send_body, is_bundle=True)
 
     def _send_range_not_satisfiable(self, file_size):
         """Emit 416 with the mandatory Content-Range: bytes */<size>."""

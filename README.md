@@ -108,13 +108,10 @@ ReClip automatically synchronizes keybindings with `~/.config/hypr/bindings.lua`
 | ------------------------------- | -------------------------------------- |
 | `SUPER + SHIFT + V`           | Open / Toggle ReClip Panel             |
 | `SUPER + CTRL + SHIFT + 1..9` | Quick Paste Clipboard Slot 1 through 9 |
-| `Ctrl + C`                    | Copy selected clip to clipboard        |
-| `Ctrl + E`                    | Edit in Text Editor or Image Editor    |
-| `Ctrl + Q`                    | Open in Unified QR Studio              |
-| `Ctrl + T`                    | Open in Text Transformers              |
-| `Ctrl + D`                    | Diff against current clipboard         |
-| `Delete`                      | Delete clip from history               |
-| `Esc`                         | Close panel or active modal            |
+
+Both are configurable in Settings → Shortcuts; `sync-keybindings.sh` rewrites the
+Hyprland entries to match. Inside the panel, `1`–`9` jump to that slot while the
+search box is empty and empty.
 
 ---
 

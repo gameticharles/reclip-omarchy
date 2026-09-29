@@ -80,7 +80,7 @@ Rectangle {
 
   // System Dependencies & Health State
   property string pluginDir: rootPanel ? rootPanel.pluginDir : (Quickshell.env("HOME") + "/.config/omarchy/plugins/reclip")
-  property string pluginVersion: rootPanel ? rootPanel.pluginVersion : "1.3.0"
+  property string pluginVersion: rootPanel ? rootPanel.pluginVersion : "1.4.0"
   property string installDepsScript: pluginDir + "/install-deps.sh"
   property var systemDependencies: []
   property bool isCheckingDeps: false

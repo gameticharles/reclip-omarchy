@@ -35,7 +35,7 @@ Panel {
   property string ocrScript: pluginDir + "/ocr-capture.sh"
   property string settingsPath: stateDir + "/settings.json"
   property string manifestPath: pluginDir + "/manifest.json"
-  property string pluginVersion: "1.3.0"
+  property string pluginVersion: "1.4.0"
   property string templatesPath: stateDir + "/templates.json"
   property string automationsPath: stateDir + "/automations.json"
 
@@ -45,7 +45,12 @@ Panel {
   property string categoryFilter: "all"
   property string filterText: ""
   property int selectedIndex: 0
-  property int historyLimit: 500
+  // Live alias of settingsMaxClips. This was a separate `property int
+  // historyLimit: 500` that nothing ever assigned, so it silently diverged
+  // from the Max Clips setting the moment the user changed it: pruning used
+  // settingsMaxClips while new entries were still capped at the hardcoded 500.
+  // Deriving it removes the duplicate and the drift at once.
+  readonly property int historyLimit: settingsMaxClips
 
   // Settings & Privacy State
   property bool settingsOpen: false

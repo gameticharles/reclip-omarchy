@@ -14,6 +14,7 @@ Run:  python3 -m unittest discover -s tests -v
 """
 
 import html
+import io
 import http.client
 import os
 import re
@@ -923,6 +924,141 @@ class TestSaveDirIsReportedFromConfig(unittest.TestCase):
                       "the reverse-drop section should interpolate save_dir")
         self.assertTrue(_re.search(r"reverse_drop_section_html = f\"\"\"", src),
                         "the section must be an f-string to interpolate save_dir")
+
+
+
+class TestNonAsciiAuthDoesNotCrash(unittest.TestCase):
+    """A non-ASCII presented secret used to raise TypeError pre-authentication.
+
+    secrets.compare_digest() rejects str inputs containing non-ASCII, and the
+    token/PIN checks run before authentication, so a request such as
+    "?token=caf%C3%A9" killed the handler thread and dropped the connection
+    without a response. Unauthenticated, and enough to break the session.
+    """
+
+    def _server(self):
+        srv = qfs.ThreadedFileShareServer(
+            ("127.0.0.1", 0), qfs.FileShareHandler, [], lan_ip="127.0.0.1",
+            save_dir=tempfile.mkdtemp(prefix="reclip-auth-"),
+            token="a1b2c3d4e5f6", pin="123456",
+        )
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        return srv
+
+    def _get(self, srv, path):
+        conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=15)
+        try:
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            return resp.status, resp.read()
+        finally:
+            conn.close()
+
+    def test_non_ascii_token_returns_a_response(self):
+        srv = self._server()
+        status, body = self._get(srv, "/?token=caf%C3%A9")
+        self.assertEqual(status, 200, f"no response: {body[:200]!r}")
+        self.assertIn(b"<!DOCTYPE html>", body[:200])
+
+    def test_server_survives_and_still_serves_the_real_token(self):
+        srv = self._server()
+        self._get(srv, "/?token=caf%C3%A9")
+        self._get(srv, "/?token=%D0%BF%D1%80%D0%B8%D0%B2%D0%B5%D1%82")
+        # The valid token must still work after the hostile requests.
+        status, body = self._get(srv, "/?token=a1b2c3d4e5f6")
+        self.assertEqual(status, 200)
+        self.assertIn(b"<!DOCTYPE html>", body[:200])
+
+    def test_wrong_token_is_still_rejected(self):
+        srv = self._server()
+        good = self._get(srv, "/?token=a1b2c3d4e5f6")[1]
+        bad = self._get(srv, "/?token=deadbeef")[1]
+        # The unauthenticated PIN page is smaller than the authenticated page.
+        self.assertLess(len(bad), len(good))
+
+    def test_helper_never_raises(self):
+        for presented in ("caf\u00e9", "\u65e5" * 500, "", "x" * 5000, None, 42, b"bytes"):
+            self.assertFalse(qfs.constant_time_equals(presented, "a1b2c3d4e5f6"))
+        self.assertTrue(qfs.constant_time_equals("a1b2c3d4e5f6", "a1b2c3d4e5f6"))
+
+
+
+
+class TestBundleZipCacheRace(unittest.TestCase):
+    """Concurrent /bundle requests must not serve a truncated archive.
+
+    The cache check, the build and the publish were not mutually exclusive, so
+    two simultaneous requests both built; the second one's _discard_zip_cache()
+    unlinked the archive the first was still writing. The first then served the
+    missing file, or a partially written zip, with HTTP 200.
+    """
+
+    def _fixture(self, nfiles=6, size=40000):
+        import tempfile as tf
+        src = tf.mkdtemp(prefix="reclip-bundle-src-")
+        self.addCleanup(shutil.rmtree, src, ignore_errors=True)
+        metas = []
+        for i in range(nfiles):
+            path = os.path.join(src, f"part{i}.bin")
+            with open(path, "wb") as fh:
+                fh.write(os.urandom(size))
+            metas.append({"index": i, "name": f"part{i}.bin", "path": path,
+                          "size": size, "size_str": str(size), "is_dir": False,
+                          "category": "other"})
+        return src, metas
+
+    def test_concurrent_bundles_are_all_complete_archives(self):
+        src, metas = self._fixture()
+        harness = ServerHarness(tempfile.mkdtemp(prefix="reclip-bundle-out-"),
+                               files_meta=metas)
+        self.addCleanup(harness.stop)
+        import urllib.parse
+        results = []
+        errors = []
+        barrier = threading.Barrier(8)
+
+        def fetch():
+            try:
+                barrier.wait(timeout=30)
+                conn = harness.client()
+                try:
+                    conn.request("GET", f"/bundle?token={urllib.parse.quote(harness.token)}",
+                                 headers={"Cookie": f"reclip_auth={harness.token}"})
+                    resp = conn.getresponse()
+                    results.append((resp.status, resp.read()))
+                finally:
+                    conn.close()
+            except Exception as exc:  # noqa: BLE001
+                errors.append(repr(exc))
+
+        threads = [threading.Thread(target=fetch) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+
+        self.assertEqual(errors, [], f"requests errored: {errors}")
+        self.assertEqual(len(results), 8, f"only {len(results)}/8 bundles returned")
+
+        for status, body in results:
+            self.assertEqual(status, 200, f"bundle returned HTTP {status}")
+            # A truncated or empty archive is not a valid zip and is the exact
+            # symptom of the race.
+            self.assertTrue(zipfile.is_zipfile(io.BytesIO(body)),
+                            f"bundle was not a valid zip ({len(body)} bytes)")
+            with zipfile.ZipFile(io.BytesIO(body)) as zf:
+                self.assertIsNone(zf.testzip(), "zip contained a corrupt member")
+                names = zf.namelist()
+                self.assertEqual(len(names), len(metas),
+                                 f"expected {len(metas)} entries, got {len(names)}")
+                for name in names:
+                    self.assertEqual(len(zf.read(name)), 40000,
+                                     f"{name} was truncated in the archive")
+
 
 
 if __name__ == "__main__":

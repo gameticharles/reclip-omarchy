@@ -44,6 +44,10 @@ get_all_deps() {
   check_tool "slurp" "slurp" "slurp" "tools" "Slurp Region Selector" "Interactive screen area selection"
   check_tool "grim" "grim" "grim" "tools" "Grim Screenshotter" "Screen grabber for OCR and QR scanning"
   check_tool "libnotify" "notify-send" "libnotify" "tools" "Desktop Notifications" "Action feedback & background alerts"
+  # ImageToolbars.qml offers "Open in external editor", which shells out to
+  # tensaku-edit. The dependency was never declared, so the health check passed
+  # on installs that could not use the button.
+  check_tool "tensaku" "tensaku-edit" "tensaku" "tools" "Tensaku Image Editor" "Open a captured image in an external editor"
 }
 
 if [[ "${1:-}" == "--json" ]]; then

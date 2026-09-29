@@ -976,6 +976,35 @@ Rectangle {
         root.fileShareStatus = "idle"
         root.fileShareStatusMsg = "Server stopped"
       }
+    } else if (ev.event === "zipping") {
+      // The server is building an archive; transfers legitimately stall here,
+      // so keep the existing transfer state rather than clearing it.
+      root.fileShareStatusMsg = "Packaging " + (ev.folder ? ev.folder : "files") + " as a ZIP…"
+    } else if (ev.event === "upload_error") {
+      // Was unhandled, so a failed upload left fileShareTransferring true and
+      // the progress spinner running until the session ended.
+      root.fileShareTransferring = false
+      root.fileShareStatus = "serving"
+      root.fileShareStatusMsg = "Upload failed: " + (ev.message || "unknown error")
+      root.showFeedback("⚠ Upload failed: " + (ev.message || "unknown error"))
+    } else if (ev.event === "pin_failed") {
+      // A phone is guessing the PIN. Surface it so a locked-out device is
+      // visible instead of silently retrying in the background.
+      root.fileShareStatusMsg = "🔒 Wrong PIN from " + (ev.client || "a device")
+      root.showFeedback("🔒 Wrong PIN attempt" + (ev.attempt ? " (" + ev.attempt + ")" : "") + " from " + (ev.client || "a device"))
+    } else if (ev.event === "client_disconnected") {
+      root.fileShareTransferring = false
+      root.fileShareStatusMsg = "📱 " + (ev.client || "Device") + " disconnected"
+      root.showFeedback("📱 Device disconnected: " + (ev.client || "unknown"))
+    } else if (ev.event === "completed_exit") {
+      // Single-shot server finished a transfer and is shutting itself down.
+      // "stopped" follows immediately and performs the real teardown.
+      root.fileShareStatus = "completed"
+      root.fileShareStatusMsg = "✓ Transfer complete — server closed"
+    } else if (ev.event === "timeout") {
+      // The --timeout deadline elapsed. "stopped" follows and clears the rest.
+      root.fileShareTransferring = false
+      root.fileShareStatusMsg = "⏱ " + (ev.message || "Share timed out")
     } else if (ev.event === "error") {
       root.fileShareTransferring = false
       root.fileShareStatus = "error"

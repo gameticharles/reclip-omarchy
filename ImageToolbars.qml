@@ -74,8 +74,13 @@ ColumnLayout {
             anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
             onClicked: {
               if (root.imagePath) {
-                Quickshell.execDetached(["tensaku-edit", root.imagePath])
-                root.showFeedback("󰏫 Opened in external editor!")
+                // execDetached is fire-and-forget, so the previous code showed
+                // "Opened in external editor!" unconditionally: with tensaku-edit
+                // not installed the click always claimed success and nothing
+                // happened. Decide in the shell, where the exit status is
+                // actually available, and report whichever way it went.
+                Quickshell.execDetached(["sh", "-c", 'if command -v tensaku-edit >/dev/null 2>&1; then exec tensaku-edit "$1"; else notify-send -a "ReClip" -i dialog-error "External editor" "tensaku-edit is not installed. Install the tensaku package."; exit 127; fi', "sh", root.imagePath])
+                root.showFeedback("󰏫 Opening in external editor…")
               }
             }
           }
