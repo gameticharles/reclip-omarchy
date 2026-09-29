@@ -34,6 +34,8 @@ Panel {
   property string captureScript: pluginDir + "/capture.sh"
   property string ocrScript: pluginDir + "/ocr-capture.sh"
   property string settingsPath: stateDir + "/settings.json"
+  property string manifestPath: pluginDir + "/manifest.json"
+  property string pluginVersion: "1.2.0"
   property string templatesPath: stateDir + "/templates.json"
   property string automationsPath: stateDir + "/automations.json"
 
@@ -1431,6 +1433,20 @@ Panel {
     printErrors: false
     onLoaded: root.loadHistory(text())
     onLoadFailed: root.loadHistory("[]")
+    onFileChanged: reload()
+  }
+
+  FileView {
+    id: manifestFile
+    path: root.manifestPath
+    printErrors: false
+    // Single source of truth for the version string: manifest.json.
+    onLoaded: {
+      try {
+        var m = JSON.parse(text());
+        if (m && m.version) root.pluginVersion = m.version;
+      } catch (e) {}
+    }
     onFileChanged: reload()
   }
 

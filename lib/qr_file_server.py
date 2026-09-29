@@ -51,6 +51,19 @@ BEAM_WINDOW = 10.0
 # a real temp file, so the cache is capped and evicted LRU.
 FOLDER_ZIP_CACHE_MAX = 10
 
+# Free-space headroom required before writing a multi-hundred-MB payload.
+DISK_SPACE_MARGIN_BYTES = 256 * 1024 * 1024
+
+# A failed-PIN record older than this is pruned from the lockout table.
+FAILED_ATTEMPT_RECORD_TTL_SEC = 1800
+
+# Ceiling on a single upload's overall transfer deadline, derived from the
+# declared content length plus a floor rate. Unrelated to the lockout TTL.
+UPLOAD_DEADLINE_MAX_SEC = 1800.0
+
+# Default lifetime of a share session before the server exits.
+DEFAULT_SERVER_TIMEOUT_SEC = 1800
+
 # Suffixes for the in-flight upload markers this server creates, and the age a
 # marker must reach before the crash sweep may remove it. The markers are
 # namespaced to ReClip so the sweep can prove a file is ours before unlinking
@@ -228,22 +241,6 @@ def get_svg_icon(category, size=24):
         'other': f'''<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>'''
     }
     return icons.get(category, icons['other'])
-
-def get_text_preview(file_path, max_bytes=16384, max_lines=40):
-    """Read first few lines of a text file for in-page preview."""
-    try:
-        if os.path.isdir(file_path):
-            return None
-        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-            content = f.read(max_bytes)
-            lines = content.splitlines()
-            if len(lines) > max_lines:
-                return "\n".join(lines[:max_lines]) + "\n... (more lines truncated)"
-            elif len(content) >= max_bytes:
-                return content + "\n... (truncated)"
-            return content
-    except Exception:
-        return None
 
 _emit_lock = threading.Lock()
 
@@ -836,9 +833,6 @@ body {
   color: var(--text-muted);
   margin-bottom: 0.15rem;
 }
-.queue-summary.is-visible {
-  display: flex;
-}
 .queue-summary-title {
   font-weight: 600;
   color: var(--text-main);
@@ -1017,13 +1011,6 @@ body {
 .btn-secondary:hover {
   background: var(--card-hover);
   border-color: var(--card-border-hover);
-}
-.btn-success {
-  background: var(--success);
-  color: #ffffff;
-}
-.btn-success:hover {
-  background: var(--success-hover);
 }
 .btn-sm {
   padding: 0.35rem 0.65rem;
@@ -1447,20 +1434,6 @@ body {
   font-size: 0.85rem;
   color: var(--text-muted);
   margin-bottom: 1.5rem;
-}
-.pin-strength {
-  display: flex;
-  gap: 4px;
-  justify-content: center;
-  margin: -1rem 0 1.25rem 0;
-}
-.pin-strength-bar {
-  height: 3px;
-  flex: 1 1 0;
-  max-width: 2.5rem;
-  border-radius: 2px;
-  background: var(--card-border);
-  transition: background 0.2s ease;
 }
 .pin-inputs {
   display: flex;
@@ -2230,7 +2203,7 @@ function attemptUpload(job) {
 
   xhr.open('POST', '/upload', true);
   xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
-  xhr.setRequestHeader('X-File-Size', String(file.size));
+
   xhr.setRequestHeader('X-CSRF-Token', csrfToken());
   xhr.timeout = ABSOLUTE_TIMEOUT_MS;
 
@@ -2707,7 +2680,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
         with self.server.attempt_lock:
             # Clean expired lockout records (> 30 min old)
             expired = [ip for ip, data in self.server.failed_attempts.items()
-                       if now > data.get("locked_until", 0.0) and (now - data.get("last_attempt", 0.0) > 1800)]
+                       if now > data.get("locked_until", 0.0) and (now - data.get("last_attempt", 0.0) > FAILED_ATTEMPT_RECORD_TTL_SEC)]
             for ip in expired:
                 self.server.failed_attempts.pop(ip, None)
 
@@ -2716,8 +2689,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
                 retry_after = int(self.server.global_locked_until - now) + 1
                 resp = json.dumps({
                     "success": False,
-                    "error": f"Service temporarily locked due to excessive failed attempts. Please wait {retry_after}s.",
-                    "retry_after": retry_after
+                    "error": f"Service temporarily locked due to excessive failed attempts. Please wait {retry_after}s."
                 }).encode("utf-8")
                 self.send_response(429)
                 self.send_header("Content-Type", "application/json")
@@ -2732,8 +2704,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
                 retry_after = int(client_state["locked_until"] - now) + 1
                 resp = json.dumps({
                     "success": False,
-                    "error": f"Too many failed PIN attempts. IP locked out for {retry_after}s.",
-                    "retry_after": retry_after
+                    "error": f"Too many failed PIN attempts. IP locked out for {retry_after}s."
                 }).encode("utf-8")
                 self.send_response(429)
                 self.send_header("Content-Type", "application/json")
@@ -2829,7 +2800,6 @@ class FileShareHandler(BaseHTTPRequestHandler):
                     resp = json.dumps({
                         "success": False,
                         "error": "Too many failed PIN attempts. IP locked out for 15 minutes.",
-                        "retry_after": retry_after
                     }).encode("utf-8")
                     self.send_response(429)
                     self.send_header("Retry-After", str(retry_after))
@@ -2863,8 +2833,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
                 retry = max(1, retry_after)
                 resp = json.dumps({
                     "success": False,
-                    "error": f"Too many beams. Try again in {retry}s.",
-                    "retry_after": retry
+                    "error": f"Too many beams. Try again in {retry}s."
                 }).encode("utf-8")
                 self.send_response(429)
                 self.send_header("Content-Type", "application/json")
@@ -3000,7 +2969,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
                 try:
                     disk_stat = shutil.disk_usage(self.server.save_dir)
                     # Require space for the file plus a 256 MB safety margin for the OS
-                    min_required = content_length + (256 * 1024 * 1024)
+                    min_required = content_length + DISK_SPACE_MARGIN_BYTES
                     if disk_stat.free < min_required:
                         reject = (507, {
                             "success": False,
@@ -3085,7 +3054,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
         start_time = time.time()
         last_emit = start_time
         # Max overall transfer deadline: at least 60s, or 10KB/s plus 60s buffer, capped at 1800s
-        max_duration = min(1800.0, max(60.0, (content_length / 10240) + 60.0))
+        max_duration = min(UPLOAD_DEADLINE_MAX_SEC, max(60.0, (content_length / 10240) + 60.0))
         upload_succeeded = False
 
         try:
@@ -3375,7 +3344,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
             return False
         # ZIP_DEFLATED on already-compressed media barely shrinks, so budget the
         # full estimated size plus a 256 MB margin rather than assuming a ratio.
-        return free > estimated_bytes + (256 * 1024 * 1024)
+        return free > estimated_bytes + DISK_SPACE_MARGIN_BYTES
 
     def _safe_temp_suffix(self, name):
         """Build a bounded, path-separator-free tempfile suffix from a name."""
@@ -4028,7 +3997,7 @@ def main():
     parser.add_argument("--no-beam", action="store_true", help="Disable peer clipboard beaming")
     parser.add_argument("--max-upload-size", type=int, default=1024*1024*1024, help="Max single file upload size in bytes (default: 1GB)")
     parser.add_argument("--max-session-quota", type=int, default=5*1024*1024*1024, help="Max total session uploads in bytes (default: 5GB)")
-    parser.add_argument("--timeout", type=int, default=1800, help="Server timeout in seconds (default: 1800s)")
+    parser.add_argument("--timeout", type=int, default=DEFAULT_SERVER_TIMEOUT_SEC, help="Server timeout in seconds (default: 1800s)")
     parser.add_argument("--token", type=str, default=None, help="Security session token")
     parser.add_argument("--pin", type=str, default=None, help="6-digit quick PIN")
     parser.add_argument("--save-dir", type=str, default=None, help="Directory to save reverse drop uploads")

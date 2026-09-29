@@ -42,7 +42,7 @@
   - Number slot pasting: quickly paste items 1–9 using configurable keyboard shortcuts (`SUPER + CTRL + SHIFT + 1..9`).
 - **🛡️ Privacy & Password Manager Protection**
 
-  - Automatically suppresses clipboard capture when password managers (KeePass, 1Password, Bitwarden, Vault) are focused.
+  - Automatically suppresses clipboard capture when password managers are focused: KeePass, 1Password, Bitwarden, AuthPass, Enpass, LastPass, and any app whose class contains `vault`.
   - Custom per-app blacklist and one-click incognito mode.
   - Configurable retention limits and auto-pruning.
 - **󰚥 Built-In System Health Check**
@@ -59,6 +59,7 @@ ReClip runs on **Omarchy 4.x** (Arch Linux). Install the required tools via `pac
 sudo pacman -S --needed \
     wl-clipboard \
     jq \
+    hyprland \
     qrencode \
     zbar \
     imagemagick \
@@ -69,7 +70,6 @@ sudo pacman -S --needed \
     tesseract \
     tesseract-data-eng \
     libnotify \
-    python \
     python-pillow \
     perl \
     util-linux
@@ -119,18 +119,20 @@ ReClip automatically synchronizes keybindings with `~/.config/hypr/bindings.lua`
 
 ## 🛠️ CLI Utilities
 
-ReClip includes standalone command-line tools you can bind to custom Hyprland hotkeys:
+ReClip includes standalone command-line tools you can bind to custom Hyprland hotkeys.
+Only `reclip-paste-index` is installed onto your `PATH` (by `sync-keybindings.sh`); the
+other two live inside the plugin directory, so invoke them by full path:
 
 - **`qr-decode.sh`**: Decode QR codes from an image file or interactive screen selection (`slurp`):
 
   ```bash
-  qr-decode.sh                     # Select screen region and decode to clipboard
-  qr-decode.sh /path/to/image.png  # Decode specific image file
+  ~/.config/omarchy/plugins/reclip/qr-decode.sh                     # Select screen region and decode to clipboard
+  ~/.config/omarchy/plugins/reclip/qr-decode.sh /path/to/image.png  # Decode specific image file
   ```
 - **`ocr-capture.sh`**: Extract text from a screen region with OCR:
 
   ```bash
-  ocr-capture.sh                   # Select screen region and copy text
+  ~/.config/omarchy/plugins/reclip/ocr-capture.sh                   # Select screen region and copy text
   ```
 - **`reclip-paste-index.sh`**: Paste a numbered slot into the focused application:
 

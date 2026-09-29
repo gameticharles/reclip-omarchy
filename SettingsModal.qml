@@ -80,6 +80,7 @@ Rectangle {
 
   // System Dependencies & Health State
   property string pluginDir: rootPanel ? rootPanel.pluginDir : (Quickshell.env("HOME") + "/.config/omarchy/plugins/reclip")
+  property string pluginVersion: rootPanel ? rootPanel.pluginVersion : "1.2.0"
   property string installDepsScript: pluginDir + "/install-deps.sh"
   property var systemDependencies: []
   property bool isCheckingDeps: false
@@ -4020,7 +4021,7 @@ Rectangle {
                       }
                       Column {
                         spacing: 1
-                        Text { text: "ReClip Omarchy Edition • v1.1"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10.5); font.bold: true }
+                        Text { text: "ReClip Omarchy Edition • v" + root.pluginVersion; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10.5); font.bold: true }
                         Text { text: "High-performance Wayland native clipboard management suite"; color: Util.alpha(root.fg, 0.5); font.family: root.fontFamily; font.pixelSize: Style.space(8) }
                       }
                     }

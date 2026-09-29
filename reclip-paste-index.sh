@@ -1,8 +1,11 @@
 #!/bin/bash
 # Usage: reclip-paste-index <1-9>
+set -euo pipefail
 
 INDEX=${1:-1}
-(( INDEX >= 1 && INDEX <= 9 )) || exit 1
+# Reject anything non-numeric before arithmetic: "08" and "1e1" otherwise emit
+# a raw bash error into the Hyprland log.
+[[ "$INDEX" =~ ^[1-9]$ ]] || exit 1
 ARRAY_INDEX=$(( INDEX - 1 ))
 
 HISTORY_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/reclip/clipboard-history.json"

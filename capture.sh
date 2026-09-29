@@ -65,7 +65,9 @@ emit_image() {
   if [[ -f "$STATE_DIR/settings.json" ]]; then
     local conf_limit
     conf_limit=$(jq -r '.imagePaletteLimit // empty' "$STATE_DIR/settings.json" 2>/dev/null || true)
-    if [[ -n "$conf_limit" && "$conf_limit" != "null" && "$conf_limit" =~ ^[0-9]+$ ]]; then
+    # "// empty" already maps a JSON null to empty output, so the literal
+    # string "null" can never reach this test.
+    if [[ -n "$conf_limit" && "$conf_limit" =~ ^[0-9]+$ ]]; then
       limit="$conf_limit"
     fi
   fi
