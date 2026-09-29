@@ -35,7 +35,7 @@ Panel {
   property string ocrScript: pluginDir + "/ocr-capture.sh"
   property string settingsPath: stateDir + "/settings.json"
   property string manifestPath: pluginDir + "/manifest.json"
-  property string pluginVersion: "1.4.0"
+  property string pluginVersion: "1.5.0"
   property string templatesPath: stateDir + "/templates.json"
   property string automationsPath: stateDir + "/automations.json"
 
@@ -66,6 +66,29 @@ Panel {
   property bool settingsClipActionsOnHover: true
   property bool settingsQrAllowUpload: true
   property bool settingsQrAllowBeam: true
+  // Wi-Fi file-share server tunables. These map one-to-one onto the flags of
+  // lib/qr_file_server.py; see lib/FileShareArgs.js for the argv. Defaults are
+  // undefined, not a value, so a setting that has never been touched is not
+  // passed at all and the server keeps its compiled-in default. That is why
+  // these are not initialised here: there is no second copy of the server's
+  // defaults in the QML to drift.
+  property var settingsQrSaveDir: ""
+  property var settingsQrIp: ""
+  property var settingsQrPorts: ""
+  property var settingsQrTimeout: undefined
+  property var settingsQrUploadDeadlineMax: undefined
+  property var settingsQrMaxUploadSizeMB: undefined
+  property var settingsQrMaxSessionQuotaMB: undefined
+  property var settingsQrDiskSpaceMarginMB: undefined
+  property var settingsQrFolderZipCacheMax: undefined
+  property var settingsQrUploadNameMaxBytes: undefined
+  property var settingsQrBeamMaxPerWindow: undefined
+  property var settingsQrBeamWindow: undefined
+  property var settingsQrPinMaxAttempts: undefined
+  property var settingsQrPinLockout: undefined
+  property var settingsQrPinGlobalMaxAttempts: undefined
+  property var settingsQrPinGlobalLockout: undefined
+  property var settingsQrPinRecordTtl: undefined
   property string paletteScript: pluginDir + "/extract-palette.sh"
   property var imagePalettes: ({})
   property var paletteQueue: []
@@ -946,6 +969,44 @@ Panel {
   }
 
   // --- Settings & Retention Helpers ---
+  // A settings value is only usable as a number if it is a finite number or a
+  // string that parses to one. Everything else -- null, "", "abc", NaN from a
+  // hand-edited file -- returns undefined, which the arg builder then omits
+  // rather than sending to the server.
+  function loadNum(v) {
+    if (typeof v === "number") return isFinite(v) ? v : undefined
+    if (typeof v === "string" && v.trim() !== "") {
+      var n = Number(v)
+      return isFinite(n) ? n : undefined
+    }
+    return undefined
+  }
+
+  // Bundle for QRCodeModal. Undefined fields are intentionally still present
+  // as keys: FileShareArgs treats undefined as "not passed", which is what
+  // keeps an untouched setting on the server's own default.
+  function qrShareOpts() {
+    return {
+      saveDir: root.settingsQrSaveDir || undefined,
+      ip: root.settingsQrIp || undefined,
+      ports: root.settingsQrPorts || undefined,
+      timeout: root.settingsQrTimeout,
+      uploadDeadlineMax: root.settingsQrUploadDeadlineMax,
+      maxUploadSizeMB: root.settingsQrMaxUploadSizeMB,
+      maxSessionQuotaMB: root.settingsQrMaxSessionQuotaMB,
+      diskSpaceMarginMB: root.settingsQrDiskSpaceMarginMB,
+      folderZipCacheMax: root.settingsQrFolderZipCacheMax,
+      uploadNameMaxBytes: root.settingsQrUploadNameMaxBytes,
+      beamMaxPerWindow: root.settingsQrBeamMaxPerWindow,
+      beamWindow: root.settingsQrBeamWindow,
+      pinMaxAttempts: root.settingsQrPinMaxAttempts,
+      pinLockout: root.settingsQrPinLockout,
+      pinGlobalMaxAttempts: root.settingsQrPinGlobalMaxAttempts,
+      pinGlobalLockout: root.settingsQrPinGlobalLockout,
+      pinRecordTtl: root.settingsQrPinRecordTtl
+    }
+  }
+
   function loadSettings(raw) {
     try {
       var s = JSON.parse(raw)
@@ -961,6 +1022,28 @@ Panel {
       if (s.revisionStacking !== undefined) root.settingsRevisionStacking = Boolean(s.revisionStacking)
       if (s.qrAllowUpload !== undefined) root.settingsQrAllowUpload = Boolean(s.qrAllowUpload)
       if (s.qrAllowBeam !== undefined) root.settingsQrAllowBeam = Boolean(s.qrAllowBeam)
+      // Numeric tunables keep "unset" distinct from a real 0. loadNum returns
+      // undefined for anything that is not a finite number, so a corrupted or
+      // hand-edited settings.json falls back to the server default instead of
+      // coercing null/"" to 0 (which for e.g. folder_zip_cache_max would mean
+      // "never cache" and for beam limits would mean "never allow").
+      if (s.qrSaveDir !== undefined) root.settingsQrSaveDir = String(s.qrSaveDir)
+      if (s.qrIp !== undefined) root.settingsQrIp = String(s.qrIp)
+      if (s.qrPorts !== undefined) root.settingsQrPorts = String(s.qrPorts)
+      root.settingsQrTimeout = root.loadNum(s.qrTimeout)
+      root.settingsQrUploadDeadlineMax = root.loadNum(s.qrUploadDeadlineMax)
+      root.settingsQrMaxUploadSizeMB = root.loadNum(s.qrMaxUploadSizeMB)
+      root.settingsQrMaxSessionQuotaMB = root.loadNum(s.qrMaxSessionQuotaMB)
+      root.settingsQrDiskSpaceMarginMB = root.loadNum(s.qrDiskSpaceMarginMB)
+      root.settingsQrFolderZipCacheMax = root.loadNum(s.qrFolderZipCacheMax)
+      root.settingsQrUploadNameMaxBytes = root.loadNum(s.qrUploadNameMaxBytes)
+      root.settingsQrBeamMaxPerWindow = root.loadNum(s.qrBeamMaxPerWindow)
+      root.settingsQrBeamWindow = root.loadNum(s.qrBeamWindow)
+      root.settingsQrPinMaxAttempts = root.loadNum(s.qrPinMaxAttempts)
+      root.settingsQrPinLockout = root.loadNum(s.qrPinLockout)
+      root.settingsQrPinGlobalMaxAttempts = root.loadNum(s.qrPinGlobalMaxAttempts)
+      root.settingsQrPinGlobalLockout = root.loadNum(s.qrPinGlobalLockout)
+      root.settingsQrPinRecordTtl = root.loadNum(s.qrPinRecordTtl)
       if (Array.isArray(s.appBlacklist)) root.settingsAppBlacklist = s.appBlacklist
     } catch(e) {}
   }
@@ -979,6 +1062,23 @@ Panel {
       revisionStacking: root.settingsRevisionStacking,
       qrAllowUpload: root.settingsQrAllowUpload,
       qrAllowBeam: root.settingsQrAllowBeam,
+      qrSaveDir: root.settingsQrSaveDir,
+      qrIp: root.settingsQrIp,
+      qrPorts: root.settingsQrPorts,
+      qrTimeout: root.settingsQrTimeout,
+      qrUploadDeadlineMax: root.settingsQrUploadDeadlineMax,
+      qrMaxUploadSizeMB: root.settingsQrMaxUploadSizeMB,
+      qrMaxSessionQuotaMB: root.settingsQrMaxSessionQuotaMB,
+      qrDiskSpaceMarginMB: root.settingsQrDiskSpaceMarginMB,
+      qrFolderZipCacheMax: root.settingsQrFolderZipCacheMax,
+      qrUploadNameMaxBytes: root.settingsQrUploadNameMaxBytes,
+      qrBeamMaxPerWindow: root.settingsQrBeamMaxPerWindow,
+      qrBeamWindow: root.settingsQrBeamWindow,
+      qrPinMaxAttempts: root.settingsQrPinMaxAttempts,
+      qrPinLockout: root.settingsQrPinLockout,
+      qrPinGlobalMaxAttempts: root.settingsQrPinGlobalMaxAttempts,
+      qrPinGlobalLockout: root.settingsQrPinGlobalLockout,
+      qrPinRecordTtl: root.settingsQrPinRecordTtl,
       appBlacklist: root.settingsAppBlacklist
     }
     settingsFile.setText(JSON.stringify(obj, null, 2) + "\n")
@@ -7282,6 +7382,7 @@ Panel {
       id: qrCodeModal
       fileShareAllowUpload: root.settingsQrAllowUpload
       fileShareAllowBeam: root.settingsQrAllowBeam
+      fileShareOpts: root.qrShareOpts()
       onFileShareAllowUploadChanged: {
         root.settingsQrAllowUpload = qrCodeModal.fileShareAllowUpload
         root.saveSettings()

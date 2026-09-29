@@ -80,7 +80,7 @@ Rectangle {
 
   // System Dependencies & Health State
   property string pluginDir: rootPanel ? rootPanel.pluginDir : (Quickshell.env("HOME") + "/.config/omarchy/plugins/reclip")
-  property string pluginVersion: rootPanel ? rootPanel.pluginVersion : "1.4.0"
+  property string pluginVersion: rootPanel ? rootPanel.pluginVersion : "1.5.0"
   property string installDepsScript: pluginDir + "/install-deps.sh"
   property var systemDependencies: []
   property bool isCheckingDeps: false
@@ -152,6 +152,53 @@ Rectangle {
   }
 
   // Delegated & Helper Functions
+
+  // Every Wi-Fi share override currently set. Drives the section badge and the
+  // reset button label so the count can never disagree with what reset clears.
+  readonly property int shareTunablesSet: {
+    if (!rootPanel) return 0
+    var keys = ["settingsQrSaveDir", "settingsQrIp", "settingsQrPorts",
+                "settingsQrTimeout", "settingsQrUploadDeadlineMax",
+                "settingsQrMaxUploadSizeMB", "settingsQrMaxSessionQuotaMB",
+                "settingsQrDiskSpaceMarginMB", "settingsQrFolderZipCacheMax",
+                "settingsQrUploadNameMaxBytes", "settingsQrBeamMaxPerWindow",
+                "settingsQrBeamWindow", "settingsQrPinMaxAttempts",
+                "settingsQrPinLockout", "settingsQrPinGlobalMaxAttempts",
+                "settingsQrPinGlobalLockout", "settingsQrPinRecordTtl"]
+    var n = 0
+    for (var i = 0; i < keys.length; i++) {
+      var v = rootPanel[keys[i]]
+      if (v !== undefined && v !== null && v !== "") n++
+    }
+    return n
+  }
+
+  // Clears every override, returning each field to "unset" rather than to a
+  // copied-in default. Unset is the point: an unset field is omitted from the
+  // argv, so the server applies its own constant.
+  function resetQrShareTunables() {
+    if (!rootPanel) return
+    rootPanel.settingsQrSaveDir = ""
+    rootPanel.settingsQrIp = ""
+    rootPanel.settingsQrPorts = ""
+    rootPanel.settingsQrTimeout = undefined
+    rootPanel.settingsQrUploadDeadlineMax = undefined
+    rootPanel.settingsQrMaxUploadSizeMB = undefined
+    rootPanel.settingsQrMaxSessionQuotaMB = undefined
+    rootPanel.settingsQrDiskSpaceMarginMB = undefined
+    rootPanel.settingsQrFolderZipCacheMax = undefined
+    rootPanel.settingsQrUploadNameMaxBytes = undefined
+    rootPanel.settingsQrBeamMaxPerWindow = undefined
+    rootPanel.settingsQrBeamWindow = undefined
+    rootPanel.settingsQrPinMaxAttempts = undefined
+    rootPanel.settingsQrPinLockout = undefined
+    rootPanel.settingsQrPinGlobalMaxAttempts = undefined
+    rootPanel.settingsQrPinGlobalLockout = undefined
+    rootPanel.settingsQrPinRecordTtl = undefined
+    rootPanel.saveSettings()
+    showFeedback("✓ Share server overrides cleared")
+  }
+
   function saveSettings() {
     if (rootPanel) {
       rootPanel.settingsMaxClips = root.settingsMaxClips
@@ -341,7 +388,8 @@ Rectangle {
                 { id: 3, label: "Templates", icon: "📑" },
                 { id: 4, label: "Shortcuts", icon: "⌨️" },
                 { id: 5, label: "Backup", icon: "💾" },
-                { id: 6, label: "System", icon: "󰚥" }
+                { id: 6, label: "System", icon: "󰚥" },
+                { id: 7, label: "Sharing", icon: "󰤨" }
               ]
 
               Rectangle {
@@ -4311,6 +4359,490 @@ Rectangle {
                   }
                 }
               }
+
+              // SECTION 8: WI-FI SHARING SERVER (ACTIVE SECTION 7)
+              Column {
+                id: secShareCol
+                visible: root.settingsActiveSection === 7
+                width: parent.width
+                height: visible ? implicitHeight : 0
+                spacing: Style.space(12)
+
+                // Top Overview Banner
+                Rectangle {
+                  width: parent.width
+                  height: Style.space(42)
+                  radius: Style.space(8)
+                  color: Util.alpha(root.fg, 0.035)
+                  border.width: 1
+                  border.color: Util.alpha(root.fg, 0.08)
+
+                  Row {
+                    anchors.fill: parent
+                    anchors.leftMargin: Style.space(12)
+                    anchors.rightMargin: Style.space(12)
+                    spacing: Style.space(10)
+
+                    Rectangle {
+                      width: Style.space(26); height: Style.space(26); radius: Style.space(6)
+                      color: Util.alpha(Color.accent, 0.15)
+                      anchors.verticalCenter: parent.verticalCenter
+                      Text { text: "󰤨"; font.pixelSize: Style.space(11); anchors.centerIn: parent }
+                    }
+
+                    Column {
+                      anchors.verticalCenter: parent.verticalCenter
+                      spacing: 1
+                      width: parent.width - Style.space(140)
+
+                      Text {
+                        text: "Wi-Fi File Share Server"
+                        color: root.fg
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.space(10)
+                        font.bold: true
+                      }
+                      Text {
+                        text: "Tunables for the local micro-server started by the QR Studio"
+                        color: Util.alpha(root.fg, 0.5)
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.space(8)
+                        elide: Text.ElideRight
+                        width: parent.width
+                      }
+                    }
+
+                    Rectangle {
+                      height: Style.space(22)
+                      width: shareStatTxt.implicitWidth + Style.space(12)
+                      radius: Style.space(11)
+                      color: Util.alpha(Color.accent, 0.12)
+                      border.width: 1
+                      border.color: Util.alpha(Color.accent, 0.3)
+                      anchors.verticalCenter: parent.verticalCenter
+
+                      Text {
+                        id: shareStatTxt
+                        text: root.shareTunablesSet + " override" + (root.shareTunablesSet === 1 ? "" : "s")
+                        color: Color.accent
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.space(8)
+                        font.bold: true
+                        anchors.centerIn: parent
+                      }
+                    }
+                  }
+                }
+
+                // CARD 1: PORT & DISCOVERY
+                Rectangle {
+                  width: parent.width
+                  height: sharePortsCol.implicitHeight + Style.space(24)
+                  radius: Style.space(8)
+                  color: Util.alpha(root.fg, 0.03)
+                  border.width: 1
+                  border.color: Util.alpha(root.fg, 0.08)
+
+                  Column {
+                    id: sharePortsCol
+                    anchors.fill: parent
+                    anchors.margins: Style.space(12)
+                    spacing: Style.space(10)
+
+                    Row {
+                      spacing: Style.space(8)
+                      Rectangle {
+                        width: Style.space(28); height: Style.space(28); radius: Style.space(6)
+                        color: Util.alpha(Color.accent, 0.12)
+                        Text { text: "󰓩"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+                      }
+                      Column {
+                        spacing: 1
+                        width: parent.width - Style.space(40)
+                        Text { text: "Port & Discovery"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10.5); font.bold: true }
+                        Text {
+                          text: "Ports are tried in order; 0 asks the OS for any free port"
+                          color: Util.alpha(root.fg, 0.5); font.family: root.fontFamily; font.pixelSize: Style.space(8)
+                          elide: Text.ElideRight; width: parent.width
+                        }
+                      }
+                    }
+
+                    ShareField {
+                      label: "Port preference list"
+                      placeholder: "53317,53318,8080,8000,8888,0"
+                      value: rootPanel.settingsQrPorts
+                      defaultText: "53317,53318,8080,8000,8888,0"
+                      note: "Leave empty to use the built-in list."
+                      onCommit: function(v) { rootPanel.settingsQrPorts = v; root.saveSettings() }
+                    }
+
+                    ShareField {
+                      label: "Advertised IP override"
+                      placeholder: "Leave empty to auto-detect"
+                      value: rootPanel.settingsQrIp
+                      defaultText: ""
+                      note: "Blank detects the LAN address. Set it when auto-detection picks the wrong interface."
+                      onCommit: function(v) { rootPanel.settingsQrIp = v; root.saveSettings() }
+                    }
+
+                    ShareField {
+                      label: "Upload drop directory"
+                      placeholder: "~/Downloads/ReClip-Drop"
+                      value: rootPanel.settingsQrSaveDir
+                      defaultText: ""
+                      note: "Where incoming files are written. Blank uses the ReClip-Drop default."
+                      onCommit: function(v) { rootPanel.settingsQrSaveDir = v; root.saveSettings() }
+                    }
+                  }
+                }
+
+                // CARD 2: SESSION LIFETIME
+                Rectangle {
+                  width: parent.width
+                  height: shareLifeCol.implicitHeight + Style.space(24)
+                  radius: Style.space(8)
+                  color: Util.alpha(root.fg, 0.03)
+                  border.width: 1
+                  border.color: Util.alpha(root.fg, 0.08)
+
+                  Column {
+                    id: shareLifeCol
+                    anchors.fill: parent
+                    anchors.margins: Style.space(12)
+                    spacing: Style.space(10)
+
+                    Row {
+                      spacing: Style.space(8)
+                      Rectangle {
+                        width: Style.space(28); height: Style.space(28); radius: Style.space(6)
+                        color: Util.alpha(Color.accent, 0.12)
+                        Text { text: "󰅐"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+                      }
+                      Column {
+                        spacing: 1
+                        width: parent.width - Style.space(40)
+                        Text { text: "Session Lifetime"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10.5); font.bold: true }
+                        Text {
+                          text: "How long a share stays up, and how long one upload may take"
+                          color: Util.alpha(root.fg, 0.5); font.family: root.fontFamily; font.pixelSize: Style.space(8)
+                          elide: Text.ElideRight; width: parent.width
+                        }
+                      }
+                    }
+
+                    ShareNumberField {
+                      label: "Session timeout"
+                      suffix: "seconds"
+                      value: rootPanel.settingsQrTimeout
+                      defaultValue: 1800
+                      min: 60
+                      onCommit: function(v) { rootPanel.settingsQrTimeout = v; root.saveSettings() }
+                    }
+
+                    ShareNumberField {
+                      label: "Max upload transfer deadline"
+                      suffix: "seconds"
+                      value: rootPanel.settingsQrUploadDeadlineMax
+                      defaultValue: 1800
+                      min: 60
+                      note: "Ceiling for one transfer. The real deadline also scales with file size."
+                      onCommit: function(v) { rootPanel.settingsQrUploadDeadlineMax = v; root.saveSettings() }
+                    }
+                  }
+                }
+
+                // CARD 3: UPLOAD LIMITS
+                Rectangle {
+                  width: parent.width
+                  height: shareLimitsCol.implicitHeight + Style.space(24)
+                  radius: Style.space(8)
+                  color: Util.alpha(root.fg, 0.03)
+                  border.width: 1
+                  border.color: Util.alpha(root.fg, 0.08)
+
+                  Column {
+                    id: shareLimitsCol
+                    anchors.fill: parent
+                    anchors.margins: Style.space(12)
+                    spacing: Style.space(10)
+
+                    Row {
+                      spacing: Style.space(8)
+                      Rectangle {
+                        width: Style.space(28); height: Style.space(28); radius: Style.space(6)
+                        color: Util.alpha(Color.accent, 0.12)
+                        Text { text: "󰛀"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+                      }
+                      Column {
+                        spacing: 1
+                        width: parent.width - Style.space(40)
+                        Text { text: "Upload Limits"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10.5); font.bold: true }
+                        Text {
+                          text: "Size caps, free-space headroom and cached folder archives"
+                          color: Util.alpha(root.fg, 0.5); font.family: root.fontFamily; font.pixelSize: Style.space(8)
+                          elide: Text.ElideRight; width: parent.width
+                        }
+                      }
+                    }
+
+                    ShareNumberField {
+                      label: "Max single upload"
+                      suffix: "MB"
+                      value: rootPanel.settingsQrMaxUploadSizeMB
+                      defaultValue: 1024
+                      min: 1
+                      onCommit: function(v) { rootPanel.settingsQrMaxUploadSizeMB = v; root.saveSettings() }
+                    }
+
+                    ShareNumberField {
+                      label: "Max total per session"
+                      suffix: "MB"
+                      value: rootPanel.settingsQrMaxSessionQuotaMB
+                      defaultValue: 5120
+                      min: 1
+                      onCommit: function(v) { rootPanel.settingsQrMaxSessionQuotaMB = v; root.saveSettings() }
+                    }
+
+                    ShareNumberField {
+                      label: "Free-space headroom required"
+                      suffix: "MB"
+                      value: rootPanel.settingsQrDiskSpaceMarginMB
+                      defaultValue: 256
+                      min: 0
+                      note: "A transfer is refused unless this much space stays free."
+                      onCommit: function(v) { rootPanel.settingsQrDiskSpaceMarginMB = v; root.saveSettings() }
+                    }
+
+                    ShareNumberField {
+                      label: "Folder ZIPs cached on disk"
+                      suffix: "entries"
+                      value: rootPanel.settingsQrFolderZipCacheMax
+                      defaultValue: 10
+                      min: 0
+                      note: "0 disables caching and rebuilds a folder archive on every request."
+                      onCommit: function(v) { rootPanel.settingsQrFolderZipCacheMax = v; root.saveSettings() }
+                    }
+
+                    ShareNumberField {
+                      label: "Upload filename byte cap"
+                      suffix: "bytes"
+                      value: rootPanel.settingsQrUploadNameMaxBytes
+                      defaultValue: 180
+                      min: 64
+                      max: 200
+                      note: "Clamped to 64-200. ext4 allows 255 per name and the rest is reserved for upload markers."
+                      onCommit: function(v) { rootPanel.settingsQrUploadNameMaxBytes = v; root.saveSettings() }
+                    }
+                  }
+                }
+
+                // CARD 4: PIN SECURITY
+                Rectangle {
+                  width: parent.width
+                  height: sharePinCol.implicitHeight + Style.space(24)
+                  radius: Style.space(8)
+                  color: Util.alpha(root.fg, 0.03)
+                  border.width: 1
+                  border.color: Util.alpha(root.fg, 0.08)
+
+                  Column {
+                    id: sharePinCol
+                    anchors.fill: parent
+                    anchors.margins: Style.space(12)
+                    spacing: Style.space(10)
+
+                    Row {
+                      spacing: Style.space(8)
+                      Rectangle {
+                        width: Style.space(28); height: Style.space(28); radius: Style.space(6)
+                        color: Util.alpha(Color.accent, 0.12)
+                        Text { text: "󰌑"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+                      }
+                      Column {
+                        spacing: 1
+                        width: parent.width - Style.space(40)
+                        Text { text: "PIN Security"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10.5); font.bold: true }
+                        Text {
+                          text: "Brute-force protection for the six-digit session PIN"
+                          color: Util.alpha(root.fg, 0.5); font.family: root.fontFamily; font.pixelSize: Style.space(8)
+                          elide: Text.ElideRight; width: parent.width
+                        }
+                      }
+                    }
+
+                    ShareNumberField {
+                      label: "Failed attempts before lockout"
+                      suffix: "attempts"
+                      value: rootPanel.settingsQrPinMaxAttempts
+                      defaultValue: 5
+                      min: 1
+                      max: 100
+                      onCommit: function(v) { rootPanel.settingsQrPinMaxAttempts = v; root.saveSettings() }
+                    }
+
+                    ShareNumberField {
+                      label: "Lockout duration"
+                      suffix: "seconds"
+                      value: rootPanel.settingsQrPinLockout
+                      defaultValue: 900
+                      min: 1
+                      onCommit: function(v) { rootPanel.settingsQrPinLockout = v; root.saveSettings() }
+                    }
+
+                    ShareNumberField {
+                      label: "Global attempts before lockout"
+                      suffix: "attempts"
+                      value: rootPanel.settingsQrPinGlobalMaxAttempts
+                      defaultValue: 20
+                      min: 1
+                      max: 10000
+                      note: "Counted across every client, to bound a distributed PIN guess."
+                      onCommit: function(v) { rootPanel.settingsQrPinGlobalMaxAttempts = v; root.saveSettings() }
+                    }
+
+                    ShareNumberField {
+                      label: "Global lockout duration"
+                      suffix: "seconds"
+                      value: rootPanel.settingsQrPinGlobalLockout
+                      defaultValue: 900
+                      min: 1
+                      onCommit: function(v) { rootPanel.settingsQrPinGlobalLockout = v; root.saveSettings() }
+                    }
+
+                    ShareNumberField {
+                      label: "Failed-attempt record lifetime"
+                      suffix: "seconds"
+                      value: rootPanel.settingsQrPinRecordTtl
+                      defaultValue: 1800
+                      min: 300
+                      note: "Raised automatically to the lockout length if set below it, so a lockout is never cut short."
+                      onCommit: function(v) { rootPanel.settingsQrPinRecordTtl = v; root.saveSettings() }
+                    }
+                  }
+                }
+
+                // CARD 5: CLIPBOARD BEAM
+                Rectangle {
+                  width: parent.width
+                  height: shareBeamCol.implicitHeight + Style.space(24)
+                  radius: Style.space(8)
+                  color: Util.alpha(root.fg, 0.03)
+                  border.width: 1
+                  border.color: Util.alpha(root.fg, 0.08)
+
+                  Column {
+                    id: shareBeamCol
+                    anchors.fill: parent
+                    anchors.margins: Style.space(12)
+                    spacing: Style.space(10)
+
+                    Row {
+                      spacing: Style.space(8)
+                      Rectangle {
+                        width: Style.space(28); height: Style.space(28); radius: Style.space(6)
+                        color: Util.alpha(Color.accent, 0.12)
+                        Text { text: "⚡"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+                      }
+                      Column {
+                        spacing: 1
+                        width: parent.width - Style.space(40)
+                        Text { text: "Clipboard Beam"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10.5); font.bold: true }
+                        Text {
+                          text: "Throttles how often a peer may rewrite this machine's clipboard"
+                          color: Util.alpha(root.fg, 0.5); font.family: root.fontFamily; font.pixelSize: Style.space(8)
+                          elide: Text.ElideRight; width: parent.width
+                        }
+                      }
+                    }
+
+                    ShareNumberField {
+                      label: "Beams allowed per window"
+                      suffix: "per window"
+                      value: rootPanel.settingsQrBeamMaxPerWindow
+                      defaultValue: 5
+                      min: 1
+                      max: 1000
+                      onCommit: function(v) { rootPanel.settingsQrBeamMaxPerWindow = v; root.saveSettings() }
+                    }
+
+                    ShareNumberField {
+                      label: "Beam window"
+                      suffix: "seconds"
+                      value: rootPanel.settingsQrBeamWindow
+                      defaultValue: 10
+                      min: 1
+                      note: "The rolling window those beams are counted over."
+                      onCommit: function(v) { rootPanel.settingsQrBeamWindow = v; root.saveSettings() }
+                    }
+                  }
+                }
+
+                // CARD 6: RESET
+                Rectangle {
+                  width: parent.width
+                  height: Style.space(52)
+                  radius: Style.space(8)
+                  color: Util.alpha(root.fg, 0.03)
+                  border.width: 1
+                  border.color: Util.alpha(root.fg, 0.08)
+
+                  Row {
+                    anchors.fill: parent
+                    anchors.leftMargin: Style.space(12)
+                    anchors.rightMargin: Style.space(12)
+                    spacing: Style.space(10)
+
+                    Rectangle {
+                      width: Style.space(28); height: Style.space(28); radius: Style.space(6)
+                      color: Util.alpha(Color.accent, 0.12)
+                      anchors.verticalCenter: parent.verticalCenter
+                      Text { text: "↺"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption; anchors.centerIn: parent }
+                    }
+
+                    Column {
+                      anchors.verticalCenter: parent.verticalCenter
+                      spacing: 1
+                      width: parent.width - Style.space(150)
+                      Text { text: "Reset to server defaults"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(10); font.bold: true }
+                      Text {
+                        text: "Clears every override above. Untouched settings are never sent, so this is the same as the stock behaviour."
+                        color: Util.alpha(root.fg, 0.5); font.family: root.fontFamily; font.pixelSize: Style.space(8)
+                        elide: Text.ElideRight; width: parent.width
+                      }
+                    }
+
+                    Rectangle {
+                      id: resetShareBtn
+                      height: Style.space(28)
+                      width: resetShareTxt.implicitWidth + Style.space(20)
+                      radius: Style.space(6)
+                      color: resetShareMouse.containsMouse ? Util.alpha(Color.accent, 0.18) : Util.alpha(Color.accent, 0.1)
+                      border.width: 1
+                      border.color: Util.alpha(Color.accent, 0.35)
+                      anchors.verticalCenter: parent.verticalCenter
+
+                      Text {
+                        id: resetShareTxt
+                        text: "Reset " + root.shareTunablesSet + " override" + (root.shareTunablesSet === 1 ? "" : "s")
+                        color: Color.accent
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.space(9)
+                        font.bold: true
+                        anchors.centerIn: parent
+                      }
+
+                      MouseArea {
+                        id: resetShareMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.resetQrShareTunables()
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
       // -------------------------------------------------------------
@@ -4414,6 +4946,29 @@ Rectangle {
                 }
               }
 
+              // Quick action if in the Wi-Fi Sharing section
+              Rectangle {
+                visible: root.settingsActiveSection === 7 && root.shareTunablesSet > 0
+                height: Style.space(24)
+                width: resetFooterTxt.implicitWidth + Style.space(12)
+                radius: Style.space(5)
+                color: Util.alpha(Color.accent, 0.15)
+                border.width: 1
+                border.color: Color.accent
+
+                Row {
+                  id: resetFooterTxt
+                  anchors.centerIn: parent
+                  spacing: Style.space(4)
+                  Text { text: "↺"; color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
+                  Text { text: "Reset " + root.shareTunablesSet + " override" + (root.shareTunablesSet === 1 ? "" : "s"); color: Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                }
+                MouseArea {
+                  anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.resetQrShareTunables()
+                }
+              }
+
               // Close / Done Button
               Rectangle {
                 height: Style.space(24)
@@ -4472,6 +5027,7 @@ Rectangle {
                     if (root.settingsActiveSection === 4) return "Shortcut Bindings • " + root.settingsToggleShortcut
                     if (root.settingsActiveSection === 5) return "Database & Backup"
                     if (root.settingsActiveSection === 6) return "System Health • " + root.installedDepsCount + "/" + root.totalDepsCount + " dependencies active" + (root.missingPackagesList.length > 0 ? " (" + root.missingPackagesList.length + " missing)" : " (All OK)")
+                    if (root.settingsActiveSection === 7) return root.shareTunablesSet === 0 ? "Share Server • Stock defaults" : "Share Server • " + root.shareTunablesSet + " override" + (root.shareTunablesSet === 1 ? "" : "s")
                     return ""
                   }
                   color: Util.alpha(root.fg, 0.55)

@@ -5,6 +5,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "lib/FileShareArgs.js" as FileShareArgs
 
 Rectangle {
   id: root
@@ -186,6 +187,11 @@ Rectangle {
   property bool fileShareSingleShot: false
   property bool fileShareAllowUpload: true
   property bool fileShareAllowBeam: true
+  // Server tunables. These arrive from settings.json via Panel.qml; the argv
+  // is built by lib/FileShareArgs.js so tests can assert on it. Each is
+  // undefined by default, which means "not passed" and lets the server use its
+  // own compiled-in default.
+  property var fileShareOpts: ({})
   property string fileShareStatus: "idle" // "idle", "starting", "serving", "downloading", "completed", "error"
   property string fileShareStatusMsg: ""
   property string fileShareClientIp: ""
@@ -837,19 +843,28 @@ Rectangle {
     root.fileShareStatusMsg = "Starting local Wi-Fi micro-server for " + paths.length + " file" + (paths.length > 1 ? "s" : "") + "..."
     root.payloadType = "file"
 
-    var args = ["python3", root.fileShareScript]
-    if (!root.fileShareSingleShot) {
-      args.push("--no-single-shot")
-    }
-    if (!root.fileShareAllowUpload) {
-      args.push("--no-upload")
-    }
-    if (!root.fileShareAllowBeam) {
-      args.push("--no-beam")
-    }
-    for (var i = 0; i < paths.length; i++) {
-      args.push(paths[i])
-    }
+    var args = FileShareArgs.buildArgs(root.fileShareScript, {
+      singleShot: root.fileShareSingleShot,
+      allowUpload: root.fileShareAllowUpload,
+      allowBeam: root.fileShareAllowBeam,
+      saveDir: root.fileShareOpts.saveDir,
+      ip: root.fileShareOpts.ip,
+      ports: root.fileShareOpts.ports,
+      timeout: root.fileShareOpts.timeout,
+      uploadDeadlineMax: root.fileShareOpts.uploadDeadlineMax,
+      maxUploadSizeMB: root.fileShareOpts.maxUploadSizeMB,
+      maxSessionQuotaMB: root.fileShareOpts.maxSessionQuotaMB,
+      diskSpaceMarginMB: root.fileShareOpts.diskSpaceMarginMB,
+      folderZipCacheMax: root.fileShareOpts.folderZipCacheMax,
+      uploadNameMaxBytes: root.fileShareOpts.uploadNameMaxBytes,
+      beamMaxPerWindow: root.fileShareOpts.beamMaxPerWindow,
+      beamWindow: root.fileShareOpts.beamWindow,
+      pinMaxAttempts: root.fileShareOpts.pinMaxAttempts,
+      pinLockout: root.fileShareOpts.pinLockout,
+      pinGlobalMaxAttempts: root.fileShareOpts.pinGlobalMaxAttempts,
+      pinGlobalLockout: root.fileShareOpts.pinGlobalLockout,
+      pinRecordTtl: root.fileShareOpts.pinRecordTtl
+    }, paths)
     fileServerProc.command = args
     fileServerProc.running = true
   }

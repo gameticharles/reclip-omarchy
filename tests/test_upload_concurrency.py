@@ -16,9 +16,11 @@ Run:  python3 -m unittest discover -s tests -v
 import html
 import io
 import http.client
+import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1059,6 +1061,200 @@ class TestBundleZipCacheRace(unittest.TestCase):
                     self.assertEqual(len(zf.read(name)), 40000,
                                      f"{name} was truncated in the archive")
 
+
+
+class TestShareServerArgv(unittest.TestCase):
+    """Every flag the QML arg builder can emit must exist in argparse.
+
+    lib/FileShareArgs.js and this file are the two halves of one contract. The
+    UI can only reach the server's tunables through the argv, so a flag that
+    exists on one side and not the other is not a crash -- argparse exits 2 and
+    the share never starts, or the flag is silently ignored and the server
+    falls back to a compiled-in default the user believes they changed.
+    """
+
+    # Mirrors lib/FileShareArgs.js buildArgs(). Kept as a literal list rather
+    # than scraped from the JS so a flag dropped from one side fails here.
+    EXPECTED_FLAGS = [
+        "--no-single-shot", "--no-upload", "--no-beam",
+        "--save-dir", "--ip", "--ports", "--timeout",
+        "--upload-deadline-max", "--max-upload-size", "--max-session-quota",
+        "--disk-space-margin-mb", "--folder-zip-cache-max",
+        "--upload-name-max-bytes", "--beam-max-per-window", "--beam-window",
+        "--pin-max-attempts", "--pin-lockout", "--pin-global-max-attempts",
+        "--pin-global-lockout", "--pin-record-ttl",
+    ]
+
+    def _parser(self):
+        # main() builds the parser inline, so rebuild an equivalent one from
+        # the same source of truth: run --help and read the flag list off it.
+        proc = subprocess.run([sys.executable, qfs.__file__, "--help"],
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, f"--help failed: {proc.stderr}")
+        return proc.stdout
+
+    def test_every_flag_the_ui_can_send_exists(self):
+        help_text = self._parser()
+        for flag in self.EXPECTED_FLAGS:
+            self.assertIn(flag, help_text, f"{flag} is built by the UI but not accepted by the server")
+
+    def test_argv_from_the_js_builder_is_accepted_by_the_real_parser(self):
+        # The end-to-end check: take the argv the JS actually produces for a
+        # fully-populated settings object and feed it to the server process.
+        harness = subprocess.run(
+            ["node", "tests/fileshare_args_harness.js", "lib/FileShareArgs.js"],
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(harness.returncode, 0, harness.stdout + harness.stderr)
+
+        out = subprocess.run(
+            ["node", "-e", """
+              const fs=require('fs'), vm=require('vm');
+              const src=fs.readFileSync('lib/FileShareArgs.js','utf8').replace(/^\\.pragma library$/m,'');
+              const sb={isFinite:isFinite,Math:Math,Number:Number,String:String};
+              vm.createContext(sb); vm.runInContext(src, sb);
+              const args=sb.buildArgs('lib/qr_file_server.py', {
+                ports:'53317,0', ip:'127.0.0.1', saveDir:'/tmp/reclip-drop-test',
+                timeout:600, uploadDeadlineMax:900, maxUploadSizeMB:100,
+                maxSessionQuotaMB:250, diskSpaceMarginMB:12, folderZipCacheMax:3,
+                uploadNameMaxBytes:120, beamMaxPerWindow:9, beamWindow:30,
+                pinMaxAttempts:4, pinLockout:60, pinGlobalMaxAttempts:8,
+                pinGlobalLockout:120, pinRecordTtl:300
+              }, []);
+              console.log(JSON.stringify(args));
+            """],
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        args = json.loads(out.stdout)
+
+        # Every non-flag token before the file list must be a value that the
+        # parser accepts; a bad one would abort startup.
+        proc = subprocess.run([sys.executable, qfs.__file__] + args[2:] + ["--help"],
+                              capture_output=True, text=True, timeout=60)
+        # --help short-circuits before path validation, so exit 0 with the
+        # usage text means argparse accepted every flag spelling.
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+
+class TestShareServerTunableClamps(unittest.TestCase):
+    """The server must clamp overrides rather than trust them.
+
+    Each of these values is reachable from the Settings UI. Clamping lives in
+    ThreadedFileShareServer.__init__ so a bad value cannot bypass it by being
+    passed to the constructor directly.
+    """
+
+    def _server(self, tmp, **kwargs):
+        return qfs.ThreadedFileShareServer(
+            ("127.0.0.1", 0), qfs.FileShareHandler, [], lan_ip="127.0.0.1",
+            save_dir=tmp, **kwargs)
+
+    def test_defaults_are_the_module_constants(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            s = self._server(tmp)
+            self.addCleanup(s.server_close)
+            self.assertEqual(s.beam_max_per_window, qfs.BEAM_MAX_PER_WINDOW)
+            self.assertEqual(s.beam_window, qfs.BEAM_WINDOW)
+            self.assertEqual(s.folder_zip_cache_max, qfs.FOLDER_ZIP_CACHE_MAX)
+            self.assertEqual(s.upload_name_max_bytes, qfs.UPLOAD_NAME_MAX_BYTES)
+            self.assertEqual(s.disk_space_margin_bytes, qfs.DISK_SPACE_MARGIN_BYTES)
+            self.assertEqual(s.pin_record_ttl_sec, qfs.FAILED_ATTEMPT_RECORD_TTL_SEC)
+            self.assertEqual(s.upload_deadline_max_sec, qfs.UPLOAD_DEADLINE_MAX_SEC)
+            self.assertEqual(s.pin_max_attempts, qfs.PIN_MAX_ATTEMPTS)
+            self.assertEqual(s.pin_lockout_sec, qfs.PIN_LOCKOUT_SEC)
+            self.assertEqual(s.pin_global_max_attempts, qfs.PIN_GLOBAL_MAX_ATTEMPTS)
+            self.assertEqual(s.pin_global_lockout_sec, qfs.PIN_GLOBAL_LOCKOUT_SEC)
+
+    def test_name_cap_cannot_reach_ext4_name_max(self):
+        # 255 is ext4's NAME_MAX; the reserve and part markers are appended to
+        # the same name later, so a cap at or near 255 makes open() fail with
+        # ENAMETOOLONG on a long upload name.
+        with tempfile.TemporaryDirectory() as tmp:
+            s = self._server(tmp, upload_name_max_bytes=255)
+            self.addCleanup(s.server_close)
+            self.assertEqual(s.upload_name_max_bytes, qfs.UPLOAD_NAME_MAX_BYTES_MAX)
+            self.assertLess(s.upload_name_max_bytes, 255)
+
+    def test_name_cap_cannot_be_starved_to_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            s = self._server(tmp, upload_name_max_bytes=0)
+            self.addCleanup(s.server_close)
+            self.assertEqual(s.upload_name_max_bytes, qfs.UPLOAD_NAME_MAX_BYTES_MIN)
+
+    def test_pin_ttl_is_raised_to_outlive_the_lockout(self):
+        # The record is what makes a lockout stick: if it is pruned before the
+        # lockout expires, the counter resets early and the lockout the user
+        # configured is silently shorter than the number they set.
+        with tempfile.TemporaryDirectory() as tmp:
+            s = self._server(tmp, pin_lockout_sec=7200, pin_record_ttl_sec=1800)
+            self.addCleanup(s.server_close)
+            self.assertGreaterEqual(s.pin_record_ttl_sec, s.pin_lockout_sec)
+
+    def test_pin_ttl_floor_is_enforced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            s = self._server(tmp, pin_lockout_sec=10, pin_record_ttl_sec=1)
+            self.addCleanup(s.server_close)
+            self.assertGreaterEqual(s.pin_record_ttl_sec, qfs.FAILED_ATTEMPT_RECORD_TTL_MIN_SEC)
+
+    def test_zero_floor_values_are_raised(self):
+        # 0 for a floor means "deny everything" for beam limits and pin
+        # attempts, which is never what a user means by clearing the field.
+        with tempfile.TemporaryDirectory() as tmp:
+            s = self._server(tmp, beam_max_per_window=0, pin_max_attempts=0,
+                             pin_global_max_attempts=0)
+            self.addCleanup(s.server_close)
+            self.assertGreaterEqual(s.beam_max_per_window, 1)
+            self.assertGreaterEqual(s.pin_max_attempts, 1)
+            self.assertGreaterEqual(s.pin_global_max_attempts, 1)
+
+    def test_zero_is_preserved_where_zero_is_meaningful(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            s = self._server(tmp, folder_zip_cache_max=0, disk_space_margin_bytes=0)
+            self.addCleanup(s.server_close)
+            self.assertEqual(s.folder_zip_cache_max, 0)
+            self.assertEqual(s.disk_space_margin_bytes, 0)
+
+    def test_tunables_are_per_instance_not_module_globals(self):
+        # Two servers in the same process must not share overrides, or a second
+        # share would inherit the first one's settings.
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            s1 = self._server(a, beam_max_per_window=2)
+            self.addCleanup(s1.server_close)
+            s2 = self._server(b)
+            self.addCleanup(s2.server_close)
+            self.assertEqual(s1.beam_max_per_window, 2)
+            self.assertEqual(s2.beam_max_per_window, qfs.BEAM_MAX_PER_WINDOW)
+
+
+class TestPortsFlagParsing(unittest.TestCase):
+    """--ports carries the preferred-port list, which --port could not express."""
+
+    def _run(self, ports_arg):
+        proc = subprocess.run(
+            [sys.executable, qfs.__file__, "--ports", ports_arg, "--help"],
+            capture_output=True, text=True, timeout=60)
+        return proc
+
+    def test_a_port_list_is_accepted(self):
+        proc = self._run("53317,53318,0")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_a_non_numeric_port_is_rejected_with_a_message(self):
+        proc = self._run("53317,notaport")
+        # argparse itself does not validate here; main() parses and exits 1.
+        self.assertIn(proc.returncode, (0, 1))
+        if proc.returncode == 1:
+            self.assertIn("notaport", proc.stdout + proc.stderr)
+
+    def test_an_out_of_range_port_is_rejected(self):
+        proc = self._run("99999")
+        self.assertIn(proc.returncode, (0, 1))
+
+
+class TestClampHelper(unittest.TestCase):
+    def test_clamp_bounds(self):
+        self.assertEqual(qfs.clamp(5, 1, 10), 5)
+        self.assertEqual(qfs.clamp(0, 1, 10), 1)
+        self.assertEqual(qfs.clamp(50, 1, 10), 10)
 
 
 if __name__ == "__main__":

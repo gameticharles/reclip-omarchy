@@ -74,9 +74,42 @@ DEFAULT_SERVER_TIMEOUT_SEC = 1800
 # it: save_dir is a real user directory (~/Downloads/ReClip-Drop by default),
 # and a bare ".part"/".reserve" suffix also matches unrelated files that the
 # user or another application put there.
+#
+# Deliberately NOT user-configurable (unlike the constants above): a suffix a
+# user can type here is exactly the ".part"/".reserve" case the namespacing
+# exists to exclude, and a stale age below UPLOAD_DEADLINE_MAX_SEC would let
+# the sweep delete the marker of an upload still in flight.
 RESERVE_MARKER_SUFFIX = ".reclip-reserve"
 PART_MARKER_SUFFIX = ".reclip-part"
 STALE_MARKER_MAX_AGE_SEC = 3600
+
+# Failed-PIN lockout policy. These were inline literals at the two escalation
+# sites; they are constants now so they can be surfaced and, in the TTL's
+# case, so its floor can be derived from the lockout it has to outlive.
+PIN_MAX_ATTEMPTS = 5
+PIN_LOCKOUT_SEC = 900.0
+PIN_GLOBAL_MAX_ATTEMPTS = 20
+PIN_GLOBAL_LOCKOUT_SEC = 900.0
+
+# Bounds applied to user-supplied overrides. These are guard rails, not
+# preferences: exceeding them turns a tunable back into a bug.
+#
+# UPLOAD_NAME_MAX_BYTES is bounded because the value is subtracted from
+# ext4's NAME_MAX (255) to leave room for the reserve and part markers that
+# get appended to the same name later; a value near 255 makes open() fail
+# with ENAMETOOLONG. The floor keeps room for the ".<8 hex>.reclip-part"
+# suffix plus a usable stem.
+UPLOAD_NAME_MAX_BYTES_MIN = 64
+UPLOAD_NAME_MAX_BYTES_MAX = 200
+# The TTL only exists so a lockout record outlives the lockout it protects.
+# Below PIN_LOCKOUT_SEC the record is pruned while still locked, which silently
+# shortens the lockout instead of extending it.
+FAILED_ATTEMPT_RECORD_TTL_MIN_SEC = 300.0
+
+
+def clamp(value, low, high):
+    """Constrain a user-supplied override to [low, high]."""
+    return max(low, min(high, value))
 
 
 def is_reclip_upload_marker(name):
@@ -361,7 +394,7 @@ class ThreadedFileShareServer(socketserver.ThreadingMixIn, HTTPServer):
     allow_reuse_address = True
     request_queue_size = 128  # Hardened TCP listen backlog for burst connections / simultaneous QR scans
 
-    def __init__(self, server_address, RequestHandlerClass, files_meta, lan_ip, single_shot=False, token=None, pin=None, save_dir=None, allow_upload=True, allow_beam=True, max_upload_size=1024*1024*1024, max_session_quota=5*1024*1024*1024):
+    def __init__(self, server_address, RequestHandlerClass, files_meta, lan_ip, single_shot=False, token=None, pin=None, save_dir=None, allow_upload=True, allow_beam=True, max_upload_size=1024*1024*1024, max_session_quota=5*1024*1024*1024, beam_max_per_window=BEAM_MAX_PER_WINDOW, beam_window=BEAM_WINDOW, folder_zip_cache_max=FOLDER_ZIP_CACHE_MAX, upload_name_max_bytes=UPLOAD_NAME_MAX_BYTES, disk_space_margin_bytes=DISK_SPACE_MARGIN_BYTES, pin_record_ttl_sec=FAILED_ATTEMPT_RECORD_TTL_SEC, pin_max_attempts=PIN_MAX_ATTEMPTS, pin_lockout_sec=PIN_LOCKOUT_SEC, pin_global_max_attempts=PIN_GLOBAL_MAX_ATTEMPTS, pin_global_lockout_sec=PIN_GLOBAL_LOCKOUT_SEC, upload_deadline_max_sec=UPLOAD_DEADLINE_MAX_SEC):
         super().__init__(server_address, RequestHandlerClass)
         self.files_meta = files_meta
         self.files_map = {item["name"]: item["path"] for item in files_meta}
@@ -377,6 +410,25 @@ class ThreadedFileShareServer(socketserver.ThreadingMixIn, HTTPServer):
         self.allow_beam = bool(allow_beam)
         self.max_upload_size = int(max_upload_size)
         self.max_session_upload_quota = int(max_session_quota)
+        # Tunables that used to be read as module globals from inside request
+        # handlers. They are per-instance now so a server can be constructed
+        # with values other than the compiled-in defaults; main() passes the
+        # CLI overrides. Each is clamped at construction because every one of
+        # them is a safety bound rather than a preference.
+        self.beam_max_per_window = int(clamp(int(beam_max_per_window), 1, 1000))
+        self.beam_window = float(clamp(float(beam_window), 0.1, 3600.0))
+        self.folder_zip_cache_max = int(clamp(int(folder_zip_cache_max), 0, 100))
+        self.upload_name_max_bytes = int(clamp(int(upload_name_max_bytes), UPLOAD_NAME_MAX_BYTES_MIN, UPLOAD_NAME_MAX_BYTES_MAX))
+        self.disk_space_margin_bytes = int(clamp(int(disk_space_margin_bytes), 0, 64 * 1024 * 1024 * 1024))
+        self.pin_max_attempts = int(clamp(int(pin_max_attempts), 1, 100))
+        self.pin_lockout_sec = float(clamp(float(pin_lockout_sec), 1.0, 86400.0))
+        self.pin_global_max_attempts = int(clamp(int(pin_global_max_attempts), 1, 10000))
+        self.pin_global_lockout_sec = float(clamp(float(pin_global_lockout_sec), 1.0, 86400.0))
+        # The TTL is a function of the lockout it must outlive, so a user who
+        # raises the lockout past the default TTL silently shortens their own
+        # lockout. Raise the floor with it instead of pruning the record early.
+        self.pin_record_ttl_sec = float(clamp(max(float(pin_record_ttl_sec), self.pin_lockout_sec), FAILED_ATTEMPT_RECORD_TTL_MIN_SEC, 86400.0))
+        self.upload_deadline_max_sec = float(clamp(float(upload_deadline_max_sec), 60.0, 86400.0))
         self.session_uploaded_bytes = 0
         self.beam_text = ""
         self.should_stop = False
@@ -479,7 +531,7 @@ class ThreadedFileShareServer(socketserver.ThreadingMixIn, HTTPServer):
                 self._folder_zip_cache_order.remove(folder_path)
             self.folder_zip_cache[folder_path] = temp_zip
             self._folder_zip_cache_order.append(folder_path)
-            while len(self._folder_zip_cache_order) > FOLDER_ZIP_CACHE_MAX:
+            while len(self._folder_zip_cache_order) > self.folder_zip_cache_max:
                 evicted = self._folder_zip_cache_order.pop(0)
                 old = self.folder_zip_cache.pop(evicted, None)
                 if old and old != temp_zip:
@@ -2772,7 +2824,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
         with self.server.attempt_lock:
             # Clean expired lockout records (> 30 min old)
             expired = [ip for ip, data in self.server.failed_attempts.items()
-                       if now > data.get("locked_until", 0.0) and (now - data.get("last_attempt", 0.0) > FAILED_ATTEMPT_RECORD_TTL_SEC)]
+                       if now > data.get("locked_until", 0.0) and (now - data.get("last_attempt", 0.0) > self.server.pin_record_ttl_sec)]
             for ip in expired:
                 self.server.failed_attempts.pop(ip, None)
 
@@ -2884,13 +2936,11 @@ class FileShareHandler(BaseHTTPRequestHandler):
                 self.server.global_failed_attempts += 1
 
                 client_count = self.server.failed_attempts[client_ip]["count"]
-                if client_count >= 5:
-                    # 15 minutes lockout (900s)
-                    self.server.failed_attempts[client_ip]["locked_until"] = now + 900.0
+                if client_count >= self.server.pin_max_attempts:
+                    self.server.failed_attempts[client_ip]["locked_until"] = now + self.server.pin_lockout_sec
 
-                if self.server.global_failed_attempts >= 20:
-                    # 15 minutes global lockout
-                    self.server.global_locked_until = now + 900.0
+                if self.server.global_failed_attempts >= self.server.pin_global_max_attempts:
+                    self.server.global_locked_until = now + self.server.pin_global_lockout_sec
 
                 emit_event({
                     "event": "pin_failed",
@@ -2902,12 +2952,12 @@ class FileShareHandler(BaseHTTPRequestHandler):
                     retry_after = 900
                     resp = json.dumps({
                         "success": False,
-                        "error": "Too many failed PIN attempts. IP locked out for 15 minutes.",
+                        "error": f"Too many failed PIN attempts. IP locked out for {retry_after}s.",
                     }).encode("utf-8")
                     self.send_response(429)
                     self.send_header("Retry-After", str(retry_after))
                 else:
-                    remaining = max(0, 5 - client_count)
+                    remaining = max(0, self.server.pin_max_attempts - client_count)
                     resp = json.dumps({
                         "success": False,
                         "error": f"Invalid PIN. {remaining} attempt{'s' if remaining != 1 else ''} remaining before lockout."
@@ -2929,9 +2979,9 @@ class FileShareHandler(BaseHTTPRequestHandler):
         # this thread occupied reading 128 KB payloads indefinitely.
         now = time.time()
         with self.server.beam_lock:
-            history = [t for t in self.server.beam_rate.get(client_ip, []) if now - t < BEAM_WINDOW]
-            if len(history) >= BEAM_MAX_PER_WINDOW:
-                retry_after = int(BEAM_WINDOW - (now - history[0])) + 1
+            history = [t for t in self.server.beam_rate.get(client_ip, []) if now - t < self.server.beam_window]
+            if len(history) >= self.server.beam_max_per_window:
+                retry_after = int(self.server.beam_window - (now - history[0])) + 1
                 self.server.beam_rate[client_ip] = history
                 retry = max(1, retry_after)
                 resp = json.dumps({
@@ -2949,7 +2999,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
             self.server.beam_rate[client_ip] = history
             # Drop idle client buckets so the dict cannot grow without bound.
             if len(self.server.beam_rate) > 64:
-                cutoff = now - (BEAM_WINDOW * 2)
+                cutoff = now - (self.server.beam_window * 2)
                 self.server.beam_rate = {ip: ts for ip, ts in self.server.beam_rate.items() if ts and ts[-1] >= cutoff}
 
         try:
@@ -3072,7 +3122,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
                 try:
                     disk_stat = shutil.disk_usage(self.server.save_dir)
                     # Require space for the file plus a 256 MB safety margin for the OS
-                    min_required = content_length + DISK_SPACE_MARGIN_BYTES
+                    min_required = content_length + self.server.disk_space_margin_bytes
                     if disk_stat.free < min_required:
                         reject = (507, {
                             "success": False,
@@ -3100,12 +3150,13 @@ class FileShareHandler(BaseHTTPRequestHandler):
                 # stem short enough to still leave room for the collision
                 # counter, the part marker and the reserve marker appended
                 # later. The byte length is what ext4's NAME_MAX (255) checks.
-                if len(filename.encode("utf-8")) > UPLOAD_NAME_MAX_BYTES:
+                name_max = self.server.upload_name_max_bytes
+                if len(filename.encode("utf-8")) > name_max:
                     base, ext = os.path.splitext(filename)
                     ext_budget = max(len(ext.encode("utf-8")), 0)
-                    stem_budget = UPLOAD_NAME_MAX_BYTES - ext_budget
+                    stem_budget = name_max - ext_budget
                     if stem_budget < 1:
-                        filename = filename.encode("utf-8")[:UPLOAD_NAME_MAX_BYTES].decode(
+                        filename = filename.encode("utf-8")[:name_max].decode(
                             "utf-8", "ignore"
                         )
                     else:
@@ -3175,7 +3226,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
         start_time = time.time()
         last_emit = start_time
         # Max overall transfer deadline: at least 60s, or 10KB/s plus 60s buffer, capped at 1800s
-        max_duration = min(UPLOAD_DEADLINE_MAX_SEC, max(60.0, (content_length / 10240) + 60.0))
+        max_duration = min(self.server.upload_deadline_max_sec, max(60.0, (content_length / 10240) + 60.0))
         upload_succeeded = False
 
         try:
@@ -3465,7 +3516,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
             return False
         # ZIP_DEFLATED on already-compressed media barely shrinks, so budget the
         # full estimated size plus a 256 MB margin rather than assuming a ratio.
-        return free > estimated_bytes + DISK_SPACE_MARGIN_BYTES
+        return free > estimated_bytes + self.server.disk_space_margin_bytes
 
     def _safe_temp_suffix(self, name):
         """Build a bounded, path-separator-free tempfile suffix from a name."""
@@ -4105,8 +4156,13 @@ class FileShareHandler(BaseHTTPRequestHandler):
         if send_body:
             self.wfile.write(data)
 
-def start_server_on_ports(ports_to_try, handler_class, files_meta, lan_ip, single_shot=False, token=None, pin=None, save_dir=None, allow_upload=True, allow_beam=True, max_upload_size=1024*1024*1024, max_session_quota=5*1024*1024*1024):
-    """Attempt binding to ports in sequence until successful."""
+def start_server_on_ports(ports_to_try, handler_class, files_meta, lan_ip, single_shot=False, token=None, pin=None, save_dir=None, allow_upload=True, allow_beam=True, max_upload_size=1024*1024*1024, max_session_quota=5*1024*1024*1024, **tunables):
+    """Attempt binding to ports in sequence until successful.
+
+    **tunables forwards the per-session overrides to the server; they are
+    keyword-only by accident of the signature, which keeps the positional
+    arguments above from shifting when a new one is added.
+    """
     for port in ports_to_try:
         try:
             server = ThreadedFileShareServer(
@@ -4121,7 +4177,8 @@ def start_server_on_ports(ports_to_try, handler_class, files_meta, lan_ip, singl
                 allow_upload=allow_upload,
                 allow_beam=allow_beam,
                 max_upload_size=max_upload_size,
-                max_session_quota=max_session_quota
+                max_session_quota=max_session_quota,
+                **tunables
             )
             actual_port = server.server_address[1]
             return server, actual_port
@@ -4143,6 +4200,38 @@ def main():
     parser.add_argument("--token", type=str, default=None, help="Security session token")
     parser.add_argument("--pin", type=str, default=None, help="6-digit quick PIN")
     parser.add_argument("--save-dir", type=str, default=None, help="Directory to save reverse drop uploads")
+    # The remaining flags expose the module-level tunables. Their defaults are
+    # the constants themselves, so an invocation that passes none of them
+    # behaves exactly as before; out-of-range values are clamped in
+    # ThreadedFileShareServer rather than trusted.
+    parser.add_argument("--ports", type=str, default=None,
+                        help="Comma-separated ports to try in order, 0 for OS-assigned "
+                             "(default: %s)" % ",".join(str(p) for p in PREFERRED_PORTS))
+    parser.add_argument("--beam-max-per-window", type=int, default=BEAM_MAX_PER_WINDOW,
+                        help="Max clipboard beams one client may send per window (default: %d)" % BEAM_MAX_PER_WINDOW)
+    parser.add_argument("--beam-window", type=float, default=BEAM_WINDOW,
+                        help="Beam rate-limit window in seconds (default: %g)" % BEAM_WINDOW)
+    parser.add_argument("--folder-zip-cache-max", type=int, default=FOLDER_ZIP_CACHE_MAX,
+                        help="Max folder ZIPs retained on disk for the session (default: %d)" % FOLDER_ZIP_CACHE_MAX)
+    parser.add_argument("--upload-name-max-bytes", type=int, default=UPLOAD_NAME_MAX_BYTES,
+                        help="Max bytes of the upload filename, clamped to %d-%d to stay under ext4 NAME_MAX"
+                             % (UPLOAD_NAME_MAX_BYTES_MIN, UPLOAD_NAME_MAX_BYTES_MAX))
+    parser.add_argument("--disk-space-margin-mb", type=int, default=DISK_SPACE_MARGIN_BYTES // (1024 * 1024),
+                        help="Free-space headroom required before accepting an upload, in MB (default: %d)"
+                             % (DISK_SPACE_MARGIN_BYTES // (1024 * 1024)))
+    parser.add_argument("--upload-deadline-max", type=float, default=UPLOAD_DEADLINE_MAX_SEC,
+                        help="Ceiling on a single upload's transfer deadline in seconds (default: %g)" % UPLOAD_DEADLINE_MAX_SEC)
+    parser.add_argument("--pin-max-attempts", type=int, default=PIN_MAX_ATTEMPTS,
+                        help="Failed PIN attempts before a client is locked out (default: %d)" % PIN_MAX_ATTEMPTS)
+    parser.add_argument("--pin-lockout", type=float, default=PIN_LOCKOUT_SEC,
+                        help="Per-client lockout duration in seconds (default: %g)" % PIN_LOCKOUT_SEC)
+    parser.add_argument("--pin-global-max-attempts", type=int, default=PIN_GLOBAL_MAX_ATTEMPTS,
+                        help="Failed PIN attempts across all clients before a global lockout (default: %d)" % PIN_GLOBAL_MAX_ATTEMPTS)
+    parser.add_argument("--pin-global-lockout", type=float, default=PIN_GLOBAL_LOCKOUT_SEC,
+                        help="Global lockout duration in seconds (default: %g)" % PIN_GLOBAL_LOCKOUT_SEC)
+    parser.add_argument("--pin-record-ttl", type=float, default=FAILED_ATTEMPT_RECORD_TTL_SEC,
+                        help="How long a failed-PIN record is kept; raised to the lockout length if shorter"
+                             " (default: %d)" % FAILED_ATTEMPT_RECORD_TTL_SEC)
 
     args = parser.parse_args()
 
@@ -4201,6 +4290,27 @@ def main():
 
     if args.port > 0:
         ports_to_try = [args.port]
+    elif args.ports:
+        # Accept the list form too ("53317,8080,0") so a single --ports value
+        # can express both a preferred order and the OS-assigned fallback.
+        parsed = []
+        for chunk in str(args.ports).split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            try:
+                value = int(chunk)
+            except ValueError:
+                emit_event({"event": "error", "message": f"Invalid port in --ports: {chunk!r}"})
+                sys.exit(1)
+            if not 0 <= value <= 65535:
+                emit_event({"event": "error", "message": f"Port out of range in --ports: {value}"})
+                sys.exit(1)
+            parsed.append(value)
+        if not parsed:
+            emit_event({"event": "error", "message": "--ports was provided but contained no ports"})
+            sys.exit(1)
+        ports_to_try = parsed
     else:
         ports_to_try = PREFERRED_PORTS
 
@@ -4217,7 +4327,18 @@ def main():
             allow_upload=allow_upload,
             allow_beam=allow_beam,
             max_upload_size=args.max_upload_size,
-            max_session_quota=args.max_session_quota
+            max_session_quota=args.max_session_quota,
+            beam_max_per_window=args.beam_max_per_window,
+            beam_window=args.beam_window,
+            folder_zip_cache_max=args.folder_zip_cache_max,
+            upload_name_max_bytes=args.upload_name_max_bytes,
+            disk_space_margin_bytes=args.disk_space_margin_mb * 1024 * 1024,
+            pin_record_ttl_sec=args.pin_record_ttl,
+            pin_max_attempts=args.pin_max_attempts,
+            pin_lockout_sec=args.pin_lockout,
+            pin_global_max_attempts=args.pin_global_max_attempts,
+            pin_global_lockout_sec=args.pin_global_lockout,
+            upload_deadline_max_sec=args.upload_deadline_max
         )
     except Exception as e:
         emit_event({"event": "error", "message": f"Failed to bind server: {str(e)}"})
