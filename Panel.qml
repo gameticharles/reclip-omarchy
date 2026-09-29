@@ -35,7 +35,7 @@ Panel {
   property string ocrScript: pluginDir + "/ocr-capture.sh"
   property string settingsPath: stateDir + "/settings.json"
   property string manifestPath: pluginDir + "/manifest.json"
-  property string pluginVersion: "1.2.0"
+  property string pluginVersion: "1.3.0"
   property string templatesPath: stateDir + "/templates.json"
   property string automationsPath: stateDir + "/automations.json"
 

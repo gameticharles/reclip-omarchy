@@ -791,5 +791,139 @@ class TestStaleMarkerSweep(unittest.TestCase):
         self.assertFalse(qfs.is_reclip_upload_marker(f".a.png.zzzzzzzz{qfs.PART_MARKER_SUFFIX}"))
 
 
+
+class TestOverlongUploadFilename(UploadTestBase):
+    """X-Filename is attacker-controlled and was never length-capped."""
+
+    def test_overlong_name_is_accepted_not_500(self):
+        harness = ServerHarness(self.save_dir)
+        self.addCleanup(harness.stop)
+        # 4000 chars: the old code passed this straight to open(), which failed
+        # with ENAMETOOLONG and surfaced to the client as a 500.
+        status, body = self.upload(harness, "n" * 4000 + ".txt", b"payload")
+        self.assertEqual(status, 200, f"expected success, got {status}: {body[:300]!r}")
+        landed = [f for f in os.listdir(self.save_dir) if not f.startswith(".")]
+        self.assertEqual(len(landed), 1, f"expected one saved file, got {landed}")
+        for name in landed:
+            self.assertLessEqual(
+                len(name.encode("utf-8")), qfs.UPLOAD_NAME_MAX_BYTES,
+                f"saved name exceeds the cap: {len(name.encode('utf-8'))} bytes",
+            )
+            self.assertTrue(name.endswith(".txt"), f"extension was lost: {name!r}")
+
+    def test_multibyte_name_is_truncated_on_a_character_boundary(self):
+        harness = ServerHarness(self.save_dir)
+        self.addCleanup(harness.stop)
+        # Truncating mid-codepoint would produce a name that cannot be encoded.
+        status, body = self.upload(harness, "\u65e5" * 2000 + ".png", b"payload")
+        self.assertEqual(status, 200, f"expected success, got {status}: {body[:300]!r}")
+        landed = [f for f in os.listdir(self.save_dir) if not f.startswith(".")]
+        self.assertEqual(len(landed), 1, f"expected one saved file, got {landed}")
+        landed[0].encode("utf-8")  # must not raise
+
+
+class TestUniqueShareNames(unittest.TestCase):
+    """Two shared paths can share a basename; the name is also the download URL."""
+
+    def test_duplicate_basenames_are_disambiguated(self):
+        used = set()
+        names = [qfs.unique_display_name("same.txt", used) for _ in range(3)]
+        self.assertEqual(names, ["same.txt", "same (2).txt", "same (3).txt"])
+        self.assertEqual(len(used), 3)
+
+    def test_each_name_still_maps_to_its_own_file(self):
+        import os
+        import tempfile as tf
+        root = tf.mkdtemp(prefix="reclip-dup-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        a_dir, b_dir = os.path.join(root, "A"), os.path.join(root, "B")
+        os.makedirs(a_dir)
+        os.makedirs(b_dir)
+        paths = []
+        for where, payload in ((a_dir, "AAAA"), (b_dir, "BBBB")):
+            path = os.path.join(where, "same.txt")
+            with open(path, "w") as fh:
+                fh.write(payload)
+            paths.append(path)
+
+        used = set()
+        names = [qfs.unique_display_name(os.path.basename(p), used) for p in paths]
+        self.assertEqual(len(set(names)), 2, f"names collided: {names}")
+        files_map = dict(zip(names, paths))
+        self.assertEqual(len(files_map), 2, "both files must stay reachable")
+        for name, expected in ((names[0], "AAAA"), (names[1], "BBBB")):
+            with open(files_map[name]) as fh:
+                self.assertEqual(fh.read(), expected)
+
+    def test_extensionless_names_are_handled(self):
+        used = set()
+        names = [qfs.unique_display_name("README", used) for _ in range(2)]
+        self.assertEqual(names, ["README", "README (2)"])
+
+    def test_dotted_name_keeps_its_extension(self):
+        used = set()
+        names = [qfs.unique_display_name("archive.tar.gz", used) for _ in range(2)]
+        self.assertEqual(names, ["archive.tar.gz", "archive.tar (2).gz"])
+
+
+class TestSetDesktopClipboardReapsChild(unittest.TestCase):
+    """A timeout in communicate() used to leave the copier child running."""
+
+    def test_slow_copier_is_killed_and_reaped(self):
+        import subprocess
+        calls = []
+
+        class FakeProc:
+            def __init__(self, cmd):
+                self.killed = False
+                self.waited = False
+                calls.append(cmd)
+
+            def communicate(self, input=None, timeout=None):
+                if timeout is not None:
+                    raise subprocess.TimeoutExpired(cmd=calls[-1], timeout=timeout)
+                self.waited = True
+                return (None, None)
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self, timeout=None):
+                self.waited = True
+                return 0
+
+        real_popen = subprocess.Popen
+        subprocess.Popen = lambda cmd, **kw: FakeProc(cmd)
+        try:
+            result = qfs.set_desktop_clipboard("hello")
+        finally:
+            subprocess.Popen = real_popen
+
+        self.assertTrue(result, "a successful wl-copy should report True")
+        self.assertEqual(len(calls), 1, "should try the first copier only")
+
+
+class TestSaveDirIsReportedFromConfig(unittest.TestCase):
+    """The upload page hardcoded ~/Downloads/ReClip-Drop regardless of --save-dir."""
+
+    def test_page_advertises_the_configured_directory(self):
+        import re as _re
+        import tempfile as tf
+        custom = tf.mkdtemp(prefix="reclip-savedir-")
+        self.addCleanup(shutil.rmtree, custom, ignore_errors=True)
+        with open(qfs.__file__, encoding="utf-8") as fh:
+            src = fh.read()
+        # The literal must be gone from the reverse-drop section.
+        section = src.split("Reverse Drop Section", 1)[-1].split("</section>", 1)[0]
+        self.assertNotIn(
+            "~/Downloads/ReClip-Drop", section,
+            "the reverse-drop section still hardcodes the default path",
+        )
+        self.assertIn("self.server.save_dir", section,
+                      "the reverse-drop section should interpolate save_dir")
+        self.assertTrue(_re.search(r"reverse_drop_section_html = f\"\"\"", src),
+                        "the section must be an f-string to interpolate save_dir")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

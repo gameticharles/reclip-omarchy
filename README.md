@@ -43,7 +43,8 @@
 - **🛡️ Privacy & Password Manager Protection**
 
   - Automatically suppresses clipboard capture when password managers are focused: KeePass, 1Password, Bitwarden, AuthPass, Enpass, LastPass, and any app whose class contains `vault`.
-  - Custom per-app blacklist and one-click incognito mode.
+  - Custom per-app blacklist and one-click incognito mode. Blacklist entries match case-insensitively on substrings, so `code` blocks `Code` and `slack` blocks `Slack`.
+  - Third-party integrations can suppress capture by exporting `CLIPBOARD_STATE=sensitive` before the watcher picks up a change; ReClip never sets this variable itself.
   - Configurable retention limits and auto-pruning.
 - **󰚥 Built-In System Health Check**
 

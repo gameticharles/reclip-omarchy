@@ -30,7 +30,20 @@ case "$app_lower" in
 esac
 
 if [[ -f "$STATE_DIR/settings.json" ]]; then
-  custom_blocked=$(jq -r --arg c "$app_class" '.appBlacklist // [] | index($c) // empty' "$STATE_DIR/settings.json" 2>/dev/null || true)
+  # Compare case-insensitively and on substrings. The built-in list above does
+  # both, but this used jq's index(), an exact case-sensitive whole-string
+  # match: a user who added "Slack" did not block the class "slack", and a
+  # partial entry like "code" never matched "Code - project". A blacklist that
+  # silently does nothing is worse than one that is slightly loose, so a
+  # substring hit blocks the capture.
+  #
+  # The element is bound with `. as $e` on purpose: inside any(generator; cond)
+  # a bare `.` is the generator's input on some jq builds and the outer input
+  # on others, which silently reduces the test to "is the class non-empty" and
+  # blocks *every* capture as soon as the list is non-empty.
+  custom_blocked=$(jq -r --arg c "$app_lower" '
+    [ (.appBlacklist // [])[] | tostring | ascii_downcase | select(. != "") ] as $list
+    | if any($list[]; . as $e | ($c | contains($e))) then "blocked" else empty end' "$STATE_DIR/settings.json" 2>/dev/null || true)
   if [[ -n "$custom_blocked" ]]; then
     exit 0
   fi
@@ -74,13 +87,28 @@ emit_image() {
   local fetch_count=$(( limit * 3 ))
   (( fetch_count < 24 )) && fetch_count=24
 
+  # Palette extraction must never corrupt the JSON passed to --argjson below.
+  # Under `set -o pipefail` a mid-pipeline failure makes the substitution
+  # non-zero *after* `jq -s .` has already printed "[]", so a trailing
+  # `|| echo "[]"` appends a second array. --argjson then rejects the whole
+  # payload and the image capture is silently dropped. Capture the raw
+  # stdout, ignore the pipeline's exit status, and keep it only if it is a
+  # single well-formed JSON array.
   local colors="[]"
+  local converter=""
   if command -v magick &>/dev/null; then
-    colors=$(magick "$file" -resize 64x64\! -quantize RGB +dither -colors "$fetch_count" -unique-colors txt:- 2>/dev/null \
-      | grep -oE '#[0-9A-Fa-f]{6}' | tr '[:lower:]' '[:upper:]' | awk '!seen[$0]++' | head -n "$limit" | jq -R . | jq -s . 2>/dev/null || echo "[]")
+    converter="magick"
   elif command -v convert &>/dev/null; then
-    colors=$(convert "$file" -resize 64x64\! -quantize RGB +dither -colors "$fetch_count" -unique-colors txt:- 2>/dev/null \
-      | grep -oE '#[0-9A-Fa-f]{6}' | tr '[:lower:]' '[:upper:]' | awk '!seen[$0]++' | head -n "$limit" | jq -R . | jq -s . 2>/dev/null || echo "[]")
+    converter="convert"
+  fi
+  if [[ -n "$converter" ]]; then
+    local raw_colors
+    raw_colors=$("$converter" "$file" -resize 64x64\! -quantize RGB +dither -colors "$fetch_count" -unique-colors txt:- 2>/dev/null \
+      | grep -oE '#[0-9A-Fa-f]{6}' | tr '[:lower:]' '[:upper:]' | awk '!seen[$0]++' | head -n "$limit" \
+      | jq -R . | jq -s . 2>/dev/null) || true
+    if [[ -n "$raw_colors" ]] && printf '%s' "$raw_colors" | jq -e 'type == "array"' >/dev/null 2>&1; then
+      colors="$raw_colors"
+    fi
   fi
 
   local qr_text=""

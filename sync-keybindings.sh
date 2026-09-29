@@ -30,6 +30,25 @@ toggle_shortcut = "SUPER + SHIFT + V"
 paste_modifiers = "SUPER + CTRL + SHIFT"
 enable_quick_paste = True
 
+def as_bool(value, default=True):
+    """Interpret a settings value that may be a JSON bool or a quoted string.
+
+    bool("false") is True in Python, so a settings.json holding the string
+    "false" silently enabled quick paste after the user had turned it off.
+    Quoted values arrive easily from a QML Config round-trip or a hand edit.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("true", "1", "yes", "on"):
+            return True
+        if v in ("false", "0", "no", "off", ""):
+            return False
+    return default
+
 if os.path.isfile(settings_path):
     try:
         with open(settings_path, "r", encoding="utf-8") as f:
@@ -39,7 +58,7 @@ if os.path.isfile(settings_path):
             if s.get("pasteModifiers") and str(s["pasteModifiers"]).strip():
                 paste_modifiers = str(s["pasteModifiers"]).strip()
             if s.get("enableQuickPaste") is not None:
-                enable_quick_paste = bool(s["enableQuickPaste"])
+                enable_quick_paste = as_bool(s["enableQuickPaste"], True)
     except Exception as e:
         sys.stderr.write(f"Warning: could not read {settings_path}: {e}\n")
 

@@ -25,8 +25,14 @@ if [[ "$TYPE" == "image" ]]; then
     wtype -M shift -k Insert -m shift 2>/dev/null || true
   fi
 else
-  TEXT=$(echo "$ITEM" | jq -r '.text // .fullText // empty')
-  if [[ -n "$TEXT" ]]; then
+  # The stored history schema uses "text"; "fullText" only ever appears on the
+  # display rows built for the UI, which are not written to this file. Reading
+  # .fullText was a dead fallback that could never match.
+  TEXT=$(echo "$ITEM" | jq -r '.text // empty')
+  # Mirror ClipboardHistory.normalizeEntry(), which rejects a whitespace-only
+  # value instead of storing it. -n alone would accept "   ", silently copy
+  # blank space to the clipboard and paste nothing.
+  if [[ -n "${TEXT//[[:space:]]/}" ]]; then
     printf '%s' "$TEXT" | wl-copy
     sleep 0.15
     wtype -M shift -k Insert -m shift 2>/dev/null || true

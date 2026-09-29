@@ -10,7 +10,19 @@ TMP_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 IMG_PATH=""
 CLEANUP_IMG=false
 
-if [ $# -ge 1 ] && [ -f "$1" ]; then
+if [ $# -ge 1 ]; then
+  # An argument was given, so this is the "OCR an existing file" mode. A
+  # mistyped or unreadable path used to fall through to the region-selection
+  # branch, silently grabbing a screenshot of the screen instead of reporting
+  # the bad path.
+  if [ ! -f "$1" ]; then
+    notify-send -a "ReClip OCR" -i "dialog-error" "OCR Error" "No such file: $1"
+    exit 1
+  fi
+  if [ ! -r "$1" ]; then
+    notify-send -a "ReClip OCR" -i "dialog-error" "OCR Error" "File not readable: $1"
+    exit 1
+  fi
   IMG_PATH="$1"
 else
   GEO=$(slurp 2>/dev/null || true)

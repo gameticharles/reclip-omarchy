@@ -719,8 +719,89 @@ eq(failEnv.toast.className.indexOf('is-error') !== -1, true,
   'T19 the failure toast is styled as an error');
 
 // ===========================================================================
+// T21 Cancelling a queued upload settles the batch summary.
+// ===========================================================================
+// Regression: cancelling a queued file removed its row but never settled the
+// counter, so the summary stayed on "Sending 1 of 2…" for the rest of the
+// session and the closing toast never fired.
+const cbEnv = freshEnv({ 'reclip-max-concurrent-uploads': '1' });
+const cbSummary = cbEnv.ctx.document.createElement('div');
+cbSummary.id = 'queue-summary';
+cbSummary.hidden = true;
+const cbTitle = cbEnv.ctx.document.createElement('span');
+cbTitle.id = 'queue-summary-title';
+cbSummary.appendChild(cbTitle);
+cbEnv.queueEl.appendChild(cbSummary);
+
+cbEnv.ctx.handleFilesSelected([
+  { name: 'running.bin', size: 1024 },
+  { name: 'waiting.bin', size: 2048 },
+]);
+eq(cbEnv.state.xhrs.length, 1, 'T21 only the first file is in flight');
+contains(cbTitle.textContent, 'Sending 0 of 2',
+  'T21 the summary opens on both files');
+
+const cbQueuedId = cbEnv.newestItem().id;
+cbEnv.ctx.cancelUpload(cbQueuedId);
+eq(cbEnv.ctx.batchCancelled, 1,
+  'T21 a cancelled queued file is recorded as settled');
+// The other file is still in flight, so the batch is correctly NOT finished
+// yet; what matters is that the cancellation counted towards the total.
+eq(cbEnv.ctx.batchDone + cbEnv.ctx.batchFailed + cbEnv.ctx.batchCancelled, 1,
+  'T21 the cancellation is counted as one settled file');
+contains(cbTitle.textContent, 'Sending 1 of 2',
+  'T21 the summary still reports the file that is genuinely in flight');
+
+cbEnv.respond(cbEnv.state.xhrs[0], 200, JSON.stringify({ success: true, size_str: '1.0 KB' }));
+eq(cbEnv.ctx.batchDone + cbEnv.ctx.batchFailed + cbEnv.ctx.batchCancelled,
+  cbEnv.ctx.batchTotal,
+  'T21 the batch fully settles once the in-flight file also completes');
+ok(cbTitle.textContent.indexOf('Sending') === -1,
+  'T21 the summary leaves the in-progress state when everything settles');
+contains(cbTitle.textContent, '1 sent',
+  'T21 the batch still reports the one file that really did upload');
+ok(cbTitle.textContent.indexOf('cancelled') !== -1,
+  'T21 the summary accounts for the cancellation');
+eq(cbEnv.state.xhrs.length, 1,
+  'T21 the cancelled queued file is never uploaded');
+
+// ===========================================================================
+// T22 A fully cancelled batch settles instead of hanging.
+// ===========================================================================
+const allCancelEnv = freshEnv({ 'reclip-max-concurrent-uploads': '1' });
+const acSummary = allCancelEnv.ctx.document.createElement('div');
+acSummary.id = 'queue-summary';
+acSummary.hidden = true;
+const acTitle = allCancelEnv.ctx.document.createElement('span');
+acTitle.id = 'queue-summary-title';
+acSummary.appendChild(acTitle);
+allCancelEnv.queueEl.appendChild(acSummary);
+
+allCancelEnv.ctx.handleFilesSelected([
+  { name: 'a.bin', size: 10 },
+  { name: 'b.bin', size: 10 },
+]);
+// Cancel the queued one, then the in-flight one. The in-flight cancel aborts
+// the socket, and finishJob() used to ignore the 'cancelled' state, so the
+// summary stayed on "Sending 1 of 2…" forever.
+allCancelEnv.ctx.cancelUpload(allCancelEnv.newestItem().id);
+eq(allCancelEnv.ctx.batchCancelled, 1, 'T22 the queued cancel is counted');
+allCancelEnv.ctx.cancelUpload(allCancelEnv.newestItem().id);
+allCancelEnv.flushTimers();
+eq(allCancelEnv.ctx.batchCancelled, 2,
+  'T22 an in-flight cancel is counted too');
+eq(allCancelEnv.ctx.batchDone + allCancelEnv.ctx.batchFailed +
+   allCancelEnv.ctx.batchCancelled, allCancelEnv.ctx.batchTotal,
+  'T22 cancelling every file fully settles the batch');
+ok(acTitle.textContent.indexOf('Sending') === -1,
+  'T22 an all-cancelled batch does not report as still sending');
+contains(acTitle.textContent, '2 cancelled',
+  'T22 both cancellations are reported');
+
+// ===========================================================================
 // T20 The queue renders in the order it is actually processed.
 // ===========================================================================
+
 const orderEnv = freshEnv();
 orderEnv.addFile('first.bin', 10);
 orderEnv.addFile('second.bin', 10);

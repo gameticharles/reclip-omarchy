@@ -37,6 +37,7 @@ import threading
 import shutil
 import hmac
 import hashlib
+import signal
 import stat
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -50,6 +51,9 @@ BEAM_WINDOW = 10.0
 # Maximum number of folder ZIPs retained on disk for the session. Each entry is
 # a real temp file, so the cache is capped and evicted LRU.
 FOLDER_ZIP_CACHE_MAX = 10
+# ext4 caps a single path component at 255 bytes (NAME_MAX); the upload
+# filename is trimmed to this so open() cannot fail with ENAMETOOLONG.
+UPLOAD_NAME_MAX_BYTES = 180
 
 # Free-space headroom required before writing a multi-hundred-MB payload.
 DISK_SPACE_MARGIN_BYTES = 256 * 1024 * 1024
@@ -278,19 +282,45 @@ def send_desktop_notification(title, message, icon="document-save"):
             pass
     threading.Thread(target=_notify, daemon=True).start()
 
+def unique_display_name(bname, used):
+    """Return a name not already in `used`, recording it.
+
+    Two shared paths can share a basename (A/same.txt and B/same.txt). The name
+    is both the download URL and the visible card label, so a duplicate made
+    two cards fetch the same file and silently dropped one. Disambiguating here
+    keeps every entry reachable, and keeping the helper at module level makes it
+    directly testable.
+    """
+    if bname not in used:
+        used.add(bname)
+        return bname
+    stem, ext = os.path.splitext(bname)
+    counter = 2
+    while f"{stem} ({counter}){ext}" in used:
+        counter += 1
+    final = f"{stem} ({counter}){ext}"
+    used.add(final)
+    return final
+
+
 def set_desktop_clipboard(text):
     """Copy text to Linux clipboard using wl-copy or xclip."""
-    try:
-        proc = subprocess.Popen(["wl-copy"], stdin=subprocess.PIPE)
-        proc.communicate(input=text.encode("utf-8"), timeout=3)
-        return True
-    except Exception:
+    # Popen + communicate(timeout) leaves the child running when the timeout
+    # fires; it must be killed and reaped, or every slow clipboard write leaks
+    # a process and a wl-copy holding the selection. The sibling helpers use
+    # subprocess.run(timeout=...), which reaps for us.
+    for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"]):
         try:
-            proc = subprocess.Popen(["xclip", "-selection", "clipboard"], stdin=subprocess.PIPE)
-            proc.communicate(input=text.encode("utf-8"), timeout=3)
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+            try:
+                proc.communicate(input=text.encode("utf-8"), timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
             return True
         except Exception:
-            return False
+            continue
+    return False
 
 def get_desktop_clipboard():
     """Read current desktop clipboard using wl-paste."""
@@ -397,6 +427,17 @@ class ThreadedFileShareServer(socketserver.ThreadingMixIn, HTTPServer):
                     os.unlink(entry.path)
                 except OSError:
                     pass
+
+    def _discard_zip_cache(self):
+        """Unlink and clear the shared single-file bundle archive, if any."""
+        path = self.server.zip_cache_path
+        if not path:
+            return
+        self.server.zip_cache_path = None
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
     def cache_folder_zip(self, folder_path, temp_zip):
         """Insert a folder ZIP into the cache, evicting the oldest beyond the cap.
@@ -1772,6 +1813,7 @@ var activeUploads = 0;
 var batchTotal = 0;             // files ever added to this batch
 var batchDone = 0;              // files that reached a terminal success
 var batchFailed = 0;            // files that gave up for good
+var batchCancelled = 0;         // files the user cancelled before they sent
 var batchBytes = 0;             // bytes handed to the server this batch
 var MAX_CONCURRENT_UPLOADS = 2;
 var MAX_RETRIES = 3;
@@ -1930,6 +1972,13 @@ function cancelUpload(uid) {
     if (uploadQueue[i].uid === uid) {
       uploadQueue[i].cancelled = true;
       removeUploadItem(uid);
+      // This file was counted into batchTotal when queued, so it must be
+      // counted as settled here. Without this the summary could never reach
+      // settled === batchTotal: it stayed on "Sending 2 of 3…" for the rest of
+      // the session and the final toast never fired. Cancellations are their
+      // own outcome rather than failures, so they are not shown as errors.
+      batchCancelled += 1;
+      updateBatchSummary();
       showToast('Upload cancelled');
       haptic(10);
       return;
@@ -2034,18 +2083,19 @@ function updateBatchSummary() {
     return;
   }
   el.hidden = false;
-  var settled = batchDone + batchFailed;
+  var settled = batchDone + batchFailed + batchCancelled;
   var title = document.getElementById('queue-summary-title');
   if (title) {
     if (settled < batchTotal) {
       title.textContent = 'Sending ' + settled + ' of ' + batchTotal +
         (batchBytes ? ' · ' + formatBytes(batchBytes) : '') + '…';
-    } else if (batchFailed === 0) {
+    } else if (batchFailed === 0 && batchCancelled === 0) {
       title.textContent = '✓ All ' + batchDone + ' file' + (batchDone === 1 ? '' : 's') +
         ' sent' + (batchBytes ? ' · ' + formatBytes(batchBytes) : '');
     } else {
       title.textContent = '✓ ' + batchDone + ' sent' +
         (batchFailed ? ', ' + batchFailed + ' failed' : '') +
+        (batchCancelled ? ', ' + batchCancelled + ' cancelled' : '') +
         (batchBytes ? ' · ' + formatBytes(batchBytes) : '');
     }
   }
@@ -2063,7 +2113,8 @@ function clearFinishedUploads() {
   var items = document.querySelectorAll('.upload-item');
   for (var i = 0; i < items.length; i++) {
     var el = items[i];
-    if (el.getAttribute('data-state') === 'done' || el.getAttribute('data-state') === 'failed') {
+    if (el.getAttribute('data-state') === 'done' || el.getAttribute('data-state') === 'failed' ||
+        el.getAttribute('data-state') === 'cancelled') {
       if (el.parentNode) el.parentNode.removeChild(el);
     }
   }
@@ -2072,6 +2123,7 @@ function clearFinishedUploads() {
     batchTotal = 0;
     batchDone = 0;
     batchFailed = 0;
+    batchCancelled = 0;
     batchBytes = 0;
   }
   updateBatchSummary();
@@ -2082,6 +2134,7 @@ function finishJob(job, state) {
   job.finished = true;
   if (state === 'done') batchDone += 1;
   else if (state === 'failed') batchFailed += 1;
+  else if (state === 'cancelled') batchCancelled += 1;
   var el = document.getElementById(job.uid);
   if (el && state) el.setAttribute('data-state', state);
   releaseSlot(job);
@@ -2526,7 +2579,18 @@ updateThemeUI(getEffectiveTheme());
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin: pin })
       }).then(function(res) {
-        return res.json().then(function(data) {
+        // Do not assume a JSON body: send_error() replies with an HTML error
+        // page (used for the 413 oversize-PIN path), and res.json() would
+        // reject and drop the real reason into the generic "Connection
+        // error" catch below. Fall back to the status line instead.
+        return res.text().then(function(text) {
+          var data = null;
+          try { data = JSON.parse(text); } catch (e) { data = null; }
+          if (!data) {
+            data = { success: false, error: (res.status === 413)
+              ? 'PIN request too large'
+              : ('Verification failed (HTTP ' + res.status + ')') };
+          }
           return { status: res.status, data: data };
         });
       }).then(function(result) {
@@ -2721,7 +2785,18 @@ class FileShareHandler(BaseHTTPRequestHandler):
             content_length = 0
 
         if content_length > 1024:
-            self.send_error(413, "Request body too large for PIN verification")
+            # Reply in the same JSON dialect the other verify-pin failures use,
+            # so the PIN page can show the real reason. send_error() would emit
+            # an HTML error page the client cannot parse.
+            resp = json.dumps({
+                "success": False,
+                "error": "PIN request too large (limit 1KB)."
+            }).encode("utf-8")
+            self.send_response(413)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
             return
 
         # Read body with read deadline
@@ -2991,6 +3066,24 @@ class FileShareHandler(BaseHTTPRequestHandler):
 
                 filename = os.path.basename(filename).replace("/", "_").replace("\\", "_").strip()
                 filename = filename.lstrip(".")
+                # X-Filename is attacker-controlled and the length was
+                # uncapped, so an over-long name made open() fail with
+                # ENAMETOOLONG and surfaced to the client as a 500. Keep the
+                # stem short enough to still leave room for the collision
+                # counter, the part marker and the reserve marker appended
+                # later. The byte length is what ext4's NAME_MAX (255) checks.
+                if len(filename.encode("utf-8")) > UPLOAD_NAME_MAX_BYTES:
+                    base, ext = os.path.splitext(filename)
+                    ext_budget = max(len(ext.encode("utf-8")), 0)
+                    stem_budget = UPLOAD_NAME_MAX_BYTES - ext_budget
+                    if stem_budget < 1:
+                        filename = filename.encode("utf-8")[:UPLOAD_NAME_MAX_BYTES].decode(
+                            "utf-8", "ignore"
+                        )
+                    else:
+                        while len(base.encode("utf-8")) > stem_budget:
+                            base = base[:-1]
+                        filename = base + ext
                 if not filename:
                     filename = f"reclip_drop_{int(time.time())}.bin"
 
@@ -3408,6 +3501,11 @@ class FileShareHandler(BaseHTTPRequestHandler):
                 return
 
             emit_event({"event": "zipping", "client": client_ip, "count": len(self.server.files_meta)})
+            # A second /bundle request overwrites zip_cache_path, and
+            # server_close() only unlinks the *latest* one, so every repeat
+            # request orphaned a full archive in the system temp directory for
+            # the life of the session. Retire the previous archive first.
+            self._discard_zip_cache()
             tf = tempfile.NamedTemporaryFile(delete=False, suffix="_ReClip-Files.zip")
             self.server.zip_cache_path = tf.name
             tf.close()
@@ -3749,7 +3847,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
 
         reverse_drop_section_html = ""
         if self.server.allow_upload:
-            reverse_drop_section_html = """    <!-- P1: Reverse Drop Section -->
+            reverse_drop_section_html = f"""    <!-- P1: Reverse Drop Section -->
     <section class="section-card" id="reverse-drop">
       <div class="section-header">
         <div class="section-icon-box">
@@ -3759,7 +3857,7 @@ class FileShareHandler(BaseHTTPRequestHandler):
         </div>
         <div>
           <h2 class="section-title">Reverse Drop &middot; Send to PC</h2>
-          <p class="section-desc">Drop or select files from your phone to send directly to <code>~/Downloads/ReClip-Drop</code> on PC</p>
+          <p class="section-desc">Drop or select files from your phone to send directly to <code>{html.escape(self.server.save_dir)}</code> on PC</p>
         </div>
       </div>
 
@@ -4006,6 +4104,8 @@ def main():
 
     # Scan paths (support files and recursive directories - P5)
     files_meta = []
+    used_names = set()
+
     for idx, path_arg in enumerate(args.files):
         abs_p = os.path.abspath(path_arg)
         if not os.path.exists(abs_p):
@@ -4022,7 +4122,7 @@ def main():
                     file_count += 1
                 except OSError:
                     pass
-            bname = os.path.basename(abs_p.rstrip("/"))
+            bname = unique_display_name(os.path.basename(abs_p.rstrip("/")), used_names)
             files_meta.append({
                 "index": idx,
                 "name": bname,
@@ -4035,7 +4135,7 @@ def main():
             })
         elif os.path.isfile(abs_p):
             sz = os.path.getsize(abs_p)
-            bname = os.path.basename(abs_p)
+            bname = unique_display_name(os.path.basename(abs_p), used_names)
             files_meta.append({
                 "index": idx,
                 "name": bname,
@@ -4103,13 +4203,35 @@ def main():
     })
 
     start_time = time.time()
+    # Two problems with the original loop:
+    #  1. handle_request() blocks forever when no client is connected and no
+    #     socket timeout is set, so the --timeout deadline was never reached
+    #     on an idle server. Poll instead: each wake-up re-checks it.
+    #  2. SIGTERM (how the QML stops a share) killed the process outright, so
+    #     the finally-block cleanup never ran. Route it through should_stop.
+    httpd.timeout = 1.0
+
+    def _request_stop(signum, frame):
+        httpd.should_stop = True
+
+    try:
+        signal.signal(signal.SIGTERM, _request_stop)
+    except (ValueError, OSError):
+        pass
     try:
         while not httpd.should_stop:
             httpd.handle_request()
             if time.time() - start_time > args.timeout:
                 emit_event({"event": "timeout", "message": f"Server timed out after {args.timeout}s"})
                 break
-            if httpd.download_completed and (time.time() - httpd.completion_time > 3.0):
+            # Read the completion pair atomically. The handler thread writes
+            # download_completed before completion_time, so an unlocked read
+            # could observe completed=True against a stale completion_time and
+            # exit immediately, cutting off the 3s window the writer intends.
+            with httpd.state_lock:
+                completed = httpd.download_completed
+                completed_at = httpd.completion_time
+            if completed and (time.time() - completed_at > 3.0):
                 emit_event({"event": "completed_exit"})
                 break
     except KeyboardInterrupt:

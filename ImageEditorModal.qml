@@ -3436,6 +3436,13 @@ Rectangle {
                   if (!act.radius || act.radius < 15) act.radius = Number(root.magnifierRadius || 50)
                 } else if (act.tool === "spotlight" && act.start && act.end) {
                   if (Math.abs(act.end.x - act.start.x) <= 4 || Math.abs(act.end.y - act.start.y) <= 4) valid = false
+                } else if (act.tool === "blur" && act.start && act.end) {
+                  // The blur renderer clamps the region to Math.max(1, ...), so
+                  // an accidental click committed a permanent 1x1 blur dot the
+                  // user then had to undo. The mouse-release handler above has
+                  // this guard; onCanceled did not, so a stray click while the
+                  // selection overlay had focus produced a phantom blur.
+                  if (Math.abs(act.end.x - act.start.x) <= 4 || Math.abs(act.end.y - act.start.y) <= 4) valid = false
                 }
                 if (valid) {
                   root.pushUndoState()
