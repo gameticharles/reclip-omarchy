@@ -4450,6 +4450,13 @@ Rectangle {
                     spacing: Style.space(10)
 
                     Row {
+                      // The subtitle Column below sizes itself from this Row's width, and a
+                      // positioner with no width of its own reports implicitWidth as its
+                      // width -- which then feeds the Column's width, which feeds
+                      // implicitWidth again. Unset, that closed a negative-width feedback
+                      // loop up through the card's implicitHeight and the Flickable's
+                      // contentHeight, pinning quickshell at 100% CPU while the modal was open.
+                      width: parent.width
                       spacing: Style.space(8)
                       Rectangle {
                         width: Style.space(28); height: Style.space(28); radius: Style.space(6)
@@ -4513,6 +4520,13 @@ Rectangle {
                     spacing: Style.space(10)
 
                     Row {
+                      // The subtitle Column below sizes itself from this Row's width, and a
+                      // positioner with no width of its own reports implicitWidth as its
+                      // width -- which then feeds the Column's width, which feeds
+                      // implicitWidth again. Unset, that closed a negative-width feedback
+                      // loop up through the card's implicitHeight and the Flickable's
+                      // contentHeight, pinning quickshell at 100% CPU while the modal was open.
+                      width: parent.width
                       spacing: Style.space(8)
                       Rectangle {
                         width: Style.space(28); height: Style.space(28); radius: Style.space(6)
@@ -4568,6 +4582,13 @@ Rectangle {
                     spacing: Style.space(10)
 
                     Row {
+                      // The subtitle Column below sizes itself from this Row's width, and a
+                      // positioner with no width of its own reports implicitWidth as its
+                      // width -- which then feeds the Column's width, which feeds
+                      // implicitWidth again. Unset, that closed a negative-width feedback
+                      // loop up through the card's implicitHeight and the Flickable's
+                      // contentHeight, pinning quickshell at 100% CPU while the modal was open.
+                      width: parent.width
                       spacing: Style.space(8)
                       Rectangle {
                         width: Style.space(28); height: Style.space(28); radius: Style.space(6)
@@ -4653,6 +4674,13 @@ Rectangle {
                     spacing: Style.space(10)
 
                     Row {
+                      // The subtitle Column below sizes itself from this Row's width, and a
+                      // positioner with no width of its own reports implicitWidth as its
+                      // width -- which then feeds the Column's width, which feeds
+                      // implicitWidth again. Unset, that closed a negative-width feedback
+                      // loop up through the card's implicitHeight and the Flickable's
+                      // contentHeight, pinning quickshell at 100% CPU while the modal was open.
+                      width: parent.width
                       spacing: Style.space(8)
                       Rectangle {
                         width: Style.space(28); height: Style.space(28); radius: Style.space(6)
@@ -4738,6 +4766,13 @@ Rectangle {
                     spacing: Style.space(10)
 
                     Row {
+                      // The subtitle Column below sizes itself from this Row's width, and a
+                      // positioner with no width of its own reports implicitWidth as its
+                      // width -- which then feeds the Column's width, which feeds
+                      // implicitWidth again. Unset, that closed a negative-width feedback
+                      // loop up through the card's implicitHeight and the Flickable's
+                      // contentHeight, pinning quickshell at 100% CPU while the modal was open.
+                      width: parent.width
                       spacing: Style.space(8)
                       Rectangle {
                         width: Style.space(28); height: Style.space(28); radius: Style.space(6)

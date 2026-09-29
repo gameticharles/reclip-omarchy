@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
 import Quickshell
 import qs.Commons
 import qs.Ui
@@ -33,7 +34,7 @@ Column {
 
     spacing: Style.space(6)
 
-    Row {
+    RowLayout {
         spacing: Style.space(6)
         width: parent.width
 
@@ -43,17 +44,20 @@ Column {
             font.family: control.fontFamily
             font.pixelSize: Style.space(9)
             font.bold: true
-            width: parent.width - control.editable.implicitWidth - Style.space(8)
+            // RowLayout, not a hand-computed width: the label used to size
+            // itself from editable.implicitWidth, but editable is declared
+            // below this Row and is still undefined while the Row is being
+            // constructed, which threw a TypeError on every field.
+            Layout.fillWidth: true
             elide: Text.ElideRight
-            anchors.verticalCenter: parent.verticalCenter
         }
 
         Text {
             text: control.suffix
+            Layout.alignment: Qt.AlignVCenter
             color: Util.alpha(control.fg, 0.4)
             font.family: control.fontFamily
             font.pixelSize: Style.space(8)
-            anchors.verticalCenter: parent.verticalCenter
         }
     }
 
