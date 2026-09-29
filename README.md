@@ -88,7 +88,7 @@ Alternatively, run the included interactive installer:
 ### Via Omarchy CLI
 
 ```bash
-omarchy plugin add https://github.com/rein22/reclip-omarchy --enable
+omarchy plugin add https://github.com/gameticharles/reclip-omarchy --enable
 ```
 
 ### Via Omaplug (Plugin Manager)
@@ -157,7 +157,7 @@ The Wi-Fi Drop server is designed for **trusted local networks only**. It runs
 plain HTTP with no TLS so a phone can connect with zero setup, and that has
 consequences worth stating plainly:
 
-- **The session token travels in clear text.** Anyone who can observe the LANqr_file_server traffic (shared Wi-Fi, a hostile router, ARP spoofing) can capture the auth cookie and read or write shared files. The auth cookie therefore cannot carry the `Secure` attribute — it would be rejected over `http://` and break the feature. Treat the PIN as the real boundary and only use ReClip Drop on a network you trust.
+- **The session token travels in clear text.** Anyone who can observe the LAN traffic (shared Wi-Fi, a hostile router, ARP spoofing) can capture the auth cookie and read or write shared files. The auth cookie therefore cannot carry the `Secure` attribute — it would be rejected over `http://` and break the feature. Treat the PIN as the real boundary and only use ReClip Drop on a network you trust.
 - **Mitigations that are in place:** a 6-digit PIN verified in constant time,
   per-IP and global rate limiting with lockout, `HttpOnly` + `SameSite=Lax`
   cookies, a CSRF token required on cookie-authenticated POSTs, a bounded session upload quota, per-file size caps, streamed uploads with read deadlines, and symlink-safe archive bundling.
