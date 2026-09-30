@@ -4,7 +4,7 @@
   "name": "ReClip",
   "version": "1.5.0",
   "author": "Charles Gameti",
-  "description": "Advanced clipboard, color and snippet manager for Omarchy with rich previews, paste queue, and QR sharing",
+  "description": "Advanced clipboard, color and snippet manager for Omarchy with rich previews, paste queue, and QR Generation for Files, Folders and Text sharing",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "ReClip",
-    "description": "Clipboard history, color picker, snippets, paste queue, and QR sharing",
+    "description": "Clipboard history, color picker, snippets, paste queue, and QR Decode and Generation for Files, Folders and Text sharing",
     "category": "Utilities",
     "defaultSection": "right",
     "allowMultiple": false
