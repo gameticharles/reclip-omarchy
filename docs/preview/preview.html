@@ -1,0 +1,109 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Rendered to ../../preview.png with headless chromium at 2000x1350. The
+     screenshots show demo clips and snippets, not anyone's real clipboard. -->
+<style>
+  :root {
+    --bg: #0b0b0d;
+    --line: #26262a;
+    --text: #e4e4e6;
+    --muted: #9a9aa2;
+    --accent: #e68e0d;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 2000px; height: 1350px; }
+  body {
+    font-family: "JetBrainsMono Nerd Font", "JetBrains Mono", monospace;
+    color: var(--text);
+    padding: 52px 56px 0;
+    background:
+      radial-gradient(900px 420px at 8% -12%, rgba(230, 142, 13, 0.18), transparent 70%),
+      radial-gradient(900px 420px at 100% 108%, rgba(230, 142, 13, 0.08), transparent 70%),
+      var(--bg);
+  }
+
+  header { display: flex; justify-content: space-between; align-items: center; gap: 40px; }
+  .brand { display: flex; align-items: center; gap: 24px; }
+  .icon {
+    width: 96px; height: 96px; flex: none; border: 3px solid var(--accent); border-radius: 22px;
+    display: grid; place-items: center; font-size: 54px; color: var(--accent);
+    background: rgba(230, 142, 13, 0.08);
+  }
+  h1 { font-size: 66px; font-weight: 800; letter-spacing: -1.5px; line-height: 1; }
+  h1 span { color: var(--accent); }
+  .tagline { margin-top: 14px; font-size: 22px; line-height: 1.4; color: var(--muted); }
+  .tagline b { color: var(--text); font-weight: 600; }
+  .pills { display: grid; grid-template-columns: repeat(4, auto); gap: 10px; }
+  .pill { font-size: 17px; padding: 8px 14px; border: 1.5px solid var(--line); border-radius: 8px;
+          color: var(--muted); background: rgba(255, 255, 255, 0.02); white-space: nowrap; text-align: center; }
+  .pill.on { color: var(--accent); border-color: rgba(230, 142, 13, 0.6); background: rgba(230, 142, 13, 0.08); }
+
+  .shots { display: grid; grid-template-columns: repeat(4, 448px); justify-content: space-between; margin-top: 40px; }
+  .cap { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; white-space: nowrap; }
+  .cap b { font-size: 19px; letter-spacing: 3px; color: var(--accent); }
+  .cap span { font-size: 16px; color: var(--muted); }
+  .shot { display: block; width: 448px; border-radius: 4px;
+          box-shadow: 0 26px 52px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04); }
+
+  .features { display: grid; grid-template-columns: repeat(4, 448px); justify-content: space-between; gap: 24px 0;
+              margin-top: 40px; padding-top: 32px; border-top: 1.5px solid var(--line); }
+  .f { display: flex; gap: 14px; }
+  .f i { font-style: normal; color: var(--accent); font-size: 25px; flex: 0 0 32px; text-align: center; line-height: 1.2; }
+  .f b { display: block; font-size: 19px; margin-bottom: 5px; }
+  .f p { font-size: 15.5px; line-height: 1.42; color: var(--muted); }
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="icon">󰅌</div>
+      <div>
+        <h1>Re<span>Clip</span></h1>
+        <p class="tagline">A keyboard-driven <b>clipboard manager</b>, snippet library and media studio,<br>built for Omarchy and Hyprland.</p>
+      </div>
+    </div>
+    <div class="pills">
+      <span class="pill on">Clipboard history</span>
+      <span class="pill">Snippets</span>
+      <span class="pill">Paste queue</span>
+      <span class="pill">Image editor</span>
+      <span class="pill">Color studio</span>
+      <span class="pill">QR + Wi-Fi share</span>
+      <span class="pill">OCR</span>
+      <span class="pill">Diff</span>
+    </div>
+  </header>
+
+  <section class="shots">
+    <figure>
+      <div class="cap"><b>HISTORY</b><span>search, filter, timeline</span></div>
+      <img class="shot" src="clips.png">
+    </figure>
+    <figure>
+      <div class="cap"><b>IMAGE STUDIO</b><span>annotate and edit</span></div>
+      <img class="shot" src="editor.png">
+    </figure>
+    <figure>
+      <div class="cap"><b>QR STUDIO</b><span>style, scan, share</span></div>
+      <img class="shot" src="qr.png">
+    </figure>
+    <figure>
+      <div class="cap"><b>COLORS</b><span>every format, palettes</span></div>
+      <img class="shot" src="colors.png">
+    </figure>
+  </section>
+
+  <section class="features">
+    <div class="f"><i>󰍉</i><div><b>Searchable history</b><p>Text, links, code, colors and images, with dedup and revisions.</p></div></div>
+    <div class="f"><i>󰆏</i><div><b>Snippets &amp; paste queue</b><p>Paste clips in order, or slots 1–9 from the keyboard.</p></div></div>
+    <div class="f"><i>󰋩</i><div><b>Image studio</b><p>Arrows, text, blur, pixelate, crop, layers and palettes.</p></div></div>
+    <div class="f"><i>󰐲</i><div><b>QR &amp; Wi-Fi sharing</b><p>Generate and scan codes; send files to a phone, no cloud.</p></div></div>
+    <div class="f"><i>󰊄</i><div><b>OCR</b><p>Copy the text in any screen region, with tesseract.</p></div></div>
+    <div class="f"><i>󰘦</i><div><b>Transformers &amp; diff</b><p>30+ transforms (JSON, Base64, case, hash) and a diff view.</p></div></div>
+    <div class="f"><i>󰈊</i><div><b>Color studio</b><p>Eyedropper, harmonies, contrast checks and gradients.</p></div></div>
+    <div class="f"><i>󰒃</i><div><b>Privacy built in</b><p>Skips password managers; blacklist and incognito mode.</p></div></div>
+  </section>
+</body>
+</html>

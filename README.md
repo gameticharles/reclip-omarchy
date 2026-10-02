@@ -6,6 +6,8 @@
 
 **ReClip** is an advanced, keyboard-driven clipboard manager, media studio, and snippet library built natively for **Omarchy** and **Hyprland**. It combines high-speed clipboard history, proactive QR code reading, an inline image editor, text transformers, a diff viewer, sequential paste queues, and privacy protection into a unified desktop panel.
 
+![ReClip: clipboard history, image studio, QR studio and color tools](preview.png)
+
 ---
 
 ## ✨ Features
