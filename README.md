@@ -2,7 +2,7 @@
 
 [![Omarchy Plugin](https://img.shields.io/badge/Omarchy-Shell_Plugin-blue)](https://omarchyplugins.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Dependencies](https://img.shields.io/badge/Dependencies-Verified-brightgreen)](install-deps.sh)
+[![Dependencies](https://img.shields.io/badge/Dependencies-Verified-brightgreen)](check-deps.sh)
 
 **ReClip** is an advanced, keyboard-driven clipboard manager, media studio, and snippet library built natively for **Omarchy** and **Hyprland**. It combines high-speed clipboard history, proactive QR code reading, an inline image editor, text transformers, a diff viewer, sequential paste queues, and privacy protection into a unified desktop panel.
 
@@ -56,33 +56,20 @@
 
 ## 📦 Prerequisites
 
-ReClip runs on **Omarchy 4.x** (Arch Linux). Install the required tools via `pacman`:
+ReClip runs on **Omarchy 4.x** (Arch Linux) and uses these packages, most of
+which Omarchy already ships:
 
-```bash
-sudo pacman -S --needed \
-    wl-clipboard \
-    jq \
-    hyprland \
-    qrencode \
-    zbar \
-    imagemagick \
-    hyprpicker \
-    slurp \
-    grim \
-    wtype \
-    tesseract \
-    tesseract-data-eng \
-    libnotify \
-    python-pillow \
-    perl \
-    util-linux
-```
+`wl-clipboard` `jq` `hyprland` `qrencode` `zbar` `imagemagick` `hyprpicker`
+`slurp` `grim` `wtype` `tesseract` `tesseract-data-eng` `libnotify`
+`python-pillow` `perl` `util-linux`
 
-Alternatively, run the included interactive installer:
+ReClip never installs anything itself. **Settings › System Health** lists what is
+missing; **Copy Search** copies a search for Omarchy's package picker and
+**Open Install Menu** opens the Omarchy menu (Super + Space) › Install ›
+Package. Paste the search, press Tab on each package, then Enter. The page
+re-checks by itself until everything is there.
 
-```bash
-./install-deps.sh
-```
+From a terminal, `./check-deps.sh` reports the same and prints the search.
 
 ---
 

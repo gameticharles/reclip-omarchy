@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# install-deps.sh - Dependency Checker & Installer for ReClip Omarchy
+# check-deps.sh - Dependency checker for ReClip Omarchy
+#
+# It only checks and reports. ReClip never installs packages itself: missing
+# ones are installed by the user from the Omarchy menu (Super + Space) >
+# Install > Package, where they pick and confirm them.
+#
 # Usage:
-#   install-deps.sh          -> Interactive dependency check & install prompt
-#   install-deps.sh --json   -> Machine-readable JSON output for ReClip UI health check
-#   install-deps.sh --check  -> Non-interactive terminal check & exit code
+#   check-deps.sh          -> Report what is installed and what is missing
+#   check-deps.sh --json   -> Machine-readable JSON output for ReClip UI health check
+#   check-deps.sh --check  -> Same report; exit code 1 when something is missing
 
 set -eo pipefail
 
@@ -109,24 +114,13 @@ if [[ ${#missing_pkgs[@]} -eq 0 ]]; then
 fi
 
 echo -e "\n\033[1;33mMissing packages:\033[0m ${missing_pkgs[*]}"
-echo -e "Install command:"
-echo -e "  \033[1;32msudo pacman -S --needed ${missing_pkgs[*]}\033[0m\n"
-
-if [[ "${1:-}" == "--check" ]]; then
-  exit 1
-fi
-
-# Interactive prompt if running in terminal
-if [[ -t 0 && -t 1 ]]; then
-  read -r -p "Would you like to install the missing packages with pacman now? [Y/n] " answer
-  case "${answer:-Y}" in
-    [yY][eE][sS]|[yY])
-      echo -e "\nRunning: sudo pacman -S --needed ${missing_pkgs[*]}"
-      sudo pacman -S --needed "${missing_pkgs[@]}"
-      echo -e "\n\033[1;32mDone! Dependencies installed successfully.\033[0m"
-      ;;
-    *)
-      echo "Installation skipped."
-      ;;
-  esac
-fi
+# A search for Omarchy's package picker (an fzf list): "^grim$ | ^slurp$" shows
+# exactly these packages. Plain names separated by spaces would find nothing.
+search=""
+for p in "${missing_pkgs[@]}"; do
+  search+="${search:+ | }^${p}\$"
+done
+echo -e "Install them from the Omarchy menu (Super + Space) > Install > Package."
+echo -e "Paste this search there, press Tab on each package, then Enter:"
+echo -e "  \033[1;32m${search}\033[0m\n"
+exit 1

@@ -81,7 +81,7 @@ Rectangle {
   // System Dependencies & Health State
   property string pluginDir: rootPanel ? rootPanel.pluginDir : (Quickshell.env("HOME") + "/.config/omarchy/plugins/reclip")
   property string pluginVersion: rootPanel ? rootPanel.pluginVersion : "1.5.0"
-  property string installDepsScript: pluginDir + "/install-deps.sh"
+  property string installDepsScript: pluginDir + "/check-deps.sh"
   property var systemDependencies: []
   property bool isCheckingDeps: false
   property int installedDepsCount: 0
@@ -93,21 +93,50 @@ Rectangle {
     depsCheckProc.running = true
   }
 
-  function installMissingDependencies() {
-    if (!missingPackagesList || missingPackagesList.length === 0) return
-    var pkgs = missingPackagesList.join(" ")
-    var cmd = "sudo pacman -S --needed " + pkgs
-    var launcher = "omarchy-launch-floating-terminal-with-presentation"
-    var fullCmd = launcher + " " + Util.shellQuote(cmd)
-    Quickshell.execDetached(["sh", "-c", fullCmd])
-    showFeedback("󰐥 Launched terminal to install " + missingPackagesList.length + " package(s)")
+  // ReClip never installs packages itself. It copies a search for Omarchy's
+  // package picker (an fzf list, where "^grim$ | ^slurp$" shows exactly those
+  // packages and plain names separated by spaces find nothing), opens the
+  // Omarchy menu at Install, and re-checks until the packages are there.
+  function installerSearch(packages) {
+    var names = []
+    for (var i = 0; i < (packages || []).length; i++) {
+      var parts = String(packages[i] || "").split(" ")
+      for (var j = 0; j < parts.length; j++) {
+        if (parts[j] && names.indexOf(parts[j]) === -1) names.push(parts[j])
+      }
+    }
+    return names.map(function (n) { return "^" + n + "$" }).join(" | ")
   }
 
-  function copyInstallCommand() {
-    var pkgs = missingPackagesList && missingPackagesList.length > 0 ? missingPackagesList.join(" ") : "wl-clipboard jq qrencode zbar imagemagick hyprpicker slurp grim wtype tesseract tesseract-data-eng libnotify python python-pillow perl util-linux"
-    var cmd = "sudo pacman -S --needed " + pkgs
-    root.requestCopyText(cmd)
-    showFeedback("✓ Install command copied to clipboard")
+  function copyInstallerSearch(packages) {
+    var search = installerSearch(packages && packages.length ? packages : missingPackagesList)
+    if (search === "") return
+    root.requestCopyText(search)
+    showFeedback("✓ Search copied: paste it in Omarchy menu › Install › Package, Tab on each, then Enter")
+  }
+
+  property bool waitingForDeps: false
+  property real depsWaitStarted: 0
+
+  function installMissingDependencies() {
+    if (!missingPackagesList || missingPackagesList.length === 0) return
+    copyInstallerSearch(missingPackagesList)
+    Quickshell.execDetached(["omarchy-menu", "summon", "install"])
+    depsWaitStarted = Date.now()
+    waitingForDeps = true
+  }
+
+  Timer {
+    interval: 3000
+    repeat: true
+    running: root.waitingForDeps
+    onTriggered: {
+      if (root.missingPackagesList.length === 0 || Date.now() - root.depsWaitStarted > 15 * 60 * 1000) {
+        root.waitingForDeps = false
+        return
+      }
+      if (!root.isCheckingDeps) root.checkDependencies()
+    }
   }
 
   Process {
@@ -4214,7 +4243,7 @@ Rectangle {
                           id: bannerInstTxt
                           anchors.centerIn: parent; spacing: Style.space(4)
                           Text { text: "󰐥"; color: "#FFFFFF"; font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
-                          Text { text: "Install All"; color: "#FFFFFF"; font.family: root.fontFamily; font.pixelSize: Style.space(8.5); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                          Text { text: "Open Install Menu"; color: "#FFFFFF"; font.family: root.fontFamily; font.pixelSize: Style.space(8.5); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
                         }
                         MouseArea {
                           anchors.fill: parent; cursorShape: Qt.PointingHandCursor
@@ -4233,11 +4262,11 @@ Rectangle {
                           id: bannerCopyTxt
                           anchors.centerIn: parent; spacing: Style.space(4)
                           Text { text: "󰆏"; color: root.fg; font.pixelSize: Style.space(7.5); anchors.verticalCenter: parent.verticalCenter }
-                          Text { text: "Copy Command"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                          Text { text: "Copy Search"; color: root.fg; font.family: root.fontFamily; font.pixelSize: Style.space(8); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
                         }
                         MouseArea {
                           anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                          onClicked: root.copyInstallCommand()
+                          onClicked: root.copyInstallerSearch()
                         }
                       }
                     }
@@ -4334,7 +4363,7 @@ Rectangle {
 
                           Text {
                             id: statChipTxt
-                            text: parent.parent.parent.modelData.installed ? "Installed" : "Install"
+                            text: parent.parent.parent.modelData.installed ? "Installed" : "Copy"
                             color: parent.parent.parent.modelData.installed ? "#22C55E" : "#FFFFFF"
                             font.family: root.fontFamily
                             font.pixelSize: Style.space(7.5)
@@ -4347,10 +4376,7 @@ Rectangle {
                             enabled: !parent.parent.parent.modelData.installed
                             cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                             onClicked: {
-                              var pkg = parent.parent.parent.modelData.package
-                              var cmd = "sudo pacman -S --needed " + pkg
-                              var launcher = "omarchy-launch-floating-terminal-with-presentation"
-                              Quickshell.execDetached(["sh", "-c", launcher + " " + Util.shellQuote(cmd)])
+                              root.copyInstallerSearch([parent.parent.parent.modelData.package])
                             }
                           }
                         }
@@ -4970,7 +4996,7 @@ Rectangle {
                   anchors.centerIn: parent
                   spacing: Style.space(4)
                   Text { text: root.missingPackagesList.length > 0 ? "󰐥" : "󰑮"; color: root.missingPackagesList.length > 0 ? "#FFFFFF" : Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
-                  Text { text: root.missingPackagesList.length > 0 ? ("Install Missing (" + root.missingPackagesList.length + ")") : "Refresh Status"; color: root.missingPackagesList.length > 0 ? "#FFFFFF" : Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                  Text { text: root.missingPackagesList.length > 0 ? ((root.waitingForDeps ? "Waiting for " : "Install Missing (") + root.missingPackagesList.length + (root.waitingForDeps ? "…" : ")")) : "Refresh Status"; color: root.missingPackagesList.length > 0 ? "#FFFFFF" : Color.accent; font.family: root.fontFamily; font.pixelSize: Style.space(9); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
                 }
                 MouseArea {
                   anchors.fill: parent; cursorShape: Qt.PointingHandCursor
